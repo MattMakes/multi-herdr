@@ -1,26 +1,11 @@
-//! What `horch tell` types into a pane, as opposed to how it types it.
-//!
-//! Two rules protect the channel's one trust boundary: a worker line carries a
-//! `[<role>]` tag, and everything else is the human operator.
-//!
-//! - A worker's message always starts with its own tag, even when the worker
-//!   forgot it.
-//! - A long message is not typed at all. It goes to a file, and the pane gets
-//!   one short tagged line that names the file. A short line is far less exposed
-//!   to a busy TUI splitting it, and even a split one starts with the tag.
-
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
-/// Longest message typed into a pane as is. Anything longer goes by reference.
 pub const MAX_INLINE: usize = 600;
 
-/// How much of a long message the reference line quotes: enough for the tag,
-/// the keyword and the outcome sentence.
 const HEAD: usize = 240;
 
-/// `message`, starting with `[role] ` unless it already does.
 pub fn ensure_tag(message: &str, role: &str) -> String {
     let tag = format!("[{role}]");
     let trimmed = message.trim_start();
@@ -31,10 +16,6 @@ pub fn ensure_tag(message: &str, role: &str) -> String {
     }
 }
 
-/// `line` with the short mail id in its sender tag: `[<from> #<id>] ...`
-/// (C2 of docs/specs/trace-fixes.md). A line without the `[<from>]` tag gets
-/// the tag. A line whose tag already carries a mail id keeps it, so a
-/// redelivery shows the id of the first delivery.
 pub fn with_mail_id(line: &str, from: &str, short_id: &str) -> String {
     let trimmed = line.trim_start();
     if trimmed.starts_with(&format!("[{from} #")) {
@@ -47,8 +28,6 @@ pub fn with_mail_id(line: &str, from: &str, short_id: &str) -> String {
     }
 }
 
-/// `summary` without a leading `[role]` and `DONE:`, which `horch done` adds
-/// itself. Workers are told to open every report with both, so they often do.
 pub(crate) fn strip_done_prefix<'a>(summary: &'a str, role: &str) -> &'a str {
     let mut s = summary.trim_start();
     if let Some(rest) = s.strip_prefix(&format!("[{role}]")) {
@@ -60,18 +39,12 @@ pub(crate) fn strip_done_prefix<'a>(summary: &'a str, role: &str) -> &'a str {
     s
 }
 
-/// Directory under `state_root` (`RuntimeContext::paths.state_root`) that
-/// holds the messages of one workspace delivered by reference. A fleet never
-/// lists another fleet's messages: role names repeat across fleets.
 pub fn spool_dir(state_root: &Path, workspace: &str) -> PathBuf {
     state_root
         .join("messages")
         .join(super::file_safe(workspace))
 }
 
-/// Write `message` to a new file under `dir` and return its path. The file
-/// opens with a line that names `workspace`, `from` and `to`, so a reader that
-/// finds it by chance can see whom it is for.
 pub fn spool(dir: &Path, workspace: &str, from: &str, to: &str, message: &str) -> Result<PathBuf> {
     crate::messaging::private::ensure_dir(dir)?;
     let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
@@ -87,8 +60,6 @@ pub fn spool(dir: &Path, workspace: &str, from: &str, to: &str, message: &str) -
     Ok(path)
 }
 
-/// The one line typed into the pane for a message spooled at `path`: the head
-/// of the message, so the tag and keyword stay first, then where the rest is.
 pub fn reference_line(message: &str, path: &Path) -> String {
     let flat: String = message
         .trim()
@@ -103,7 +74,6 @@ pub fn reference_line(message: &str, path: &Path) -> String {
     )
 }
 
-/// At most `max` chars of `s`, cut at the last space when there is one nearby.
 fn cut(s: &str, max: usize) -> &str {
     let Some((end, _)) = s.char_indices().nth(max) else {
         return s;
@@ -117,7 +87,6 @@ fn cut(s: &str, max: usize) -> &str {
 
 #[cfg(test)]
 mod tests {
-    /// #77: a new spool dir is 0700 and a spool file 0600.
     #[cfg(unix)]
     #[test]
     fn spool_dir_is_0700_and_file_0600() {
@@ -139,7 +108,6 @@ mod tests {
             ensure_tag("  [sonnet-1] NOTE: x", "sonnet-1"),
             "[sonnet-1] NOTE: x"
         );
-        // Another role's tag is not this worker's tag.
         assert_eq!(
             ensure_tag("[opus-1] hi", "sonnet-1"),
             "[sonnet-1] [opus-1] hi"
@@ -195,7 +163,6 @@ mod tests {
         let root = Path::new("/state");
         assert_eq!(spool_dir(root, "w16"), root.join("messages").join("w16"));
         assert_ne!(spool_dir(root, "w14"), spool_dir(root, "w16"));
-        // A workspace id never climbs out of `messages/`.
         assert_eq!(
             spool_dir(root, "../w16"),
             root.join("messages").join("___w16")
@@ -237,7 +204,6 @@ mod tests {
             with_mail_id("the reviews are in", "horch", "0a1b2c3d"),
             "[horch #0a1b2c3d] the reviews are in"
         );
-        // Another role's tag is not the sender's tag.
         assert_eq!(
             with_mail_id("[opus-1] hi", "sonnet-1", "0a1b2c3d"),
             "[sonnet-1 #0a1b2c3d] [opus-1] hi"

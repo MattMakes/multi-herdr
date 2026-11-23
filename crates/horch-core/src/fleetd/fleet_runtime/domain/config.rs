@@ -1,164 +1,56 @@
-//! The keys of Phases 1 to 6 of `fleet.toml`, their default or
-//! starting values (`docs/specs/fleetd/design.md`, "The numbers of the
-//! design", and `docs/tickets/fleetd-p1/MAP.md`, Q1 and Q2), and the range
-//! of each.
-//!
-//! This module does no I/O and parses no TOML: `adapters/config_file.rs`
-//! reads and parses `<fleet root>/fleet.toml` into a [`FleetConfig`], then
-//! calls [`FleetConfig::validate`]. It parses only the value of the key
-//! `working_hours` ([`WorkingHours::parse`]).
-
-/// The hang limit of fleetd, in seconds of awake time. A fixed contract
-/// (PL-5), not a key: the time budget of a pass stays below it.
 pub const HANG_LIMIT_S: u64 = 30;
 
 const KIB: u64 = 1024;
 const MIB: u64 = 1024 * KIB;
 
-/// The Phase 1 to Phase 6 keys of `fleet.toml`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FleetConfig {
-    /// The period of the reconcile pass. Default 5 s.
     pub pass_period_s: u64,
-    /// The time budget of 1 pass, below [`HANG_LIMIT_S`]. Starting value 20 s.
     pub pass_time_budget_s: u64,
-    /// The time budget of each fact scan in 1 pass. Starting value 2000 ms.
     pub scan_budget_ms: u64,
-    /// The rows of each kind that 1 pass handles. Starting value 200.
     pub pass_budget: u64,
-    /// The grace before the kill of a process group. Default 20 s.
     pub stop_grace_s: u64,
-    /// The retention of a needs-you item that is not open, of a trash ref
-    /// and of a `superseded` rescue ref. Default 30 days.
     pub retention_days: u64,
-    /// The runs in a row of 1 job key that end `abandoned` before a
-    /// needs-you item. Default 3.
     pub abandoned_run_limit: u64,
-    /// The backoff before each run after an `abandoned` run. Default 30 s,
-    /// 120 s, 480 s.
     pub job_backoff_s: Vec<u64>,
-    /// The time limit of a job of each kind. `task_check` has no key: it
-    /// uses `CHECK_TIMEOUT` of `taskledger/finish/land.rs`.
     pub job_limit_s: JobLimits,
-    /// The free disk floor. Starting value 10 GB.
     pub health_min_free_disk_gb: u64,
-    /// The load for each CPU at which new dispatch holds. Starting value
-    /// 4.0, a value to tune: a busy fleet keeps a load of 10 to 60 on a Mac
-    /// with 14 CPUs. The `load >= cpus` note of `horch spawn`
-    /// (`crates/horch/src/cmd/spawn.rs`) stays at 1.0 for each CPU and only
-    /// prints.
     pub health_max_load_per_cpu: f64,
-    /// The free memory floor. Starting value 1024 MB.
     pub health_min_free_memory_mb: u64,
-    /// The share of the process limit of the user. Starting value 0.9.
     pub health_max_process_share: f64,
-    /// The share of the open file limit of the system that the open files
-    /// of the user may use. Starting value 0.9.
     pub health_max_open_file_share: f64,
-    /// The period of the wrapper heartbeat. Starting value 10 s, 1 to 60
-    /// (design, "The numbers of the design", "Wrapper heartbeat").
     pub heartbeat_every_s: u64,
-    /// The age under which a heartbeat renews a lease. Starting value 30 s,
-    /// above `heartbeat_every_s` and at most 300 (design, "Heartbeat age for
-    /// a lease renewal").
     pub heartbeat_max_age_s: u64,
-    /// The time limit of a question. Starting value 900 s (15 min), 60 to
-    /// 86400 (design, "Time limit of a question").
     pub question_limit_s: u64,
-    /// The replan limit of a `failed` task. Starting value 1800 s (30 min),
-    /// 60 to 86400. The design names it `replan_limit`; the key has the unit
-    /// in its name (`docs/tickets/fleetd-p2/MAP.md`, Q1).
     pub replan_limit_s: u64,
-    /// The used share of the binding window of a pool at which the pool
-    /// counts as limited (RR-11), and below which the pool probe reports ok.
-    /// Starting value 0.98, above 0.5 and at most 1.0. Source: today's
-    /// `exhausted_used` in `crates/horch-core/src/routing/policy.rs`
-    /// (`docs/tickets/fleetd-p2/MAP.md`, Q1).
     pub pool_full_use: f64,
-    /// The period of the `worktree_list` job. Default 60 s (design, "Period
-    /// of the `worktree_list` job"; RR-10).
     pub worktree_list_period_s: u64,
-    /// The worktree disk budget. Default 20 GB (design, "Worktree disk
-    /// budget"; FM-28). The design names it `worktree_disk_budget`; the key
-    /// has the unit in its name (`docs/tickets/fleetd-p3/MAP.md`, Q20).
     pub worktree_disk_budget_gb: u64,
-    /// The size limit of a question file. Starting value 64 KiB (design,
-    /// Protocol rules, rule 7; SR-6).
     pub question_max_bytes: u64,
-    /// The size limit of a request file and of a request line. Starting
-    /// value 64 KiB (rule 7; `docs/tickets/fleetd-p5/MAP.md`, Q15).
     pub request_max_bytes: u64,
-    /// The size limit of `heartbeat.json`. Starting value 4 KiB (rule 7).
     pub heartbeat_max_bytes: u64,
-    /// The size limit of `outbox/progress.jsonl`. Starting value 8 MiB
-    /// (rule 7).
     pub progress_max_bytes: u64,
-    /// The line limit of `outbox/progress.jsonl`. Starting value 10000
-    /// (rule 7).
     pub progress_max_lines: u64,
-    /// The size limit of 1 line of `outbox/progress.jsonl`. Starting value
-    /// 4 KiB (rule 7).
     pub progress_line_max_bytes: u64,
-    /// The tail of `transcript.jsonl` that fleetd reads. Starting value
-    /// 256 KiB (rule 7).
     pub transcript_tail_bytes: u64,
-    /// The size limit of 1 line of `transcript.jsonl`. Starting value 1 MiB
-    /// (rule 7).
     pub transcript_line_max_bytes: u64,
-    /// The size limit of a job result file. Starting value 64 KiB
-    /// (`docs/tickets/fleetd-p5/MAP.md`, Q14).
     pub job_result_max_bytes: u64,
-    /// The period of the `fetch` job of each repository. Default 60 s
-    /// (design, "Between features"; `docs/tickets/fleetd-p4/MAP.md`, Q6).
     pub fetch_period_s: u64,
-    /// The failed `push` runs in a row before a needs-you item. Default 3
-    /// (design, "The numbers of the design").
     pub push_failure_limit: u64,
-    /// The budget of the `unique` rescue refs. Over it, 1 item goes on the
-    /// needs-you list and nothing is deleted (design, "No work is lost").
-    /// Starting value 5120 MB: a starting value, to tune from real runs.
     pub rescue_unique_budget_mb: u64,
-    /// The time limit of the landing state `ready`. Starting value 1800 s
-    /// (`docs/tickets/fleetd-p4/MAP.md`, Q6): a starting value, to tune from
-    /// real runs.
     pub landing_ready_limit_s: u64,
-    /// The time limit of the landing state `repair`. Starting value 3600 s
-    /// (Q6): a starting value, to tune from real runs.
     pub landing_repair_limit_s: u64,
-    /// The margin above the job limits for a landing state that waits on a
-    /// job. Starting value 600 s (Q6): a starting value, to tune from real
-    /// runs.
     pub landing_job_margin_s: u64,
-    /// The time limit of a bundle in the state `passed`. Starting value
-    /// 600 s (Q6): a starting value, to tune from real runs.
     pub bundle_passed_limit_s: u64,
-    /// The size limit of `result.json` of a worker. Starting value 64 KiB
-    /// (Q7; SR-6): a starting value, to tune from real runs.
     pub result_max_bytes: u64,
-    /// The changed lines of a resolver task at most. Starting value 100
-    /// (Q7): a starting value, to tune from real runs.
     pub resolver_max_lines: u64,
-    /// The files of a resolver task at most. Starting value 2 (Q7): a
-    /// starting value, to tune from real runs.
     pub resolver_max_files: u64,
-    /// The time after which fleetd stops an idle sub-orchestrator process
-    /// of an idea that waits on you. Default 1800 s, 60 to 86400, on the
-    /// fleet clock (design, "Stop of an idle sub-orchestrator"; FM-29, PL-4).
     pub idle_stop_s: u64,
-    /// The days of calendar time with no answer after which an idea that
-    /// waits on you moves to `parked`. Default 7, 1 to 365 (design, "Park of
-    /// an idea that waits on you"; FM-29, PL-4).
     pub park_after_days: u64,
-    /// The period of the reminder of an idea that waits on you, in seconds
-    /// of calendar time. Default 3600, 600 to 86400 (FM-29, PL-4).
     pub reminder_every_s: u64,
-    /// The hours in which fleetd sends a reminder, in the local time zone
-    /// of the machine. Starting value `Mon-Fri 09:00-18:00`
-    /// (`docs/tickets/fleetd-p6/MAP.md`, Q3).
     pub working_hours: WorkingHours,
 }
 
-/// A day of the week.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Weekday {
     Mon,
@@ -180,10 +72,6 @@ const WEEKDAYS: [(&str, Weekday); 7] = [
     ("Sun", Weekday::Sun),
 ];
 
-/// The value of `working_hours`: a day range and an hour range, as
-/// `Mon-Fri 09:00-18:00`. The day range includes both days and can pass the
-/// end of the week (`Fri-Mon`). The hour range includes its start and not
-/// its end, and its start is before its end.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WorkingHours {
     first_day: Weekday,
@@ -193,8 +81,6 @@ pub struct WorkingHours {
 }
 
 impl WorkingHours {
-    /// Parse the form `Ddd-Ddd HH:MM-HH:MM`. The text of an error names the
-    /// key and the form.
     pub fn parse(text: &str) -> Result<Self, ConfigError> {
         let bad = || {
             ConfigError(format!(
@@ -216,8 +102,6 @@ impl WorkingHours {
         Ok(hours)
     }
 
-    /// Whether the local `day` at the local `minute` of the day (0 to 1439)
-    /// is inside the working hours.
     pub fn contains(&self, day: Weekday, minute: u16) -> bool {
         let (first, last, d) = (self.first_day as u8, self.last_day as u8, day as u8);
         let in_days = if first <= last {
@@ -236,7 +120,6 @@ fn weekday(text: &str) -> Option<Weekday> {
         .map(|(_, d)| *d)
 }
 
-/// `HH:MM` with 2 digits each, from `00:00` to `23:59`.
 fn minute_of_day(text: &str) -> Option<u16> {
     let (h, m) = text.split_once(':')?;
     let two_digits = |s: &str| s.len() == 2 && s.bytes().all(|b| b.is_ascii_digit());
@@ -247,7 +130,6 @@ fn minute_of_day(text: &str) -> Option<u16> {
     (h < 24 && m < 60).then_some(h * 60 + m)
 }
 
-/// The `job_limit_s` table: the time limit of each job kind, in seconds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JobLimits {
     pub worktree_add: u64,
@@ -255,18 +137,11 @@ pub struct JobLimits {
     pub worktree_list: u64,
     pub docs_sync: u64,
     pub conformance: u64,
-    /// Starting value 600 s (`docs/tickets/fleetd-p3/MAP.md`, Q25).
     pub rescue: u64,
-    /// Starting value 1200 s (`docs/tickets/fleetd-p4/MAP.md`, Q-B): a
-    /// starting value, to tune from real runs.
     pub fast_gate: u64,
-    /// Starting value 3600 s (Q-B): a starting value, to tune from real runs.
     pub full_gate: u64,
-    /// Starting value 180 s (Q-B): a starting value, to tune from real runs.
     pub trial_merge: u64,
-    /// Starting value 600 s (Q-B): a starting value, to tune from real runs.
     pub bundle_build: u64,
-    /// Starting value 600 s (Q-B): a starting value, to tune from real runs.
     pub rebase: u64,
 }
 
@@ -344,7 +219,6 @@ impl Default for FleetConfig {
     }
 }
 
-/// A value of `fleet.toml` out of its range. The text names the key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigError(String);
 
@@ -357,7 +231,6 @@ impl std::fmt::Display for ConfigError {
 impl std::error::Error for ConfigError {}
 
 impl FleetConfig {
-    /// Refuse a value out of its range, with the name of its key.
     pub fn validate(&self) -> Result<(), ConfigError> {
         let jobs = &self.job_limit_s;
         let positive = [

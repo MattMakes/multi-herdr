@@ -1,6 +1,3 @@
-//! The coverage rule of the plan validator (ticket 09 of fleetd-p6; FR-3,
-//! FM-1, FM-30, I3 at plan time).
-
 use std::path::Path;
 
 use horch_core::fleetd::ideas::adapters::plan_yaml;
@@ -9,7 +6,6 @@ use horch_core::fleetd::ideas::domain::plan_validator::{
     PlanFacts, PlanValidator, Problem, Requirement,
 };
 
-/// A ticket in format C1.
 const C1_TICKET: &str = "# 01: Add backoff
 
 <!-- horch-ticket: 1 -->
@@ -23,7 +19,6 @@ const C1_TICKET: &str = "# 01: Add backoff
 Retry with backoff.
 ";
 
-/// A plan of tasks `a` (covers `a_covers`) and `b` (covers `b_covers`).
 fn plan_text(a_covers: &str, b_covers: &str) -> String {
     format!(
         "idea: I-0001
@@ -50,8 +45,6 @@ tasks:
     )
 }
 
-/// Write `plan` as plan.yaml in `dir`, with each `(path, text)` ticket file,
-/// and read it back.
 fn read_plan(dir: &Path, plan: &str, tickets: &[(&str, &str)]) -> Plan {
     for (path, text) in tickets {
         let file = dir.join(path);
@@ -71,7 +64,6 @@ fn requirement(id: &str, cites: &[&str]) -> Requirement {
     }
 }
 
-/// R1 cites the approved assumption A1, R2 cites the answer Q1.
 fn facts() -> PlanFacts {
     PlanFacts {
         requirements: vec![requirement("R1", &["A1"]), requirement("R2", &["Q1"])],
@@ -81,7 +73,6 @@ fn facts() -> PlanFacts {
     }
 }
 
-/// The problems of the coverage rule.
 fn coverage(plan: &Plan, facts: &PlanFacts) -> Vec<Problem> {
     PlanValidator::validate(plan, facts)
         .into_iter()
@@ -123,7 +114,6 @@ fn requirement_with_no_approved_citation_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let plan = read_plan(dir.path(), &plan_text("R1", "R2"), &[]);
     let mut facts = facts();
-    // R1 cites nothing; R2 cites an assumption that is not approved.
     facts.requirements = vec![requirement("R1", &[]), requirement("R2", &["A2"])];
     let problems = coverage(&plan, &facts);
     assert_eq!(problems.len(), 2, "{problems:?}");
@@ -155,7 +145,6 @@ tasks:
 "
     );
     let plan = read_plan(dir.path(), &plan_yaml, &[(ticket, C1_TICKET)]);
-    // The 1 requirement is the ticket itself, and it cites the approved ticket (Q6).
     let facts = PlanFacts {
         requirements: vec![Requirement {
             id: "R1".into(),

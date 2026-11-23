@@ -31,6 +31,16 @@ A worker's address in a workspace, such as `sonnet-feature-3`, used by
 `horch tell`.
 _Avoid_: name, persona
 
+**Pane host**:
+The terminal multiplexer and window system that owns a fleet's workspaces and
+panes: either the `herdr` TUI server or `herdr-core` (`hc`) plus the Herdr
+desktop app (`herdr-app`), reached in code through one `PaneHost` handle.
+
+**Backend**:
+Which pane host owns a fleet or process (`herdr` or `hc`), resolved once in
+`RuntimeContext` from `--backend` / `HORCH_BACKEND` / pane identity and
+recorded on every execution record and task-ledger worker row.
+
 ## Work
 
 **Idea**:
@@ -67,7 +77,7 @@ _Avoid_: assign, pick up
 
 **Finish step**:
 1 of the ordered, evidence-checked steps every attempt passes before it
-can be done: check, code-sweep, complexity-sweep, recheck, land, pr,
+can be done: check, comment-sweep, code-sweep, complexity-sweep, recheck, land, pr,
 cleanup.
 _Avoid_: gate (alone), post-step
 

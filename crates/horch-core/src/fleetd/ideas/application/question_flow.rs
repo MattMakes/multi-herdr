@@ -1,35 +1,3 @@
-//! The question flow: the sub-orchestrator of the feature owns each worker
-//! question, and an unanswered question escalates to you
-//! (`docs/specs/fleetd/design.md`, "Ideas": How a worker's question is
-//! resolved, steps 1 to 3 and 7; RR-12; FM-35; Ledger, `questions`;
-//! `docs/tickets/fleetd-p6/30-questions.md`).
-//!
-//! - The owner of a question is [`owner_of`] the feature of the idea of its
-//!   task: `idea-lead:<feature id>` (MAP.md of fleetd-p6, Q11). The live
-//!   process of the feature is the live sub-orchestrator attempt of an idea
-//!   of the feature. Ticket 28 starts it when the feature has an open
-//!   question ([`super::sub_orchestrators`]); this use case does not start
-//!   a process.
-//! - A change of the owner is [`move_to_feature`]: the row and 1 event with
-//!   its cause, in 1 transaction. Each pass moves an open question whose
-//!   task is now in another feature.
-//! - The time limit `due_at` is a deadline on the fleet clock that counts
-//!   only while the owner runs: each pass moves the limit of each open
-//!   question of a feature with no live process later by the seconds that
-//!   the fleet clock moved in the pass (`elapsed_s`). So a stopped or dead
-//!   owner does not use the 15 min of the question.
-//! - fleetd rings the live process of the feature with the doorbell (FR-7):
-//!   1 `doorbell` event of the attempt that names the open questions it
-//!   announces, and 1 [`Ring`] for part 3. Each process of the feature gets
-//!   1 ring for each open question, so the delivery repeats to each new
-//!   process until an answer is recorded.
-//! - At its limit (`clock >= due_at`), an open question goes to
-//!   `escalated`, with 1 `blocked` event of its task and 1 needs-you item
-//!   [`needs_you_key`]; the needs-you mirror gives the herdr notification
-//!   (ticket 21). The wait for you has no limit: the task stays in
-//!   `blocked_on_user` until an answer is recorded
-//!   ([`super::questions::answered`]), which resolves the item.
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Context, Result};
@@ -52,25 +20,18 @@ use crate::fleetd::task_execution::adapters::sqlite as attempts;
 use crate::fleetd::task_execution::domain::task::AttemptState;
 use crate::taskledger::model::{Actor, EventKind};
 
-/// The kind of the row of `pass_cursors` of the question flow.
 pub const CURSOR: &str = "questions";
 
-/// The kind of the needs-you item of an escalated question.
 pub const NEEDS_YOU_KIND: &str = "question";
 
-/// The owner of the questions of feature `feature_id`: its
-/// sub-orchestrator, `idea-lead:<feature id>`.
 pub fn owner_of(feature_id: &str) -> String {
     format!("{PERSONA}:{feature_id}")
 }
 
-/// The key of the needs-you item of the question `id`.
 pub fn needs_you_key(id: &str) -> String {
     format!("{NEEDS_YOU_KIND}:{id}")
 }
 
-/// The feature of the idea of task `task_id`, or `None` when the task has
-/// no idea (an imported task).
 pub fn feature_of_task(conn: &Connection, task_id: &str) -> Result<Option<String>> {
     let Some(idea) = attempts::idea_of_task(conn, task_id)? else {
         return Ok(None);
@@ -78,53 +39,35 @@ pub fn feature_of_task(conn: &Connection, task_id: &str) -> Result<Option<String
     Ok(ideas_store::idea(conn, &idea)?.map(|i| i.feature_id))
 }
 
-/// What 1 pass needs besides the ledger.
 pub struct Flow<'a> {
-    /// The generation of the fleetd that writes.
     pub guard: Option<Generation>,
-    /// The fleet clock of the pass.
     pub clock: FleetSeconds,
-    /// The seconds that the tick of this pass added to the fleet clock.
     pub elapsed_s: i64,
-    /// The time stamp of the pass, for the cursor.
     pub stamp: &'a str,
     pub budget: PassBudget,
 }
 
-/// 1 doorbell to type after the commit: the event row, and the pane of the
-/// live process of the feature.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ring {
     pub attempt: String,
     pub pane: String,
-    /// The id of the `doorbell` event.
     pub event: i64,
-    /// The open questions that the ring announces, oldest first.
     pub questions: Vec<String>,
 }
 
-/// What 1 pass did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Flowed {
     pub rings: Vec<Ring>,
-    /// The questions that went to you.
     pub escalated: Vec<String>,
-    /// The questions that got a new owner.
     pub moved: Vec<String>,
 }
 
-/// The live process of a feature.
 #[derive(Debug, Clone)]
 struct Owner {
     attempt: String,
     pane: Option<String>,
 }
 
-/// The question flow of 1 pass, in the transaction `tx` of part 2: the
-/// limits of the questions whose owner does not run move later; then, for
-/// the open questions of the work budget from the cursor [`CURSOR`], each
-/// follows the feature of its task, escalates at its limit, or is rung to
-/// the live process of its feature.
 pub fn run(tx: &Transaction<'_>, ctx: &Flow<'_>) -> Result<Flowed> {
     let mut owners: BTreeMap<String, Option<Owner>> = BTreeMap::new();
     if ctx.elapsed_s > 0 {
@@ -181,9 +124,6 @@ pub fn run(tx: &Transaction<'_>, ctx: &Flow<'_>) -> Result<Flowed> {
     Ok(out)
 }
 
-/// Give the question `q` the feature `feature_id` and its owner, with 1
-/// `question` event of its task whose cause is `why` and names both
-/// owners, in the open transaction `tx`. `false` when `q` has that owner.
 pub fn move_to_feature(
     tx: &Connection,
     guard: Option<Generation>,
@@ -213,7 +153,6 @@ pub fn move_to_feature(
     Ok(true)
 }
 
-/// `q` with the feature of the idea of its task, when that moved.
 fn follow_task(tx: &Connection, ctx: &Flow<'_>, q: Question, out: &mut Flowed) -> Result<Question> {
     let Some(feature) = feature_of_task(tx, &q.task_id)? else {
         return Ok(q);
@@ -230,7 +169,6 @@ fn follow_task(tx: &Connection, ctx: &Flow<'_>, q: Question, out: &mut Flowed) -
     })
 }
 
-/// The live process of `feature`, read once in a pass.
 fn owner(
     conn: &Connection,
     owners: &mut BTreeMap<String, Option<Owner>>,
@@ -254,8 +192,6 @@ fn owner(
     Ok(found)
 }
 
-/// The questions that a `doorbell` event of the attempt `attempt`
-/// announced.
 fn rung(conn: &Connection, attempt: &str) -> Result<BTreeSet<String>> {
     let mut out = BTreeSet::new();
     for f in door::facts_of(conn, Entity::Attempt, attempt, EventKind::Doorbell)? {
@@ -266,8 +202,6 @@ fn rung(conn: &Connection, attempt: &str) -> Result<BTreeSet<String>> {
     Ok(out)
 }
 
-/// 1 `doorbell` event of the attempt `attempt` that announces `questions`.
-/// The id of the event.
 fn ring(tx: &Connection, ctx: &Flow<'_>, attempt: &str, questions: &[String]) -> Result<i64> {
     let text = format!(
         "the sub-orchestrator has {} new open questions",
@@ -289,8 +223,6 @@ fn ring(tx: &Connection, ctx: &Flow<'_>, attempt: &str, questions: &[String]) ->
         .context("the doorbell event that this pass recorded")
 }
 
-/// The open question `q` goes to you: `escalated`, 1 `blocked` event of
-/// its task and 1 needs-you item.
 fn escalate(tx: &Connection, ctx: &Flow<'_>, q: &Question) -> Result<()> {
     if !store::set_escalated(tx, &q.id)? {
         return Ok(());

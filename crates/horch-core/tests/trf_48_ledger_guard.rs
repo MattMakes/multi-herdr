@@ -1,15 +1,9 @@
-//! TRF-48: a development build of horch never migrates the operator's
-//! shared ledger, every migration of an existing file keeps a backup, and
-//! the "newer schema" error names that backup.
-
 use std::path::{Path, PathBuf};
 
 use horch_core::taskledger::schema;
 use horch_core::taskledger::store::{self, migrate_refusal, Store};
 use rusqlite::Connection;
 
-/// A version 6 ledger at `path`, built by the real steps, with 1 project
-/// row.
 fn version_6_file(path: &Path) {
     let mut conn = Connection::open(path).unwrap();
     schema::migrate_to(&mut conn, 6).unwrap();
@@ -24,7 +18,6 @@ fn user_version(path: &Path) -> i64 {
         .unwrap()
 }
 
-/// The backup files in `dir`, sorted by name.
 fn backups(dir: &Path) -> Vec<String> {
     let mut names: Vec<String> = std::fs::read_dir(dir)
         .unwrap()
@@ -82,19 +75,16 @@ fn trf_48_opt_in_and_scratch_ledgers_migrate() {
     let shared = store::default_path(home);
     let dev = Path::new("/Users/op/src/horch/target/debug/horch");
     let installed = Path::new("/Users/op/.local/bin/horch");
-    // The opt-in.
     assert_eq!(
         migrate_refusal(dev, &shared, Some(home), Some("1"), 6),
         None
     );
     assert!(migrate_refusal(dev, &shared, Some(home), Some("0"), 6).is_some());
     assert!(migrate_refusal(dev, &shared, Some(home), Some(""), 6).is_some());
-    // An installed horch.
     assert_eq!(
         migrate_refusal(installed, &shared, Some(home), None, 6),
         None
     );
-    // A scratch ledger (HORCH_LEDGER_DB, a temp dir, a test HOME).
     for other in [
         "/tmp/scratch/ledger.sqlite3",
         "/Users/op/.horch/scratch.sqlite3",
@@ -106,11 +96,8 @@ fn trf_48_opt_in_and_scratch_ledgers_migrate() {
             "{other}"
         );
     }
-    // No passwd home: nothing is shared.
     assert_eq!(migrate_refusal(dev, &shared, None, None, 6), None);
 
-    // A real open by this test binary (a dev build in target/*/deps/) of a
-    // version 6 file outside the passwd home migrates it.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join(".horch").join("ledger.sqlite3");
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -125,7 +112,6 @@ fn trf_48_migration_writes_a_backup_and_keeps_3() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("ledger.sqlite3");
     version_6_file(&path);
-    // 3 older backups: the migration adds 1 and removes the oldest.
     let older = [
         "ledger.v4-backup-20240101T000000Z.sqlite3",
         "ledger.v5-backup-20250101T000000Z.sqlite3",
@@ -134,7 +120,6 @@ fn trf_48_migration_writes_a_backup_and_keeps_3() {
     for name in older {
         std::fs::write(dir.path().join(name), b"old").unwrap();
     }
-    // A file that is not a backup stays.
     std::fs::write(dir.path().join("ledger.v6-notes.txt"), b"x").unwrap();
 
     Store::open(&path).unwrap();
@@ -145,11 +130,9 @@ fn trf_48_migration_writes_a_backup_and_keeps_3() {
     let new = &names[2];
     assert!(new.starts_with("ledger.v6-backup-2"), "{new}");
     assert!(new.ends_with("Z.sqlite3"), "{new}");
-    // yyyymmddTHHMMSSZ
     let stamp = &new["ledger.v6-backup-".len()..new.len() - ".sqlite3".len()];
     assert_eq!(stamp.len(), 16, "{stamp}");
     assert_eq!(&stamp[8..9], "T", "{stamp}");
-    // The backup is the version 6 file with its rows.
     let copy = dir.path().join(new);
     assert_eq!(user_version(&copy), 6);
     let rows: i64 = Connection::open(&copy)
@@ -159,7 +142,6 @@ fn trf_48_migration_writes_a_backup_and_keeps_3() {
     assert_eq!(rows, 1);
     assert!(dir.path().join("ledger.v6-notes.txt").exists());
 
-    // A fresh file and a no-op open write no backup.
     let fresh_dir = tempfile::tempdir().unwrap();
     let fresh = fresh_dir.path().join("ledger.sqlite3");
     Store::open(&fresh).unwrap();
@@ -177,14 +159,12 @@ fn trf_48_newer_schema_error_names_the_backup() {
         .unwrap();
     drop(conn);
 
-    // No backup: self-update is 1 option of 2.
     let text = format!("{:#}", Store::open(&path).err().unwrap());
     assert!(text.contains("newer or development horch"), "{text}");
     assert!(text.contains("horch self-update"), "{text}");
     assert!(!text.contains("backup"), "{text}");
     assert_eq!(text.lines().count(), 2, "{text}");
 
-    // The newest backup by name.
     for name in [
         "ledger.v6-backup-20261106T000200Z.sqlite3",
         "ledger.v5-backup-20251106T000200Z.sqlite3",

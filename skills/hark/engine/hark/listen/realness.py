@@ -67,9 +67,6 @@ class ModelMissing(FileNotFoundError):
     """The realness model file is absent."""
 
 
-# ================================================================ model
-
-
 def load_model(fpath: str | Path | None = None, resolve: bool = True) -> dict:
     """The realness model file as a dict. A zero-shot model gets its prompt embeddings when ``resolve``."""
     pth = Path(fpath) if fpath else MODEL_PATH
@@ -137,9 +134,6 @@ def verdict_of(pth: float, th: Mapping[str, float]) -> str:
     if pth >= th["hi"]:
         return REAL
     return SYNTH if pth <= th["lo"] else UNCERTAIN
-
-
-# ================================================================ signal measurements (R3)
 
 
 def _frames(yv: numpy.ndarray, count: int, hop: int | None = None) -> numpy.ndarray:
@@ -272,7 +266,7 @@ def _crest(yv: numpy.ndarray) -> float:
 
 def _analysis_signal(sig: numpy.ndarray) -> numpy.ndarray:
     """The clip peak-normalised, resampled to the analysis rate and normalised again."""
-    pre = sig / numpy.max(numpy.abs(sig))  # level-free before the float32 resampler, so level never matters
+    pre = sig / numpy.max(numpy.abs(sig))
     yv = numpy.asarray(audio.resample(pre.astype(numpy.float32), SR, ANALYSIS_SR), numpy.float64)
     return yv / (numpy.max(numpy.abs(yv)) + 1e-12)
 
@@ -320,9 +314,6 @@ def pure_tone(x_or_feats: numpy.ndarray | Mapping[str, float] | None) -> bool:
             and (not numpy.isfinite(wob) or wob <= -1.0))
 
 
-# ================================================================ lift and clips
-
-
 def lift_gain(sig: numpy.ndarray) -> float:
     """The quiet-source gain in dB (R1); 0 when no lift applies."""
     sig = numpy.asarray(sig, numpy.float64)
@@ -353,9 +344,6 @@ def clips_of(sig: numpy.ndarray) -> list[tuple[float, float, numpy.ndarray]]:
         return [(0.0, count / SR, sig)]
     win_n = int(WIN_S * SR)
     return [(sv / SR, (sv + win_n) / SR, sig[sv:sv + win_n]) for sv in clip_starts(count)]
-
-
-# ================================================================ facts and words
 
 
 def pct(vec: float) -> str:
@@ -423,9 +411,6 @@ def _pure_fact() -> dict:
             "oscillator (99% rule)"}
 
 
-# ================================================================ clip scoring
-
-
 def _score_clip(model: dict, emb: numpy.ndarray, feats: dict) -> dict:
     lc = head_logit(model["heads"]["clap"], emb)
     ls = head_logit(model["heads"]["signal"], signal_vector(feats))
@@ -466,9 +451,6 @@ def _ast_line(clip: numpy.ndarray) -> str:
     best_n = model.top(pth, k=3)
     return ("AudioSet synth classes: " + ", ".join(f"{lab} {pp:.2f}" for pp, lab in syn) +
             "; top classes: " + ", ".join(f"{lab} {pp:.2f}" for lab, pp in best_n))
-
-
-# ================================================================ realness of one file
 
 
 def _name(fpath: str, t_from: float | None, t_to: float | None, secs: float) -> str:
@@ -738,9 +720,6 @@ def realness(path: str, start: float | None = None, end: float | None = None, as
     return row_
 
 
-# ================================================================ many files
-
-
 def _error_row(fpath: str, why: str) -> dict:
     return {"path": fpath, "p_real": None, "verdict": ERROR, "why": why[:200],
             "summary": f"{os.path.basename(fpath) or fpath}: error: {why[:200]}"}
@@ -768,7 +747,7 @@ def realness_many(paths: Sequence[str], ast: bool = False, start: float | None =
     for fv in files:
         try:
             records.append(realness(fv, start=start, end=end, ast=ast))
-        except Exception as exc:  # one bad file never stops the batch
+        except Exception as exc:
             records.append(_error_row(fv, f"{type(exc).__name__}: {voc.first_line(exc)}"))
     records += bad
     counts = {vec: sum(row_["verdict"] == vec for row_ in records) for vec in VERDICTS}
@@ -787,9 +766,6 @@ def many_summary(count: int, counts: Mapping[str, int], t_from: float | None, t_
     if t_from is not None or t_to is not None:
         rng = f" (each judged over {t_from or 0:g}-{'end' if t_to is None else f'{t_to:g}'} s)"
     return f"{count} files: " + ", ".join(pieces) + rng + "."
-
-
-# ================================================================ text output
 
 
 def _segment_line(grp: dict) -> str:
@@ -823,9 +799,6 @@ def table_text(result: dict, model: Mapping | None = None) -> str:
         low = f" [{row_['synth_windows']} low window(s)]" if row_.get("synth_windows") else ""
         lines.append(f"{pth:>6}  {row_['verdict']}{kind}  {os.path.basename(row_['path'])}{low}  {row_.get('why', '')}")
     return "\n".join(lines)
-
-
-# ================================================================ CLI
 
 
 def _bad_paths(paths: Sequence[str]) -> list[tuple[str, str]]:

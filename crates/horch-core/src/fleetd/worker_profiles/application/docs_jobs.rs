@@ -1,12 +1,3 @@
-//! Queue the `docs_sync` and `conformance` jobs of each CLI through
-//! [`jobs::queue`], with no repository (fleetd-p7 ticket 28). The rules are
-//! in [`crate::fleetd::worker_profiles::domain::docs_jobs`].
-//!
-//! The pass gives the facts: the fleet clock, the binary id of the horch
-//! binary that runs fleetd, and 1 [`CliBinary`] for each CLI that the scan
-//! of the CLI binaries read ([`scan_cli`]). Docs sync and conformance read
-//! the installed binary and never update it (preservation row 06 S7).
-
 use std::path::Path;
 
 use anyhow::Result;
@@ -23,21 +14,14 @@ use crate::fleetd::worker_profiles::domain::docs_jobs::{
 };
 use crate::harness::HarnessKind;
 
-/// The count of hex digits of a binary id.
 const BINARY_ID_LEN: usize = 16;
 
-/// The docs source of each CLI with an exec adapter, with its harness: the
-/// 3 CLIs of the adapter table (MAP.md Q5). Each other docs source (herdr)
-/// has no conformance suite.
 const EXEC_SOURCES: [(&str, HarnessKind); 3] = [
     ("claude", HarnessKind::Claude),
     ("codex", HarnessKind::Codex),
     ("agy", HarnessKind::Antigravity),
 ];
 
-/// The harness of the docs source `cli` when it has an exec adapter, and
-/// so a conformance suite: the docs source `agy` is the CLI of the harness
-/// `antigravity`.
 pub fn exec_harness(cli: &str) -> Option<HarnessKind> {
     EXEC_SOURCES
         .iter()
@@ -45,15 +29,12 @@ pub fn exec_harness(cli: &str) -> Option<HarnessKind> {
         .map(|(_, kind)| *kind)
 }
 
-/// A CLI and the binary id of its binary now: 1 fact of the scan of the
-/// CLI binaries.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CliBinary {
     pub cli: String,
     pub binary_id: String,
 }
 
-/// What 1 pass queued for 1 run of a CLI.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueuedDocsJob {
     pub kind: Kind,
@@ -62,9 +43,6 @@ pub struct QueuedDocsJob {
     pub queued: Queued,
 }
 
-/// The binary id of the file at `path`: the hash of its identity (path,
-/// size and modification time), or `None` when it cannot be read. The
-/// horch binary and each CLI binary have one.
 pub fn binary_id(path: &Path) -> Option<String> {
     let id = exe_identity(path)?;
     let hash = Sha256::digest(format!("{}\0{}\0{}", id.path, id.len, id.mtime_ns));
@@ -72,9 +50,6 @@ pub fn binary_id(path: &Path) -> Option<String> {
     Some(hex[..BINARY_ID_LEN].to_string())
 }
 
-/// The fact of the CLI `cli` whose binary is at `path`, or `None` when the
-/// binary cannot be read. A CLI with no fact gets no run: a fact that is
-/// unknown does not hold.
 pub fn scan_cli(cli: &str, path: &Path) -> Option<CliBinary> {
     Some(CliBinary {
         cli: cli.to_string(),
@@ -82,9 +57,6 @@ pub fn scan_cli(cli: &str, path: &Path) -> Option<CliBinary> {
     })
 }
 
-/// Queue the runs that the rules ask for, for each CLI of `clis`, in `tx`
-/// at `clock` (part 2 of a pass). `horch_id` is the binary id of the horch
-/// binary that runs this fleetd.
 pub fn queue_docs_jobs(
     ctx: &JobCtx<'_>,
     tx: &Connection,
@@ -126,13 +98,10 @@ pub fn queue_docs_jobs(
     Ok(out)
 }
 
-/// The last run of `kind` of the CLI `cli`, of any binary id.
 fn last_run(tx: &Connection, kind: Kind, cli: &str) -> Result<Option<LastRun>> {
     Ok(store::last_of_word(tx, kind, cli)?.map(|r| as_last_run(&r)))
 }
 
-/// The row `r` as the rules read it. Its start on the fleet clock is its
-/// deadline less its time limit.
 fn as_last_run(r: &JobRow) -> LastRun {
     let limit = i64::try_from(r.time_limit_s).unwrap_or(i64::MAX);
     LastRun {

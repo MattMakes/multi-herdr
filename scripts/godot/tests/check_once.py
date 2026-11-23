@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import copy
 
-# The fields that say where a block is; a check does not set them.
 PLACE = {"path", "line", "code"}
 
 

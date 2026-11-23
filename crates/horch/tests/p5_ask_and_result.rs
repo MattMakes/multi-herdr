@@ -1,15 +1,3 @@
-//! `horch ask`, the QUESTION line of `horch tell`, `horch result` and the
-//! top-level `horch done` of a worker write through the outbox writer of
-//! the own attempt (FR-7, RR-5; ticket 28 of fleetd-p5,
-//! `docs/tickets/fleetd-p5/MAP.md` Q3 and Q5).
-//!
-//! Each test runs the development `horch` with temporary
-//! `HORCH_DATA_DIR`, `HORCH_STATE_DIR`, `HORCH_LEDGER_DB` and fleet root.
-//! The stand-in wrapper is a real `sh` process: the test records it as the
-//! wrapper of a live attempt, then the `sh` runs `horch` as its child. No
-//! test sets `HORCH_WORKER_ID` or `HORCH_TASK_YAML`: the command finds its
-//! attempt by its parent chain only.
-
 #![cfg(unix)]
 
 use std::io::Write as _;
@@ -26,8 +14,6 @@ const AT: &str = "2026-11-18T12:00:00Z";
 const TASK: &str = "T-1";
 const NO_LIVE_ATTEMPT: &str = "no live attempt of this process";
 
-/// A temp ledger with the schema of today, a fleet root and a fake herdr
-/// with no pane.
 struct World {
     temp: tempfile::TempDir,
 }
@@ -75,8 +61,6 @@ impl World {
         self.outbox().join("questions")
     }
 
-    /// Record the live attempt `T-1/A1` whose wrapper is `pid`, and make its
-    /// attempt folder, as fleetd does. Its outbox is not made.
     fn live(&self, pid: u32) {
         let start = process::start_time(pid).expect("the start time of the wrapper");
         let conn = Connection::open(self.ledger()).unwrap();
@@ -96,7 +80,6 @@ impl World {
         std::fs::create_dir_all(self.outbox().parent().unwrap()).unwrap();
     }
 
-    /// The development `horch` with `args` and only temporary folders.
     fn horch(&self, args: &[&str]) -> Command {
         let root = self.root();
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_horch"));
@@ -120,9 +103,6 @@ impl World {
         cmd
     }
 
-    /// Run `horch args` as the child of a stand-in wrapper of `T-1/A1`. The
-    /// wrapper `sh` waits for 1 line on its stdin, so the test records it
-    /// before `horch` starts.
     fn in_attempt(&self, args: &[&str]) -> Output {
         let horch = self.horch(&[]);
         let mut sh = Command::new("sh");
@@ -144,7 +124,6 @@ impl World {
     }
 }
 
-/// Send the line that starts the wrapper, and wait for its end.
 fn go(mut wrapper: Child) -> Output {
     let mut stdin = wrapper.stdin.take().unwrap();
     stdin.write_all(b"go\n").unwrap();
@@ -175,7 +154,6 @@ fn mode_of(path: &Path) -> u32 {
     std::fs::metadata(path).unwrap().permissions().mode() & 0o777
 }
 
-/// The names of the files in `dir`, sorted.
 fn names(dir: &Path) -> Vec<String> {
     let mut names: Vec<String> = std::fs::read_dir(dir)
         .map(|entries| {
@@ -237,10 +215,8 @@ fn question_line_of_tell_writes_the_same_question_file() {
             .contains("QUESTION: which port? I recommend 8080."),
         "{q}"
     );
-    // The same writer numbers the files: the next ask is file 2.
     assert_ok(&w.in_attempt(&["ask", "And the host?"]));
     assert_eq!(names(&w.questions()), ["1.json", "2.json"]);
-    // A NOTE line asks nothing.
     w.in_attempt(&["tell", "orchestrator", "NOTE: the build passes."]);
     assert_eq!(names(&w.questions()), ["1.json", "2.json"]);
 }
@@ -271,7 +247,6 @@ fn result_writes_through_the_outbox_writer() {
         serde_json::json!(["0123456789abcdef0123456789abcdef01234567"])
     );
     assert_eq!(r["files_changed"], serde_json::json!(["src/parse.rs"]));
-    // result.json is written 1 time.
     let again = w.in_attempt(&[
         "result",
         "--status",
@@ -283,7 +258,6 @@ fn result_writes_through_the_outbox_writer() {
     ]);
     assert_eq!(again.status.code(), Some(1), "{}", text(&again.stderr));
     assert_eq!(result(&w)["status"], "completed");
-    // --check sees the result of the own attempt.
     assert_ok(&w.in_attempt(&["result", "--check"]));
 }
 
@@ -301,7 +275,6 @@ fn horch_done_of_a_worker_writes_result_completed() {
 #[test]
 fn ask_outside_an_attempt_is_refused() {
     let w = world();
-    // The attempt is live, but its wrapper is not a parent of this process.
     let other = Command::new("sh")
         .args(["-c", "read go"])
         .stdin(Stdio::piped())

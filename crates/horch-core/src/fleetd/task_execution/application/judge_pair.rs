@@ -1,31 +1,3 @@
-//! The judge pair in the verifier (ticket 41 of fleetd-p6).
-//!
-//! `docs/specs/fleetd/design.md`, "Architecture and roles" (The judge
-//! pair, steps 1 to 7; the rank table), RR-3, FM-9, FM-33 and decision D4;
-//! `docs/tickets/fleetd-p6/MAP.md`, Q18.
-//!
-//! - A task of a judgment kind waits in `verifying` after its structural
-//!   check passed. Only [`judge_done`] lets the verifier move it to `done`.
-//! - The verifier gives the verdict of each judge task that passed its
-//!   structural check to [`settle`], in the transaction that records the
-//!   structural verdict. The verdict stands only when the judge branch
-//!   holds the tip that the newest verdict of the judged task judged.
-//! - No open CRITICAL item: the judge task moves to `done`, then the judged
-//!   task. The landing then moves each task branch to `ready`.
-//! - An open CRITICAL item: the judge attempt ends `critical_open`, which
-//!   burns no attempt. Below [`FIX_ROUND_LIMIT`] fix rounds, the judged
-//!   task gets 1 more fix round and moves to `ready` for a fix attempt that
-//!   takes no attempt of `max_attempts`, and the judge task moves to
-//!   `pending` until the fix attempt passes its structural check. At the
-//!   limit, both tasks move to `escalated` with 1 needs-you item.
-//! - A HIGH item never blocks. Each HIGH item gets the id
-//!   `<judge attempt>:H<n>`, goes to the decision log of the feature, and
-//!   rings the live sub-orchestrator of the feature. It fixes the item with
-//!   a replan or dismisses it with `horch idea note --dismiss`.
-//! - The judge of a fix round checks only the earlier CRITICAL items and
-//!   the change, so it cannot raise a MEDIUM or LOW item: [`settle`] drops
-//!   them and logs them in 1 `note` event of the judge task.
-
 use anyhow::{bail, Context, Result};
 use rusqlite::{params, Connection};
 use serde_json::json;
@@ -51,73 +23,41 @@ use crate::taskledger::model::{Actor, EventKind, TaskKind, TaskStatus};
 use crate::taskledger::tasks::{self, Task};
 use crate::taskledger::util;
 
-/// The most fix rounds of a judge pair (fixed contract, D4).
 pub const FIX_ROUND_LIMIT: i64 = 2;
 
-/// The kind of the needs-you item of a judge pair past its fix rounds.
 pub const ESCALATED_KIND: &str = "judge_escalated";
 
-/// The kind of the needs-you item of the HIGH items of a judged task with
-/// no feature: no sub-orchestrator owns them.
 pub const HIGH_KIND: &str = "judge_high";
 
-/// The key of the needs-you item of the judged task `judged` past its fix
-/// rounds.
 pub fn escalated_key(judged: &str) -> String {
     format!("{ESCALATED_KIND}:{judged}")
 }
 
-/// What [`settle`] did with the pair.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Step {
-    /// No open CRITICAL item: the judge task and the judged task are
-    /// `done`.
     Done,
-    /// An open CRITICAL item started the fix round `n`.
     FixRound(i64),
-    /// An open CRITICAL item after [`FIX_ROUND_LIMIT`] fix rounds: both
-    /// tasks are `escalated`.
     Escalated,
-    /// The verdict does not stand for the judged task now: nothing moved.
     Waits,
 }
 
-/// What [`settle`] did with 1 verdict of a judge task.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Settled {
-    /// The judged task.
     pub judged: String,
     pub step: Step,
-    /// The entry of the HIGH items in the decision log of the feature, to
-    /// write after the commit.
     pub decision: Option<DecisionLog>,
-    /// The doorbell of the HIGH items to the live sub-orchestrator of the
-    /// feature, to type after the commit.
     pub ring: Option<Ring>,
-    /// The MEDIUM and LOW items of the judge of a fix round, dropped.
     pub dropped: Vec<Finding>,
 }
 
-/// What [`settle`] reads besides the ledger.
 pub struct Judging<'a> {
-    /// The generation of the fleetd that writes.
     pub guard: Option<Generation>,
-    /// The fleet clock of the pass, for a doorbell.
     pub clock: FleetSeconds,
-    /// The structural verdict of the judge attempt, recorded in the same
-    /// transaction.
     pub judge: &'a Verified,
-    /// The verdict file of the judge attempt.
     pub verdict: &'a Verdict,
-    /// The tip of the judged branch that the judge branch holds: the tip of
-    /// the newest verdict of the judged task, when the judge branch holds
-    /// it.
     pub held: Option<&'a str>,
 }
 
-/// The verdict of the outputs of a judge task whose structural check
-/// passed: the findings of each verdict file, `critical_open` when 1 file
-/// has it. `None` when no output is a verdict file.
 pub fn verdict_of(outputs: &[Output]) -> Option<Verdict> {
     let mut all: Option<Verdict> = None;
     let texts = outputs
@@ -139,8 +79,6 @@ pub fn verdict_of(outputs: &[Output]) -> Option<Verdict> {
     all
 }
 
-/// The judge tasks of the judged task `judged` that are not cancelled
-/// (the rule of `judged_task`), with their status.
 fn judges_of(conn: &Connection, judged: &str) -> Result<Vec<(String, String)>> {
     let mut stmt = conn.prepare(
         "SELECT task_id, status FROM tasks
@@ -159,15 +97,11 @@ fn judges_of(conn: &Connection, judged: &str) -> Result<Vec<(String, String)>> {
     Ok(rows)
 }
 
-/// Whether the judge task of `judged` is `done`: only then does the
-/// judged task leave `verifying` for `done`. `false` with no judge task.
 pub fn judge_done(conn: &Connection, judged: &str) -> Result<bool> {
     let judges = judges_of(conn, judged)?;
     Ok(!judges.is_empty() && judges.iter().all(|(_, s)| s == TaskStatus::Done.as_str()))
 }
 
-/// The judge pair of the judge task `judge`, after its verdict file passed
-/// its structural check, in the open transaction `tx`.
 pub fn settle(tx: &Connection, j: &Judging<'_>, judge: &Task) -> Result<Settled> {
     let judged_id = judged_task(&judge.kind, judge.parent_task_id.as_deref())
         .with_context(|| format!("{} is not a judge task", judge.short()))?;
@@ -215,14 +149,16 @@ pub fn settle(tx: &Connection, j: &Judging<'_>, judge: &Task) -> Result<Settled>
     Ok(s)
 }
 
-/// The verifier moves `task` to `done` for `verified`. The facts were read
-/// in this transaction, so a refusal is a fault.
 fn done(tx: &Connection, guard: Option<Generation>, verified: Verified, task: &Task) -> Result<()> {
     let tip = verified.tip().to_string();
     if !verifier::done(tx, guard, verified, &tip)? {
         bail!("the judge pair cannot move {} to done", task.short());
     }
     Ok(())
+}
+
+pub fn in_fix_round(conn: &Connection, task_id: &str) -> Result<bool> {
+    Ok(fix_rounds(conn, task_id)? > 0)
 }
 
 fn fix_rounds(conn: &Connection, task_id: &str) -> Result<i64> {
@@ -240,8 +176,6 @@ fn by_fleetd(text: &str) -> Cause<'_> {
     }
 }
 
-/// The judge attempt and the attempt of the judged result end with the
-/// outcome `critical_open`, which burns no attempt.
 fn end_attempts(tx: &Connection, j: &Judging<'_>, result: &Verified, text: &str) -> Result<()> {
     for id in [j.judge.attempt(), result.attempt()] {
         let a = verifier::attempt(tx, id)?;
@@ -250,8 +184,6 @@ fn end_attempts(tx: &Connection, j: &Judging<'_>, result: &Verified, text: &str)
     Ok(())
 }
 
-/// No attempt is burned: the next attempt adds 1 to `attempts`, and the
-/// floor moves with it. A fix round of `judged` adds 1 to `fix_rounds`.
 fn give_back(tx: &Connection, task_id: &str, fix_round: bool) -> Result<()> {
     tx.execute(
         "UPDATE tasks SET attempt_floor = attempt_floor + 1, fix_rounds = fix_rounds + ?2,
@@ -281,9 +213,6 @@ fn move_task(
     Ok(())
 }
 
-/// Step 5: the judged task moves to `ready` for its fix attempt, and the
-/// judge task to `pending` until the fix attempt passes its structural
-/// check.
 fn fix_round(
     tx: &Connection,
     j: &Judging<'_>,
@@ -304,8 +233,6 @@ fn fix_round(
     move_task(tx, j.guard, &judge.task_id, TaskStatus::Pending, &text)
 }
 
-/// Step 7: after [`FIX_ROUND_LIMIT`] fix rounds both tasks move to
-/// `escalated`, and 1 needs-you item goes to you.
 fn escalate(
     tx: &Connection,
     j: &Judging<'_>,
@@ -338,7 +265,6 @@ fn escalate(
     )
 }
 
-/// 1 `note` event of the judge task logs the `dropped` items.
 fn log_dropped(tx: &Connection, j: &Judging<'_>, judge: &Task, dropped: &[Finding]) -> Result<()> {
     let items: Vec<String> = dropped.iter().map(item).collect();
     let text = format!(
@@ -360,7 +286,6 @@ fn log_dropped(tx: &Connection, j: &Judging<'_>, judge: &Task, dropped: &[Findin
     Ok(())
 }
 
-/// `[RANK] text` of `f`, on 1 line.
 fn item(f: &Finding) -> String {
     let rank = match f.rank {
         Rank::Critical => "CRITICAL",
@@ -371,9 +296,6 @@ fn item(f: &Finding) -> String {
     format!("[{rank}] {}", one_line(&f.text))
 }
 
-/// The HIGH items of `kept`: 1 `note` event of the judge task, then 1
-/// entry of the decision log of the feature and 1 doorbell to its live
-/// sub-orchestrator. A judged task with no feature gives 1 needs-you item.
 fn high(
     tx: &Connection,
     j: &Judging<'_>,
@@ -439,9 +361,6 @@ fn high(
     Ok(())
 }
 
-/// 1 doorbell event of the live sub-orchestrator of `feature`, typed after
-/// the commit. `None` when no process of the feature runs: the decision
-/// log holds the items for its next start.
 fn ring(tx: &Connection, j: &Judging<'_>, feature: &str, text: &str) -> Result<Option<Ring>> {
     let Some((attempt, pane)) = live_owner(tx, feature)? else {
         return Ok(None);

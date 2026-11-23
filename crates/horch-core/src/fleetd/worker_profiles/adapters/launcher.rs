@@ -1,20 +1,6 @@
-//! The launcher: it starts a worker or a job process.
-//!
-//! Each process of fleetd starts here (`docs/specs/fleetd/design.md`, SR-7),
-//! through [`horch_platform::start::Command`]. The launcher removes the
-//! forbidden keys with
-//! [`scrub_child_env`](crate::runtime::process::scrub_child_env) and starts
-//! the process as the leader of its own process group.
-//!
-//! Windows gap: Windows has no process groups, and the launcher makes no job
-//! object, so a Windows child stays in the group of fleetd and its
-//! descendants are not killed with it. A job object with kill-on-close does
-//! not fit: it kills a job process when fleetd drops the handle.
-//! `docs/specs/fleetd/preservation-06-wiring-and-platform.md`, section 6, row
-//! "Process groups".
-
 use std::fs::{File, OpenOptions};
 use std::process::{Child, Stdio};
+use std::time::{Duration, Instant};
 
 use horch_platform::group;
 use horch_platform::start::{self, Command};
@@ -25,15 +11,10 @@ use crate::fleetd::worker_profiles::application::ports::{
 };
 use crate::runtime::process::{scrub_child_env, spawn_detached};
 
-/// The [`ProcessHost`] of fleetd.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Launcher;
 
 impl ProcessHost for Launcher {
-    /// A detached process also loses the pane identity of its starter, as
-    /// [`spawn_detached`] does today. A live process whose start time the
-    /// OS does not give is killed, and the launch fails: fleetd cannot
-    /// supervise it. A failed check of whether it exited does the same.
     fn launch(&self, spec: &LaunchSpec) -> Result<Launched, LaunchError> {
         let inside = in_door_transaction();
         debug_assert!(!inside, "a process start inside a ledger transaction");
@@ -42,7 +23,6 @@ impl ProcessHost for Launcher {
         }
         let mut cmd = command(spec)?;
         let mut child = if spec.detach {
-            // A new session makes the child the leader of a new group too.
             spawn_detached(&mut cmd)?
         } else {
             scrub_child_env(&mut cmd);
@@ -50,20 +30,14 @@ impl ProcessHost for Launcher {
             cmd.spawn()?
         };
         let pid = child.id();
-        let pid_start = horch_platform::process::start_time(pid);
-        if pid_start.is_none() {
-            let unreadable = match group::exited_without_reap(&mut child) {
-                Ok(true) => None,
-                Ok(false) => Some(std::io::Error::other(format!(
-                    "the start time of process {pid} is unreadable"
-                ))),
-                Err(e) => Some(e),
-            };
-            if let Some(e) = unreadable {
+        let read = || horch_platform::process::start_time(pid);
+        let pid_start = match start_or_exit(pid, read, || group::exited_without_reap(&mut child)) {
+            Ok(start) => start,
+            Err(e) => {
                 discard(child);
                 return Err(LaunchError::Io(e));
             }
-        }
+        };
         Ok(Launched {
             pid,
             pid_start,
@@ -72,17 +46,36 @@ impl ProcessHost for Launcher {
     }
 }
 
-/// Kill `child` and its group, then reap it. When no kill is sent, the
-/// child is not reaped, so that the launcher never waits for a live
-/// process.
+const EXIT_WINDOW: Duration = Duration::from_secs(1);
+
+fn start_or_exit(
+    pid: u32,
+    mut read: impl FnMut() -> Option<u64>,
+    mut exited: impl FnMut() -> std::io::Result<bool>,
+) -> std::io::Result<Option<u64>> {
+    let deadline = Instant::now() + EXIT_WINDOW;
+    loop {
+        if let Some(start) = read() {
+            return Ok(Some(start));
+        }
+        if exited()? {
+            return Ok(None);
+        }
+        if Instant::now() >= deadline {
+            return Err(std::io::Error::other(format!(
+                "the start time of process {pid} is unreadable"
+            )));
+        }
+        std::thread::yield_now();
+    }
+}
+
 fn discard(mut child: Child) {
     if group::kill_child_group(&mut child) || child.kill().is_ok() {
         let _ = child.wait();
     }
 }
 
-/// The command of `spec`, with the variables of its environment rule and
-/// its output. The caller scrubs the environment after this.
 fn command(spec: &LaunchSpec) -> Result<Command, LaunchError> {
     let mut cmd = start::command(&spec.program);
     cmd.args(&spec.args)
@@ -125,7 +118,6 @@ mod tests {
         }
     }
 
-    /// Kill the group of `launched` and reap it.
     #[cfg(unix)]
     fn stop(mut launched: Launched) {
         horch_platform::group::kill_child_group(&mut launched.child);
@@ -163,9 +155,6 @@ mod tests {
         }
     }
 
-    /// SR-7 through a real launch: this test binary runs again with each
-    /// forbidden name in its environment, as fleetd can have it, and its
-    /// launched children print their env.
     #[test]
     #[cfg(unix)]
     fn launcher_removes_a_forbidden_name_of_the_parent() {
@@ -255,6 +244,52 @@ mod tests {
     }
 
     #[test]
+    fn a_child_in_its_exit_window_is_not_a_failed_launch() {
+        let mut reads = 0;
+        let mut checks = vec![false, true].into_iter();
+        let start = start_or_exit(
+            7,
+            || {
+                reads += 1;
+                None
+            },
+            || Ok(checks.next().unwrap()),
+        );
+        assert_eq!(start.unwrap(), None);
+        assert_eq!(reads, 2);
+    }
+
+    #[test]
+    fn a_second_read_gives_the_start_time() {
+        let mut reads = vec![None, Some(42)].into_iter();
+        let start = start_or_exit(7, || reads.next().unwrap(), || Ok(false));
+        assert_eq!(start.unwrap(), Some(42));
+    }
+
+    #[test]
+    fn a_live_child_with_no_start_time_fails_after_the_exit_window() {
+        let begin = Instant::now();
+        let err = start_or_exit(7, || None, || Ok(false)).unwrap_err();
+        assert!(begin.elapsed() >= EXIT_WINDOW);
+        assert_eq!(err.to_string(), "the start time of process 7 is unreadable");
+    }
+
+    #[test]
+    fn a_failed_exit_check_fails_the_read() {
+        let err = start_or_exit(7, || None, || Err(std::io::Error::other("x"))).unwrap_err();
+        assert_eq!(err.to_string(), "x");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_child_that_exits_at_once_is_launched() {
+        for _ in 0..50 {
+            let mut launched = Launcher.launch(&spec("/usr/bin/true", &[])).unwrap();
+            assert!(launched.child.wait().unwrap().success());
+        }
+    }
+
+    #[test]
     #[cfg_attr(
         debug_assertions,
         should_panic(expected = "a process start inside a ledger transaction")
@@ -262,7 +297,6 @@ mod tests {
     fn launch_inside_a_transaction_is_refused() {
         let dir = tempfile::tempdir().unwrap();
         let mut store = Store::open(&dir.path().join("ledger.sqlite3")).unwrap();
-        // A needs-you item is a door write that needs no run, task or idea.
         let item = Write {
             key: "test:1",
             kind: "test",

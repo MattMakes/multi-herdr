@@ -1,11 +1,3 @@
-//! Turning a [`Teammate`] into an agent-CLI command line.
-//!
-//! One builder per agent, shared by every caller. `horch worker` and
-//! `horch pane-launch` used to construct their own argv, which is how the
-//! orchestrator ended up with an effort level and a model that appeared
-//! nowhere in any file. Everything below is derived from the teammate's
-//! frontmatter; nothing is hard-coded per call site.
-
 use horch_platform::start::Command;
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -32,90 +24,80 @@ use crate::runtime::context::DEFAULT_ENV_YIELD;
 use crate::runtime::BinOverrides;
 use crate::runtime::{HarnessBins, RuntimeContext};
 use crate::workspace::client::WorkspaceClient;
-use crate::workspace::herdr::Herdr;
+use crate::workspace::host::PaneHost;
 
 use super::{Capabilities, CommandSpec, HarnessKind, PrepareRequest, WindowInputs};
 
-/// What a launch reads from its environment: the programs to run, the home
-/// the operator's Claude settings live under, the inherited OpenCode config,
-/// and where the host tools are. Built from a [`RuntimeContext`].
+pub const HC_STATUS_HARNESSES: &[HarnessKind] = &[
+    HarnessKind::Claude,
+    HarnessKind::Codex,
+    HarnessKind::Antigravity,
+];
+
+pub fn refusal_on_hc(kind: HarnessKind) -> Option<String> {
+    if kind == HarnessKind::None || HC_STATUS_HARNESSES.contains(&kind) {
+        None
+    } else {
+        Some(format!(
+            "{kind} does not report its status under hc, so horch cannot deliver to it there; run this fleet in the herdr TUI"
+        ))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct LaunchEnv {
     pub bins: HarnessBins,
-    /// The resolved `horch` executable used by child MCP servers.
     pub horch_exe: PathBuf,
-    /// `$HOME` exactly as set (`Inherited::home_var`).
     pub home: Option<PathBuf>,
-    /// `$OPENCODE_CONFIG_CONTENT`.
     pub opencode_config_content: Option<String>,
-    /// `$PATH`, where a sandboxed launch looks for its helper programs.
     pub path: Option<std::ffi::OsString>,
-    /// `$PATHEXT` (Windows).
     pub pathext: Option<String>,
-    /// The operator's `$BLENDER_PATH`.
     pub blender_path: Option<std::ffi::OsString>,
-    /// Blender's app bundle executable ([`BLENDER_APP`]), the last place a
-    /// `{path_of:blender}` lookup tries. A test leaves it `None`, so it never
-    /// finds the machine's real Blender.
     pub blender_app: Option<PathBuf>,
-    /// The operator's values for the `DEFAULT_ENV_YIELD` names
-    /// (`Inherited::operator_env`): a non-Claude harness default `env` key
-    /// yields to them. An allow-list, so no other variable is carried.
     pub operator_env: BTreeMap<String, String>,
-    /// `$CODEX_HOME`: the codex home whose `config.toml` a codex default
-    /// `-c` pair yields to (`codex::codex_home`).
     pub codex_home: Option<PathBuf>,
-    /// Horch's state root, where a Codex launch finds its v1 model catalog.
     pub state_root: Option<PathBuf>,
-    /// The folder of the task ledger database (`Paths::ledger_db`). A
-    /// sandboxed Claude launch opens it, and the state root, to Bash.
     pub ledger_dir: Option<PathBuf>,
-    /// `$HERDR_SOCKET_PATH`. A sandboxed Claude launch allows Bash to
-    /// connect to it.
-    pub herdr_socket: Option<PathBuf>,
-    /// The task ledger database (`Paths::ledger_db`). A sandboxed Claude
-    /// worker cannot write it or its `-wal`, `-shm` and `-journal` files
-    /// (RR-5).
+    pub backend: crate::runtime::Backend,
+    pub host_sockets: Vec<PathBuf>,
     pub ledger_db: Option<PathBuf>,
-    /// The fleet root of fleetd (`Paths::fleet_root`). A sandboxed Claude
-    /// worker cannot read or write its `run/` folder, or connect to the
-    /// command channel in it (SR-8).
     pub fleet_root: Option<PathBuf>,
-    /// The task folder of the worker's attempt. A sandboxed Claude worker
-    /// writes only it and [`LaunchEnv::worktree`].
     pub task_dir: Option<PathBuf>,
-    /// The worktree of the worker's task.
     pub worktree: Option<PathBuf>,
-    /// The pane's report socket (`messaging::report::socket_path`), for a
-    /// `horch_access: report` launch with a ledger record. Such a launch
-    /// opens only this socket to Bash, and gets no state root, ledger
-    /// folder or other socket.
     pub report_socket: Option<PathBuf>,
-    /// The root of this launch's skills bundle
-    /// (`<state_root>/skill-bundles/<id>/`). [`command_with_skills_in`]
-    /// sets it for a bundle with activated skills. A sandboxed Claude launch
-    /// opens it to read and closes it to write.
     pub skill_bundle: Option<PathBuf>,
-    /// The `$HORCH_TEAMMATES_DIR` the agent sees: the roster it was briefed
-    /// from. A sandboxed `full` Claude launch opens it to read and closes it
-    /// to write, so `horch spawn` works in the pane (ticket 35).
     pub roster_dir: Option<PathBuf>,
-    /// `$CLAUDE_CONFIG_DIR`: where the operator's Claude user settings live.
     pub claude_config_dir: Option<PathBuf>,
-    /// `RuntimeContext.paths.claude_managed_settings`. `None` reads no
-    /// managed settings.
     pub claude_managed_settings: Option<PathBuf>,
-    /// The directory the agent starts in (the bootstrap cwd), whose
-    /// `.claude/` project settings a Claude settings default yields to.
     pub workdir: Option<PathBuf>,
-    /// The launch's native-window decision (CTX-05). A builder applies the
-    /// window only when it is `applied`. Only `run_flow_code` sets it, so a
-    /// command built from [`LaunchEnv::from_context`] alone carries none.
     pub compact_window: Option<WindowDecision>,
 }
 
 impl LaunchEnv {
     pub fn from_context(ctx: &RuntimeContext) -> LaunchEnv {
+        let host_sockets = match ctx.herdr.backend {
+            crate::runtime::Backend::Herdr => {
+                ctx.inherited.herdr_socket_path.iter().cloned().collect()
+            }
+            crate::runtime::Backend::Hc => {
+                let core_socket = ctx.inherited.hc_terminal_socket.clone().unwrap_or_else(|| {
+                    ctx.paths
+                        .default_state_root
+                        .parent()
+                        .unwrap_or(ctx.paths.home.as_path())
+                        .join("herdr-core")
+                        .join("default")
+                        .join("default.sock")
+                });
+                let app_socket = ctx
+                    .inherited
+                    .herdr_app_home
+                    .clone()
+                    .unwrap_or_else(|| ctx.paths.home.join(".config").join("herdr-app"))
+                    .join("herdr-app.sock");
+                vec![core_socket, app_socket]
+            }
+        };
         LaunchEnv {
             bins: ctx.bins.harness.clone(),
             horch_exe: ctx.bins.horch_exe.clone(),
@@ -132,7 +114,8 @@ impl LaunchEnv {
             codex_home: ctx.inherited.codex_home.clone(),
             state_root: Some(ctx.paths.state_root.clone()),
             ledger_dir: ctx.paths.ledger_db.parent().map(Path::to_path_buf),
-            herdr_socket: ctx.inherited.herdr_socket_path.clone(),
+            backend: ctx.herdr.backend,
+            host_sockets,
             ledger_db: Some(ctx.paths.ledger_db.clone()),
             fleet_root: Some(ctx.paths.fleet_root.clone()),
             task_dir: None,
@@ -147,8 +130,6 @@ impl LaunchEnv {
         }
     }
 
-    /// The bare program names, no home and no inherited config: what a unit
-    /// test launches with, whatever the process environment holds.
     #[cfg(test)]
     pub(crate) fn for_test() -> LaunchEnv {
         LaunchEnv {
@@ -156,7 +137,7 @@ impl LaunchEnv {
             horch_exe: PathBuf::from("horch"),
             home: None,
             opencode_config_content: None,
-            path: None,
+            path: Some(test_sandbox_tools_path()),
             pathext: None,
             blender_path: None,
             blender_app: None,
@@ -164,7 +145,8 @@ impl LaunchEnv {
             codex_home: None,
             state_root: None,
             ledger_dir: None,
-            herdr_socket: None,
+            backend: crate::runtime::Backend::Herdr,
+            host_sockets: Vec::new(),
             ledger_db: None,
             fleet_root: Some(PathBuf::from("/fleet")),
             task_dir: None,
@@ -182,15 +164,32 @@ impl LaunchEnv {
     pub fn home(&self) -> Option<&Path> {
         self.home.as_deref()
     }
+}
 
-    /// `~/` in a teammate path, expanded against [`LaunchEnv::home`].
+#[cfg(test)]
+fn test_sandbox_tools_path() -> std::ffi::OsString {
+    static PATH: std::sync::OnceLock<std::ffi::OsString> = std::sync::OnceLock::new();
+    PATH.get_or_init(|| {
+        let exe = std::env::current_exe().unwrap();
+        let dir = exe.with_file_name("horch-test-sandbox-tools");
+        if !dir.is_dir() {
+            let own =
+                exe.with_file_name(format!("horch-test-sandbox-tools.{}", std::process::id()));
+            super::claude::sandbox_tools_path(&own, true);
+            if std::fs::rename(&own, &dir).is_err() {
+                std::fs::remove_dir_all(&own).unwrap();
+            }
+        }
+        std::env::join_paths([&dir]).unwrap()
+    })
+    .clone()
+}
+
+impl LaunchEnv {
     pub(crate) fn expand_home(&self, path: &str) -> PathBuf {
         crate::roster::expand_home(path, self.home())
     }
 
-    /// The executable of the host tool `name` names, by the lookup `horch
-    /// doctor` checks ([`host_tool_bin`]). `None` when it is not found, or
-    /// when `name` is not a tool horch can look up: only `blender`.
     pub(crate) fn host_tool(&self, name: &str) -> Option<PathBuf> {
         match name {
             "blender" => host_tool_bin(
@@ -205,33 +204,13 @@ impl LaunchEnv {
     }
 }
 
-/// How a launch relates to an agent session.
 #[derive(Debug, Clone, Copy)]
 pub enum Session<'a> {
-    /// Caller-minted id, passed on a fresh start (Claude).
     Fresh(&'a str),
-    /// Resume an existing id.
     Resume(&'a str),
-    /// The agent mints its own id after launch (Codex), or there is no ledger
-    /// record at all (an orchestrator pane).
     Unmanaged,
 }
 
-/// Environment a teammate's CLI starts with: its `subagent_model` and its
-/// `env` block, the latter winning, then the `env` of its harness defaults
-/// for the keys it does not set. The caller gives it to the child command
-/// with `runtime::process::inherit_env`, so a value the builder set
-/// on the command still wins, as it did when this was exported into the
-/// parent's environment.
-///
-/// An `env` value that starts with `~/` expands against the launch's home,
-/// like a teammate path. The CLI starts without a shell, so nothing else
-/// expands it, and a committed file cannot carry an absolute home path.
-///
-/// An `env` value that is exactly `{path_of:<tool>}` becomes that host tool's
-/// executable (`LaunchEnv::host_tool`). When the tool is not found, the
-/// variable is left out, so the launch still works and the CLI keeps what
-/// it inherits.
 pub fn teammate_env(teammate: &Teammate, env: &LaunchEnv) -> Vec<(String, String)> {
     let mut out = BTreeMap::new();
     if let Some(sub) = &teammate.subagent_model {
@@ -248,9 +227,6 @@ pub fn teammate_env(teammate: &Teammate, env: &LaunchEnv) -> Vec<(String, String
     out.into_iter().collect()
 }
 
-/// The value of 1 teammate `env` entry: a `{path_of:<tool>}` host tool, a
-/// `~/` path against the launch's home, or the text itself. `None` leaves
-/// the variable out (the tool is not found).
 fn resolve_env_value(env: &LaunchEnv, value: &str) -> Option<String> {
     if let Some(tool) = path_of(value) {
         env.host_tool(tool)
@@ -262,10 +238,6 @@ fn resolve_env_value(env: &LaunchEnv, value: &str) -> Option<String> {
     }
 }
 
-/// Harness defaults of the final harness, under the teammate's own keys
-/// `own`. A later entry wins over an earlier one. A non-Claude default
-/// yields to the operator's own value (Claude's settings `env` already
-/// beats the process env).
 fn harness_default_env(
     teammate: &Teammate,
     env: &LaunchEnv,
@@ -282,20 +254,12 @@ fn harness_default_env(
         .collect()
 }
 
-/// The tool a `{path_of:<tool>}` env value names.
 fn path_of(value: &str) -> Option<&str> {
     value.strip_prefix("{path_of:")?.strip_suffix('}')
 }
 
-/// Environment variables no agent CLI ever receives. The list lives in the
-/// platform start function, which removes it from each process it starts.
 pub use horch_platform::start::FORBIDDEN_ENV;
 
-/// Build the command for a teammate, whichever CLI it names, in the launch
-/// environment `env`.
-///
-/// `model_override` exists for the fixed `orchestration` recipe, where the
-/// model belongs to the pane rather than to the teammate file.
 pub(crate) fn command_in(
     env: &LaunchEnv,
     teammate: &Teammate,
@@ -314,9 +278,6 @@ pub(crate) fn command_in(
     )
 }
 
-/// Native skill discovery plus a short routing instruction, in the launch
-/// environment `env`. The caller holds the bundle until the child exits so
-/// lazy reads remain valid throughout.
 pub fn command_with_skills_in(
     env: &LaunchEnv,
     teammate: &Teammate,
@@ -336,8 +297,6 @@ pub fn command_with_skills_in(
     };
     let adapter = teammate.agent.adapter();
     let prompt = format!("{}\n{prompt}", bundle.briefing_in(teammate, env.home()));
-    // A bundle with an empty plan carries only the briefing's `Skipped:`
-    // notes: there is no skill directory to expose.
     if bundle.plan().activated.is_empty() {
         return command_in(
             &plain_env(env, teammate),
@@ -362,9 +321,6 @@ pub fn command_with_skills_in(
     Ok(cmd)
 }
 
-/// The launch env of a launch without exposed skills. A teammate's own
-/// `settings:` (Claude) then owns the whole `--settings` overlay, so horch
-/// adds no window to it; the skills overlay is horch's, and gets one.
 fn plain_env<'a>(env: &'a LaunchEnv, teammate: &Teammate) -> std::borrow::Cow<'a, LaunchEnv> {
     if teammate.settings.is_some() && env.compact_window.is_some() {
         std::borrow::Cow::Owned(LaunchEnv {
@@ -376,12 +332,6 @@ fn plain_env<'a>(env: &'a LaunchEnv, teammate: &Teammate) -> std::borrow::Cow<'a
     }
 }
 
-/// What this launch does about the harness's native auto-compact window
-/// (CTX-05, design §6.5): the operator's value, else the fleet default
-/// (applied), else the harness's own. A Claude teammate that names a
-/// settings file cannot take a merged key, so a fleet window is not
-/// applied. Used by `run_flow_code`, and by `horch context` for a record
-/// without a recorded decision.
 pub fn window_decision(
     ctx: &RuntimeContext,
     teammate: &Teammate,
@@ -411,7 +361,6 @@ pub fn window_decision(
     decision
 }
 
-/// Whether a Claude teammate names a settings file (not inline JSON).
 fn settings_file(teammate: &Teammate) -> bool {
     teammate.agent == HarnessKind::Claude
         && teammate
@@ -420,9 +369,6 @@ fn settings_file(teammate: &Teammate) -> bool {
             .is_some_and(|s| !s.trim_start().starts_with('{'))
 }
 
-/// The decision as the built command carries it (review finding 12): an
-/// applied decision stays applied only when the command passes its value.
-/// Otherwise the detail names the first reason that holds.
 pub fn window_in_effect(
     mut decision: WindowDecision,
     teammate: &Teammate,
@@ -453,48 +399,24 @@ pub(super) fn model_for<'a>(teammate: &'a Teammate, override_: Option<&'a str>) 
     }
 }
 
-// ─── the launch flow ────────────────────────────────────────────────────────
-
-/// One agent launch in a pane, as `horch worker` and `horch pane-launch`
-/// both describe it.
 pub struct LaunchRequest<'a> {
-    /// The pane's role. It names the codex home, the Prime daemon and the
-    /// launch marker this launch leaves on disk.
     pub role: &'a str,
     pub teammate: &'a Teammate,
     pub session: &'a SessionMode,
     pub prompt: &'a str,
-    /// The pane's model, when it is not the teammate file's.
     pub model_override: Option<&'a str>,
-    /// The execpolicy rules this pane needs; read only by a harness with
-    /// [`Capabilities::exec_policy`](super::Capabilities::exec_policy).
     pub exec_rules: &'a [ExecRule],
-    /// What the agent inherits on top of this process's environment.
     pub child_env: Vec<(String, String)>,
-    /// The ledger record a discovered session id is written to. `None`:
-    /// nothing is recorded, so nothing is discovered.
     pub record: Option<DiscoveryTarget<'a>>,
-    /// The fleet's native window for this teammate and model, with its
-    /// source (`Roster::fleet_window`). None: no fleet default.
     pub fleet_window: Option<(u64, String)>,
-    /// Some: also offer this briefing as the user-invoked skill
-    /// [`BRIEFING_SKILL`], so a resumed session can be re-briefed on demand.
     pub briefing_skill: Option<&'a str>,
 }
 
-/// The skill a fleet orchestrator's briefing is offered as: `/orchestrator`
-/// in Claude Code, `$orchestrator` in Codex.
 pub const BRIEFING_SKILL: &str = "orchestrator";
 
-/// Write `briefing` as `<skills_dir>/orchestrator/SKILL.md`. It is not in the
-/// activation plan, so the ledger's skill check never sees it. Only the
-/// operator invokes it: `disable-model-invocation` keeps the model from
-/// loading a whole briefing on its own.
 fn write_briefing_skill(skills_dir: &Path, briefing: &str) -> Result<()> {
     let dir = skills_dir.join(BRIEFING_SKILL);
     std::fs::create_dir_all(skills_dir)?;
-    // create_dir, not create_dir_all: a catalog skill of the same name fails
-    // here rather than being overwritten.
     std::fs::create_dir(&dir).with_context(|| format!("creating {}", dir.display()))?;
     let text = format!(
         "---\nname: {BRIEFING_SKILL}\ndescription: The fleet orchestrator briefing. \
@@ -506,19 +428,12 @@ fn write_briefing_skill(skills_dir: &Path, briefing: &str) -> Result<()> {
     Ok(())
 }
 
-/// Where a discovered session id goes, and which sessions are candidates.
 pub struct DiscoveryTarget<'a> {
     pub mailbox: &'a Mailbox,
     pub record_id: &'a str,
-    /// The directory the agent works in. Only sessions recorded for this
-    /// directory, compared canonically, are candidates.
     pub workdir: &'a str,
 }
 
-/// The [`Session`] a launch passes for `mode` on a harness with `caps`.
-///
-/// A fresh session carries its id only where horch mints it; a harness
-/// that mints its own starts with nothing and is discovered afterwards.
 pub fn session_for<'a>(caps: &Capabilities, mode: &'a SessionMode) -> Session<'a> {
     match mode {
         SessionMode::Resume(id) => Session::Resume(id.as_str()),
@@ -527,32 +442,22 @@ pub fn session_for<'a>(caps: &Capabilities, mode: &'a SessionMode) -> Session<'a
     }
 }
 
-/// Run one agent CLI in this pane and propagate its exit status.
-///
-/// prepare (codex rules, Prime daemon, skills bundle) → build → a session
-/// discovery thread unless horch minted the id → wait → clean up.
 pub fn run_flow(ctx: &RuntimeContext, req: LaunchRequest<'_>) -> Result<ExitCode> {
     Ok(exit_code(run_flow_code(ctx, req)?))
 }
 
-/// [`run_flow`], returning the agent's exit status as a number: `None` when
-/// a signal ended it. The worker records it (ARC-18).
 pub(crate) fn run_flow_code(ctx: &RuntimeContext, req: LaunchRequest<'_>) -> Result<Option<i32>> {
     let adapter = req.teammate.agent.adapter();
     let launch = prepare_launch(ctx, &req)?;
     let (mut cmd, teammate) = launch_command(ctx, &req, &launch)?;
-    // What the command really carries is what the record says.
     let decision = window_in_effect(launch.decision.clone(), &teammate, &cmd);
     record_window(ctx, &req, &decision);
     crate::runtime::process::scrub_child_env(&mut cmd);
-    // After the scrub, which removes each `GIT_CONFIG_*` variable.
     for (key, value) in &launch.git_env {
         cmd.env(key, value);
     }
     let name = format!("{:?}", cmd.get_program());
 
-    // A resume on a CLI that drops its command-line prompt gets the prompt
-    // typed in, in the background, once the agent is idle.
     if req.session.is_resume() && adapter.resume_prompt_typed() {
         start_typed_prompt(ctx, req.role, req.prompt, req.record.as_ref());
     }
@@ -564,7 +469,6 @@ pub(crate) fn run_flow_code(ctx: &RuntimeContext, req: LaunchRequest<'_>) -> Res
         launch.prepared.sessions_dir.clone(),
     );
     let code = run_agent_code(cmd, name.trim_matches('"'));
-    // Discovery is best-effort: a finished agent needs no session id captured.
     if let Some(d) = discovery {
         d.stop();
     }
@@ -572,14 +476,7 @@ pub(crate) fn run_flow_code(ctx: &RuntimeContext, req: LaunchRequest<'_>) -> Res
     code
 }
 
-/// The exec launch of 1 attempt (fleetd-p7 ticket 17). The preparation is
-/// the one of [`run_flow_code`]: skills, trust, the window decision, the
-/// adapter's `prepare` and the agent git env of SR-3. The command is the
-/// exec launch of the adapter, with `task_dir` (the attempt folder) and the
-/// workdir as its writable folders, and `req.prompt` as its prompt: the
-/// path of `inbox/START.md`, or the line of a resume. `run` starts the
-/// command and waits for it. Only Claude Code has an exec form of a resume.
-pub(crate) fn run_exec_flow<T>(
+pub fn run_exec_flow<T>(
     ctx: &RuntimeContext,
     req: LaunchRequest<'_>,
     task_dir: &Path,
@@ -613,9 +510,14 @@ pub(crate) fn run_exec_flow<T>(
     }
     env.task_dir = Some(task_dir.to_path_buf());
     env.worktree = Some(workdir.clone());
-    // The skills of the bundle, as an interactive launch exposes them
-    // (`command_with_skills_in`): Claude Code reads them from a
-    // `--plugin-dir`. Codex has them in its private home already.
+    let prompt = match &launch.skills {
+        Some(bundle) if !req.session.is_resume() => format!(
+            "{}\n{EXEC_START_LINE}\n{}",
+            bundle.briefing_in(&teammate, env.home()),
+            req.prompt
+        ),
+        _ => req.prompt.to_string(),
+    };
     if let Some(bundle) = launch
         .skills
         .as_ref()
@@ -629,21 +531,22 @@ pub(crate) fn run_exec_flow<T>(
     let mut cmd = match kind {
         HarnessKind::Claude => {
             let session = session_for(kind.adapter().capabilities(), req.session);
-            super::claude::exec_command(&env, &teammate, session, Path::new(req.prompt))?
+            super::claude::exec_command(&env, &teammate, session, Path::new(&prompt))?
         }
-        HarnessKind::Codex => super::codex::exec_command(&env, &teammate, req.prompt)?,
+        HarnessKind::Codex => super::codex::exec_command(&env, &teammate, &prompt)?,
         HarnessKind::Antigravity => {
             let model = teammate
                 .model
                 .as_deref()
                 .with_context(|| format!("teammate '{}' has no model", teammate.name))?;
+            super::antigravity::seed_stop_hook(&workdir, &env.horch_exe)?;
             super::antigravity::exec_command(&super::antigravity::ExecLaunch {
                 bin: &env.bins.antigravity,
                 model,
                 effort: teammate.effort.as_deref(),
                 home: &ctx.paths.home,
                 workdir: &workdir,
-                prompt: req.prompt,
+                prompt: &prompt,
             })
         }
         other => bail!("{other:?} has no exec adapter"),
@@ -651,14 +554,12 @@ pub(crate) fn run_exec_flow<T>(
     cmd.current_dir(&workdir);
     crate::runtime::process::inherit_env(&mut cmd, teammate_env(&teammate, &env));
     crate::runtime::process::inherit_env(&mut cmd, req.child_env.clone());
-    // Last, so a value the harness prepared (codex's private home) wins.
     for (key, value) in &launch.prepared.env {
         cmd.env(key, value);
     }
     let decision = window_in_effect(launch.decision.clone(), &teammate, &cmd);
     record_window(ctx, &req, &decision);
     crate::runtime::process::scrub_child_env(&mut cmd);
-    // After the scrub, which removes each `GIT_CONFIG_*` variable.
     for (key, value) in &launch.git_env {
         cmd.env(key, value);
     }
@@ -667,33 +568,27 @@ pub(crate) fn run_exec_flow<T>(
     out
 }
 
-/// What a launch holds from its preparation until the agent exits.
+const EXEC_START_LINE: &str =
+    "The last line of this prompt is the path of your task file, START.md. Read it and follow it.";
+
 struct PreparedLaunch {
-    /// Held across the launch, so lazy reads of the bundle remain valid.
     skills: Option<crate::skills::Bundle>,
     prepared: super::Prepared,
     decision: WindowDecision,
-    /// Whether the v1 model catalog for codex is current.
     v1_catalog_ready: bool,
-    /// The agent hooks path of a worker (SR-3); empty for an orchestrator.
     git_env: Vec<(String, String)>,
 }
 
-/// Everything before the command: skills, briefing, trust, the codex v1
-/// catalog, the window decision and the adapter's `prepare`.
 fn prepare_launch(ctx: &RuntimeContext, req: &LaunchRequest<'_>) -> Result<PreparedLaunch> {
     let skills = install_skills(ctx, req)?;
     if let Some(briefing) = req.briefing_skill {
         offer_briefing_skill(req, skills.as_ref(), briefing)?;
     }
-    // The intended window decision, before `prepare` (Prime's reads it).
     let model = req
         .model_override
         .or(req.teammate.model.as_deref())
         .unwrap_or_default();
     let workdir = launch_workdir(ctx, req);
-    // The agent must not stop at a trust dialog (ARC-29). Before `prepare`:
-    // a codex private home links the operator's `config.toml` as it is then.
     if super::trust::asks_for_trust(req.teammate.agent) {
         trust_workdir(ctx, req.teammate.agent, &workdir);
     }
@@ -701,15 +596,12 @@ fn prepare_launch(ctx: &RuntimeContext, req: &LaunchRequest<'_>) -> Result<Prepa
     let decision = window_decision(ctx, req.teammate, model, &workdir, req.fleet_window.clone());
     let git_env = agent_git_env(ctx, req.teammate)?;
     let mut shell_env = agent_shell_env(ctx, req);
-    // Codex also needs them in its shell policy: its default filter drops
-    // each inherited name with `KEY` in it.
     shell_env.extend(git_env.iter().cloned());
     let prepared = req.teammate.agent.adapter().prepare(
         ctx,
         &PrepareRequest {
             role: req.role,
             exec_rules: req.exec_rules,
-            // An empty-plan bundle has no directory for the adapter to link.
             skills: skills.as_ref().filter(|b| !b.plan().activated.is_empty()),
             compact_window: Some(&decision),
             teammate: req.teammate,
@@ -727,9 +619,6 @@ fn prepare_launch(ctx: &RuntimeContext, req: &LaunchRequest<'_>) -> Result<Prepa
     })
 }
 
-/// SR-3: a worker gets the agent hooks path, whose `pre-push` hook refuses
-/// (`fleetd::worker_profiles::domain::launch_env`). A fleet orchestrator
-/// gets none, as it gets no `git worktree` deny rule.
 fn agent_git_env(ctx: &RuntimeContext, teammate: &Teammate) -> Result<Vec<(String, String)>> {
     if crate::roster::FLEET_ORCHESTRATORS.contains(&teammate.name.as_str()) {
         return Ok(Vec::new());
@@ -738,20 +627,54 @@ fn agent_git_env(ctx: &RuntimeContext, teammate: &Teammate) -> Result<Vec<(Strin
     Ok(launch_env::git_env(&ctx.paths.fleet_root).to_vec())
 }
 
-/// Write the agent hooks folder of `fleet_root`, each file with mode 0755,
-/// and return its path. Each launch writes them again, so a changed or
-/// removed file comes back. The write is atomic: a running git sees the old
-/// file or the new one.
+const HOOK_MODE: u32 = 0o755;
+
 pub fn write_agent_hooks(fleet_root: &Path) -> Result<PathBuf> {
+    let uid = horch_platform::fs::current_uid().ok();
+    write_changed_hooks(fleet_root, uid, |path, text| {
+        Ok(crate::fsx::write_atomic(path, text, HOOK_MODE)?)
+    })
+}
+
+fn write_changed_hooks(
+    fleet_root: &Path,
+    uid: Option<u32>,
+    mut write: impl FnMut(&Path, &[u8]) -> Result<()>,
+) -> Result<PathBuf> {
     let dir = launch_env::hooks_dir(fleet_root);
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     for (name, text) in launch_env::hook_files() {
-        crate::fsx::write_atomic(&dir.join(name), text.as_bytes(), 0o755)?;
+        let path = dir.join(name);
+        if !hook_is_current(&path, text.as_bytes(), uid) {
+            write(&path, text.as_bytes())?;
+        }
     }
     Ok(dir)
 }
 
-/// The directory the agent works in.
+fn hook_is_current(path: &Path, text: &[u8], uid: Option<u32>) -> bool {
+    use std::io::Read as _;
+    let Ok(file) = horch_platform::fs::open_no_follow(path) else {
+        return false;
+    };
+    let Ok(meta) = file.metadata() else {
+        return false;
+    };
+    let owner = horch_platform::fs::owner_and_mode(&meta).ok();
+    let guarded = meta.is_file()
+        && horch_platform::fs::link_count(&meta).ok() == Some(1)
+        && owner.is_some_and(|o| Some(o.uid) == uid && o.mode & 0o7777 == HOOK_MODE);
+    if !guarded {
+        return false;
+    }
+    let mut bytes = Vec::with_capacity(text.len());
+    (&file)
+        .take(text.len() as u64 + 1)
+        .read_to_end(&mut bytes)
+        .is_ok()
+        && bytes == text
+}
+
 fn launch_workdir(ctx: &RuntimeContext, req: &LaunchRequest<'_>) -> PathBuf {
     match &req.record {
         Some(target) => PathBuf::from(target.workdir),
@@ -759,8 +682,6 @@ fn launch_workdir(ctx: &RuntimeContext, req: &LaunchRequest<'_>) -> PathBuf {
     }
 }
 
-/// What `horch tell`, `note` and `done` read in the agent's shell tool.
-/// PATH is the operator's to shape; the agent inherits it.
 fn agent_shell_env(ctx: &RuntimeContext, req: &LaunchRequest<'_>) -> Vec<(String, String)> {
     let mut shell_env: Vec<(String, String)> = req
         .child_env
@@ -768,14 +689,21 @@ fn agent_shell_env(ctx: &RuntimeContext, req: &LaunchRequest<'_>) -> Vec<(String
         .filter(|(key, _)| key != "PATH")
         .cloned()
         .collect();
-    if let Some(pane) = &ctx.herdr.pane {
-        shell_env.push(("HERDR_PANE_ID".into(), pane.to_string()));
+    match ctx.herdr.backend {
+        crate::runtime::Backend::Herdr => {
+            if let Some(pane) = &ctx.herdr.pane {
+                shell_env.push(("HERDR_PANE_ID".into(), pane.to_string()));
+            }
+        }
+        crate::runtime::Backend::Hc => {
+            if !shell_env.iter().any(|(k, _)| k == "HORCH_BACKEND") {
+                shell_env.push(("HORCH_BACKEND".into(), "hc".into()));
+            }
+        }
     }
     shell_env
 }
 
-/// Write the `/<briefing>` skill into the bundle, or say there is no bundle
-/// to hold it.
 fn offer_briefing_skill(
     req: &LaunchRequest<'_>,
     skills: Option<&crate::skills::Bundle>,
@@ -791,8 +719,6 @@ fn offer_briefing_skill(
     Ok(())
 }
 
-/// Whether a codex launch has the v1 model catalog it needs. Other harnesses
-/// need none.
 fn codex_v1_catalog_ready(ctx: &RuntimeContext, teammate: &Teammate) -> bool {
     if teammate.agent != HarnessKind::Codex {
         return true;
@@ -812,16 +738,12 @@ fn codex_v1_catalog_ready(ctx: &RuntimeContext, teammate: &Teammate) -> bool {
     }
 }
 
-/// The agent command of a prepared launch, and the teammate copy it was
-/// built from (the pane's model and the prepared extra arguments on it).
 fn launch_command(
     ctx: &RuntimeContext,
     req: &LaunchRequest<'_>,
     launch: &PreparedLaunch,
 ) -> Result<(Command, Teammate)> {
     let mut teammate = req.teammate.clone();
-    // The pane's model goes on the teammate: the builders read an override
-    // first and the teammate's model second, so the argv is the same.
     if let Some(model) = req.model_override {
         teammate.model = Some(model.to_string());
     }
@@ -831,13 +753,10 @@ fn launch_command(
     let session = session_for(req.teammate.agent.adapter().capabilities(), req.session);
     let mut env = LaunchEnv::from_context(ctx);
     if !launch.v1_catalog_ready {
-        // Do not reuse an older catalog after regeneration failed. Codex can
-        // auto-update between launches, so that file may no longer match it.
         env.state_root = None;
     }
     env.compact_window = Some(launch.decision.clone());
     env.report_socket = report_socket(ctx, req);
-    // The agent sees the briefed roster over the one this process has.
     if let Some((_, dir)) = req
         .child_env
         .iter()
@@ -864,17 +783,12 @@ fn launch_command(
         launch.skills.as_ref(),
         req.child_env.clone(),
     )?;
-    // Last, so a value the harness prepared (codex's private home) wins.
-    // Before the read-back: Prime's window is in the agent dir its
-    // `prepare` names in the environment.
     for (key, value) in &launch.prepared.env {
         cmd.env(key, value);
     }
     Ok((cmd, teammate))
 }
 
-/// The report socket of a `horch_access: report` launch with a ledger
-/// record. The worker parent serves the same path.
 fn report_socket(ctx: &RuntimeContext, req: &LaunchRequest<'_>) -> Option<PathBuf> {
     let target = req
         .record
@@ -886,7 +800,6 @@ fn report_socket(ctx: &RuntimeContext, req: &LaunchRequest<'_>) -> Option<PathBu
     ))
 }
 
-/// Record the window decision on the launch's ledger record, if it has one.
 fn record_window(ctx: &RuntimeContext, req: &LaunchRequest<'_>, decision: &WindowDecision) {
     let Some(target) = &req.record else { return };
     let recorded = crate::execution::store::ExecutionStore::open_in(ctx).and_then(|store| {
@@ -897,8 +810,6 @@ fn record_window(ctx: &RuntimeContext, req: &LaunchRequest<'_>, decision: &Windo
     }
 }
 
-/// Discovery runs only for a fresh session the agent mints itself, in the
-/// background, while the agent holds the foreground.
 fn start_discovery_for(
     ctx: &RuntimeContext,
     req: &LaunchRequest<'_>,
@@ -921,9 +832,6 @@ fn start_discovery_for(
     }
 }
 
-/// Write `harness`'s trust in `workdir` when it is missing (ARC-29), with
-/// 1 stderr line when horch writes it or cannot. A failure does not stop
-/// the launch: the agent then shows its own trust dialog, as before.
 fn trust_workdir(ctx: &RuntimeContext, harness: HarnessKind, workdir: &Path) {
     let outcome = super::trust::ensure_trusted(
         harness,
@@ -937,11 +845,6 @@ fn trust_workdir(ctx: &RuntimeContext, harness: HarnessKind, workdir: &Path) {
     }
 }
 
-/// The activated skills of this launch, from the bundled catalog plus the
-/// installed marketplace skills. Nothing here touches the network: a
-/// marketplace skill is copied from the local store. The directory is named
-/// for the execution (the ledger record) when the launch records one and no
-/// earlier launch of it left its directory behind; otherwise for a fresh id.
 fn install_skills(
     ctx: &RuntimeContext,
     req: &LaunchRequest<'_>,
@@ -959,11 +862,6 @@ fn install_skills(
         &name,
         home,
     )?;
-    // The worker must run the skills the ledger recorded at spawn (SKL-04).
-    // The catalog, the operator directory and the `plugin_skills` plugins
-    // are read again here, so a skill that changed, vanished or appeared
-    // since the spawn fails the launch. Each copy (the bundle's, and the
-    // filtered plugin copy) is digest-checked against this plan.
     if let Some(target) = &req.record {
         let record = crate::execution::store::ExecutionStore::open_in(ctx)?
             .get(target.record_id)
@@ -983,9 +881,6 @@ fn install_skills(
     Ok(bundle)
 }
 
-/// How the skills this launch resolved differ from the ones the ledger
-/// recorded at spawn, by id, version and digest; `None` when they match.
-/// The invocation policy and the source label do not count: the bytes do.
 fn skill_drift(
     recorded: &[crate::skills::activation::ResolvedSkillRef],
     launched: &[crate::skills::activation::ResolvedSkillRef],
@@ -1015,9 +910,6 @@ fn skill_drift(
     (!problems.is_empty()).then(|| problems.join("; "))
 }
 
-/// The record id when it is one plain path component that no directory in
-/// `bundles` has yet; otherwise a fresh execution id. A legacy record id can
-/// hold `/` or `..`, which must never name a directory.
 fn bundle_name(record_id: Option<&str>, bundles: &Path) -> String {
     record_id
         .and_then(|id| crate::ids::ExecutionId::new(id).ok())
@@ -1027,8 +919,6 @@ fn bundle_name(record_id: Option<&str>, bundles: &Path) -> String {
         .unwrap_or_else(|| crate::ids::ExecutionId::mint(crate::clock::now()).to_string())
 }
 
-/// [`agent_command_in`] in the context's launch environment, with no
-/// window decision.
 #[cfg(test)]
 pub(crate) fn agent_command(
     ctx: &RuntimeContext,
@@ -1048,9 +938,6 @@ pub(crate) fn agent_command(
     )
 }
 
-/// The agent's command: the teammate's launch line, its own environment, then
-/// `child_env`. Nothing here touches this process's environment, and
-/// `FORBIDDEN_ENV` and the git repository variables stay removed.
 fn agent_command_in(
     env: &LaunchEnv,
     teammate: &Teammate,
@@ -1066,7 +953,6 @@ fn agent_command_in(
     Ok(cmd)
 }
 
-/// Handle to the background session discovery.
 pub(crate) struct Discovery {
     done: Arc<AtomicBool>,
 }
@@ -1077,8 +963,6 @@ impl Discovery {
     }
 }
 
-/// The waits before each discovery poll: 0.5 s, 1 s, 2 s, then 3 s up to a
-/// total of about 3 minutes. A short agent run can end within 3 s.
 const POLL_SCHEDULE: [Duration; 62] = {
     let mut schedule = [Duration::from_secs(3); 62];
     schedule[0] = Duration::from_millis(500);
@@ -1087,13 +971,11 @@ const POLL_SCHEDULE: [Duration; 62] = {
     schedule
 };
 
-/// What one session-id search looks at: the pane, the ledger and the
-/// harness's own records.
 #[derive(Clone, Copy)]
 struct Search<'a> {
     ctx: &'a RuntimeContext,
     agent: HarnessKind,
-    herdr: &'a Herdr,
+    herdr: &'a PaneHost,
     pane: &'a str,
     ledger: &'a SessionLedger,
     workdir: &'a Path,
@@ -1101,9 +983,6 @@ struct Search<'a> {
     sessions_dir: Option<&'a Path>,
 }
 
-/// One discovery attempt: herdr's native `agent_session_id` for the pane,
-/// else the harness's own records for `workdir`, newest first, skipping ids
-/// already claimed by a concurrently spawned worker.
 fn discover_once(search: &Search<'_>, record_id: &str) -> Option<String> {
     let Search {
         ctx,
@@ -1115,7 +994,7 @@ fn discover_once(search: &Search<'_>, record_id: &str) -> Option<String> {
         since,
         sessions_dir,
     } = *search;
-    (!pane.is_empty())
+    (herdr.backend() != crate::runtime::Backend::Hc && !pane.is_empty())
         .then(|| herdr.pane_get(pane).ok())
         .flatten()
         .and_then(|p| p.agent_session_id())
@@ -1140,11 +1019,6 @@ fn discover_once(search: &Search<'_>, record_id: &str) -> Option<String> {
         })
 }
 
-/// The last discovery attempt, for `horch done` to run before it closes the
-/// pane (which kills the discovery thread). Does nothing when the record
-/// already has a session id, the harness mints its id at launch, the launch
-/// was a resume, or the launch marker is gone. The marker holds the launch's
-/// `sessions_dir` (Prime's), so this attempt searches where the thread does.
 pub fn discover_now(
     ctx: &RuntimeContext,
     mailbox: &Mailbox,
@@ -1163,8 +1037,6 @@ pub fn discover_now(
     Ok(())
 }
 
-/// One discovery attempt for `record_id`; a session id found goes to the
-/// ledger and the launch marker is removed.
 fn discover_into_ledger(
     ctx: &RuntimeContext,
     ledger: &SessionLedger,
@@ -1176,7 +1048,7 @@ fn discover_into_ledger(
     let marker = mailbox.launch_marker_read_path(role);
     let since = std::fs::metadata(&marker).and_then(|m| m.modified())?;
     let sessions_dir = marker_sessions_dir(&marker);
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
+    let herdr = PaneHost::of(ctx);
     let pane = ctx
         .herdr
         .pane
@@ -1203,17 +1075,12 @@ fn discover_into_ledger(
     Ok(())
 }
 
-/// The launch marker's contents: the launch's `sessions_dir`, or nothing. Its
-/// mtime is the launch time; its contents tell [`discover_now`] where the
-/// thread searches.
 fn marker_contents(sessions_dir: Option<&Path>) -> String {
     sessions_dir
         .map(|d| d.to_string_lossy().into_owned())
         .unwrap_or_default()
 }
 
-/// The `sessions_dir` a launch marker holds. An empty marker (none, or one
-/// an older horch wrote) holds none.
 fn marker_sessions_dir(marker: &Path) -> Option<PathBuf> {
     std::fs::read_to_string(marker)
         .ok()
@@ -1221,15 +1088,6 @@ fn marker_sessions_dir(marker: &Path) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// Poll for the session id the agent minted and record it against the
-/// target's ledger record.
-///
-/// Prefers herdr's native `agent_session` (available when the agent's herdr
-/// integration is installed), falling back to the harness's own records for
-/// the target's workdir.
-/// Type a resumed session's prompt into this pane from a background
-/// thread ([`type_resumed_prompt`]). Without a pane id nothing can be typed,
-/// and the record says so at once.
 fn start_typed_prompt(
     ctx: &RuntimeContext,
     role: &str,
@@ -1242,7 +1100,7 @@ fn start_typed_prompt(
             .map(|l| (l, t.record_id.to_string()))
     });
     let orchestrator = target.and_then(|t| t.mailbox.pane_for("orchestrator"));
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
+    let herdr = PaneHost::of(ctx);
     let role = role.to_string();
     let prompt = prompt.to_string();
     let pane = ctx.herdr.pane.as_ref().map(|p| p.to_string());
@@ -1270,16 +1128,9 @@ fn start_typed_prompt(
     });
 }
 
-/// Queues 1 line as durable mail to a role: `queue(role, line)`.
 pub(crate) type QueueLine<'a> = &'a dyn Fn(&str, &str) -> Result<()>;
 
-/// Queue `prompt` as mail to `role`, then type the mail line into `pane`
-/// once its agent is idle (FR-7). When that fails, the worker's record gets
-/// a note that says why, and the orchestrator gets a `BLOCKED` line as
-/// durable mail (#177) and, if its pane is registered, the mail line: a
-/// resumed pane never sits idle with no task and no word. True when the
-/// mail line was typed.
-#[allow(clippy::too_many_arguments)] // each argument is a separate delivery input; grouping would only hide them
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn type_resumed_prompt(
     ws: &dyn WorkspaceClient,
     pane: Option<&str>,
@@ -1292,12 +1143,10 @@ pub(crate) fn type_resumed_prompt(
     timing: &Timing,
 ) -> bool {
     let result = match pane {
-        // FR-7: the prompt waits in the worker's mail, and the pane gets
-        // only the mail line.
         Some(pane) => queue(role, prompt)
             .and_then(|()| delivery::deliver_when_idle(ws, pane, TypedLine::Mail, wait, timing)),
         None => Err(anyhow::anyhow!(
-            "HERDR_PANE_ID is not set, so the resumed task cannot be typed"
+            "not inside a herdr pane or a Herdr app terminal (HERDR_PANE_ID and HC_TERMINAL_ID are unset), so the resumed task cannot be typed"
         )),
     };
     let Err(e) = result else {
@@ -1330,9 +1179,6 @@ pub(crate) fn type_resumed_prompt(
     false
 }
 
-/// The first line of the pane of a push attempt in `prompt`:
-/// `Read <path>/inbox/START.md and continue.` (Q8 of
-/// `docs/tickets/fleetd-p4/MAP.md`). A push attempt is never told to claim.
 fn push_start_line(prompt: &str) -> Option<&str> {
     prompt
         .lines()
@@ -1367,7 +1213,7 @@ fn start_discovery(
     let record_id = target.record_id.to_string();
     let workdir = PathBuf::from(target.workdir);
     let ledger = SessionLedger::open_in(ctx)?;
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
+    let herdr = PaneHost::of(ctx);
     let ctx = ctx.clone();
 
     std::thread::spawn(move || {
@@ -1415,7 +1261,6 @@ fn start_discovery(
     Ok(Discovery { done })
 }
 
-/// The process exit code for an agent's exit status.
 fn exit_code(code: Option<i32>) -> ExitCode {
     match code {
         Some(0) => ExitCode::SUCCESS,
@@ -1424,19 +1269,14 @@ fn exit_code(code: Option<i32>) -> ExitCode {
     }
 }
 
-/// Called with the agent child's PID right after it starts.
 type AgentObserver = Box<dyn Fn(u32) + Send + Sync>;
 
 static AGENT_OBSERVER: std::sync::Mutex<Option<AgentObserver>> = std::sync::Mutex::new(None);
 
-/// Have the next agent launches in this process report the child's PID to
-/// `f` (the worker records it in the task ledger: the only way to stop the
-/// agent is by that PID and its start time).
 pub fn observe_agent_start(f: impl Fn(u32) + Send + Sync + 'static) {
     *AGENT_OBSERVER.lock().unwrap_or_else(|p| p.into_inner()) = Some(Box::new(f));
 }
 
-/// Run the agent as a child process and return its exit status.
 fn run_agent_code(mut cmd: Command, name: &str) -> Result<Option<i32>> {
     let mut child = cmd.spawn().map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
@@ -1461,7 +1301,6 @@ fn run_agent_code(mut cmd: Command, name: &str) -> Result<Option<i32>> {
     Ok(status.code())
 }
 
-/// The same host sandbox check used when preparing a Claude launch.
 pub fn sandbox_host_problem(ctx: &RuntimeContext) -> Option<String> {
     super::claude::sandbox_host_problem(ctx.inherited.path.as_deref())
 }
@@ -1469,6 +1308,102 @@ pub fn sandbox_host_problem(ctx: &RuntimeContext) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    fn written_hooks(fleet: &Path, uid: u32) -> Vec<String> {
+        let mut names = Vec::new();
+        write_changed_hooks(fleet, Some(uid), |path, text| {
+            names.push(path.file_name().unwrap().to_string_lossy().into_owned());
+            Ok(crate::fsx::write_atomic(path, text, HOOK_MODE)?)
+        })
+        .unwrap();
+        names
+    }
+
+    #[cfg(unix)]
+    fn hook_world() -> (tempfile::TempDir, PathBuf, PathBuf, u32) {
+        let tmp = tempfile::tempdir().unwrap();
+        let fleet = tmp.path().join("fleet");
+        let uid = horch_platform::fs::current_uid().unwrap();
+        let all = written_hooks(&fleet, uid);
+        assert_eq!(all.len(), launch_env::hook_files().count());
+        let hook = launch_env::hooks_dir(&fleet).join("pre-push");
+        (tmp, fleet, hook, uid)
+    }
+
+    #[cfg(unix)]
+    fn assert_only_pre_push_is_rewritten(fleet: &Path, hook: &Path, uid: u32, text: &str) {
+        assert_eq!(written_hooks(fleet, uid), ["pre-push"]);
+        let meta = std::fs::symlink_metadata(hook).unwrap();
+        assert!(meta.is_file());
+        assert_eq!(horch_platform::fs::link_count(&meta).unwrap(), 1);
+        assert_eq!(
+            horch_platform::fs::mode_of(&meta).unwrap() & 0o7777,
+            HOOK_MODE
+        );
+        assert_eq!(std::fs::read_to_string(hook).unwrap(), text);
+        assert!(written_hooks(fleet, uid).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_equal_hook_is_not_written() {
+        let (_tmp, fleet, _, uid) = hook_world();
+        assert!(written_hooks(&fleet, uid).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_hook_with_other_bytes_is_rewritten() {
+        let (_tmp, fleet, hook, uid) = hook_world();
+        let text = std::fs::read_to_string(&hook).unwrap();
+        std::fs::write(&hook, "#!/bin/sh\nexit 0\n").unwrap();
+        assert_only_pre_push_is_rewritten(&fleet, &hook, uid, &text);
+        std::fs::write(&hook, format!("{text}\n")).unwrap();
+        assert_only_pre_push_is_rewritten(&fleet, &hook, uid, &text);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_hook_with_another_mode_is_rewritten() {
+        let (_tmp, fleet, hook, uid) = hook_world();
+        let text = std::fs::read_to_string(&hook).unwrap();
+        for mode in [0o644, 0o775, 0o4755] {
+            horch_platform::fs::set_mode(&hook, mode).unwrap();
+            assert_only_pre_push_is_rewritten(&fleet, &hook, uid, &text);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_to_an_equal_hook_is_rewritten() {
+        let (tmp, fleet, hook, uid) = hook_world();
+        let text = std::fs::read_to_string(&hook).unwrap();
+        let other = tmp.path().join("other");
+        std::fs::rename(&hook, &other).unwrap();
+        std::os::unix::fs::symlink(&other, &hook).unwrap();
+        assert_only_pre_push_is_rewritten(&fleet, &hook, uid, &text);
+        assert_eq!(std::fs::read_to_string(&other).unwrap(), text);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_hook_with_a_second_hard_link_is_rewritten() {
+        let (tmp, fleet, hook, uid) = hook_world();
+        let text = std::fs::read_to_string(&hook).unwrap();
+        std::fs::hard_link(&hook, tmp.path().join("other")).unwrap();
+        assert_only_pre_push_is_rewritten(&fleet, &hook, uid, &text);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_hook_of_another_owner_is_rewritten() {
+        let (_tmp, fleet, _, uid) = hook_world();
+        assert_eq!(
+            written_hooks(&fleet, uid + 1).len(),
+            launch_env::hook_files().count()
+        );
+    }
 
     fn skill_ref(
         id: &str,
@@ -1486,7 +1421,6 @@ mod tests {
         }
     }
 
-    /// The launch compares id, version and digest with the ledger record.
     #[test]
     fn skill_drift_names_missing_changed_and_unrecorded_skills() {
         let tdd = skill_ref("tdd", "bundled+aaaa", 'a');
@@ -1496,7 +1430,6 @@ mod tests {
             None
         );
         assert_eq!(skill_drift(&[], &[]), None);
-        // The policy and the source do not count.
         let offered = crate::skills::activation::ResolvedSkillRef {
             policy: crate::skills::activation::InvocationPolicy::Offered,
             source: "elsewhere".into(),
@@ -1514,7 +1447,6 @@ mod tests {
             "'test-modernizer' was operator+bbbb (digest bbbbbbbbbbbb) and is \
              operator+cccc (digest cccccccccccc) now"
         );
-        // Same version label, other bytes: still a change.
         let same_label = skill_ref("test-modernizer", "operator+bbbb", 'd');
         assert!(skill_drift(std::slice::from_ref(&op), &[same_label]).is_some());
         assert_eq!(
@@ -1531,9 +1463,6 @@ mod tests {
             .collect()
     }
 
-    /// `~/` in an `env` value expands against the launch's home: the CLI gets
-    /// no shell, and asc refuses a relative `ASC_CONFIG_PATH`. Only a leading
-    /// `~/` expands; with no home the value stays as written.
     #[test]
     fn teammate_env_expands_a_leading_tilde_against_home() {
         let mut t = Teammate::default();
@@ -1563,11 +1492,6 @@ mod tests {
         assert_eq!(config.1, "/home/op/.config/horch/asc/config.json");
     }
 
-    /// The blender-artist's `BLENDER_PATH: "{path_of:blender}"` becomes the
-    /// Blender the doctor's lookup finds: the operator's `BLENDER_PATH`, else
-    /// `blender` on PATH, else the app. The Blender MCP server inherits it.
-    /// Not found, the variable is left out and the launch still builds. The
-    /// app is a temp file, so no test sees the machine's real Blender.
     #[cfg(unix)]
     #[test]
     fn path_of_blender_fills_blender_path_or_leaves_it_out() {
@@ -1579,7 +1503,7 @@ mod tests {
         crate::runtime::process::make_executable(&on_path).unwrap();
         let app = tmp.path().join("Blender");
         std::fs::write(&app, "#!/bin/sh\n").unwrap();
-        let none = std::env::join_paths([tmp.path().join("none")]).unwrap();
+        let none = super::super::claude::sandbox_tools_path(&tmp.path().join("none"), true);
 
         let r = Roster::builtin().unwrap();
         let artist = r.require("blender-artist").unwrap();
@@ -1597,24 +1521,17 @@ mod tests {
         };
         let path = std::env::join_paths([&bin_dir]).unwrap();
 
-        // The operator's BLENDER_PATH wins.
         let env = lookup(Some("/operator/Blender"), path.clone(), Some(&app));
         assert_eq!(blender_path(&env).as_deref(), Some("/operator/Blender"));
-        // Then `blender` on PATH.
         let env = lookup(None, path, Some(&app));
         assert_eq!(blender_path(&env), Some(on_path.to_string_lossy().into()));
-        // Then the app.
         let env = lookup(None, none.clone(), Some(&app));
         assert_eq!(blender_path(&env), Some(app.to_string_lossy().into()));
-        // Not found: no BLENDER_PATH, and the launch command still builds.
         let env = lookup(None, none, None);
         assert_eq!(blender_path(&env), None);
         command_in(&env, artist, Session::Fresh("s"), "p", None).unwrap();
     }
 
-    /// Every `{path_of:<tool>}` in a built-in teammate's `env` names a tool
-    /// `LaunchEnv::host_tool` can look up: a typo would leave the variable
-    /// out of every launch with no error.
     #[test]
     fn every_path_of_names_a_known_tool() {
         let r = Roster::builtin().unwrap();
@@ -1656,8 +1573,6 @@ mod tests {
                 )
                 .unwrap();
                 let args = argv(&cmd);
-                // U-64: an opencode resume passes no `--prompt`; the launch
-                // types the prompt in instead (`resume_prompt_typed`).
                 if t.agent == HarnessKind::OpenCode && matches!(session, Session::Resume(_)) {
                     assert!(!args.iter().any(|a| a == "--prompt"), "{name}: {args:?}");
                 } else {
@@ -1696,10 +1611,6 @@ mod tests {
         }
     }
 
-    /// No agent CLI receives ANTHROPIC_API_KEY, whatever the shell exports
-    /// and whatever a teammate's `env:` says.
-    /// The briefing becomes a user-invoked `orchestrator` skill, and a
-    /// catalog skill of the same name is never overwritten.
     #[test]
     fn briefing_skill_is_user_invoked_and_never_overwrites() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1717,8 +1628,6 @@ mod tests {
         assert_eq!(again, text);
     }
 
-    /// The bundle is named for its execution, unless that name is not one
-    /// plain path component or is taken; then it gets a fresh id.
     #[test]
     fn bundle_name_is_the_record_id_when_it_is_safe_and_free() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1739,12 +1648,9 @@ mod tests {
     #[test]
     fn no_launch_carries_the_anthropic_api_key() {
         let r = Roster::builtin().unwrap();
-        // A sandboxed teammate launches only where the host can sandbox it:
-        // on Linux, `bwrap` and `socat` on PATH. Fake ones stand in.
         let tmp = tempfile::tempdir().unwrap();
         let env = LaunchEnv {
             path: Some(super::super::claude::sandbox_tools_path(tmp.path(), true)),
-            // A sandboxed worker needs its fleet root (SR-8).
             fleet_root: Some(tmp.path().join("fleet")),
             ..LaunchEnv::for_test()
         };
@@ -1779,11 +1685,8 @@ mod tests {
         assert_eq!(
             a,
             vec![
-                // Sanctioned #58: read-only pre-approvals precede variadic tool denials.
                 "--allowedTools",
                 "Read,Grep,Glob,Bash(git status),Bash(git status *),Bash(git log),Bash(git log --oneline -10),Bash(git diff),Bash(git diff --stat),Bash(git diff --cached),Bash(git show),Bash(git ls-files),Bash(horch ledger status),Bash(horch ledger status *),Bash(horch ledger show *),Bash(horch ledger steps *),Bash(horch ledger events),Bash(horch ledger events *),Bash(aws sts get-caller-identity),Bash(aws s3 ls),Bash(gcloud projects list),Bash(az account show),Bash(kubectl get pods),Bash(docker ps)",
-                // The fleet rule: opus, like every claude fleet pane, denies
-                // the subagent tool.
                 "--disallowedTools",
                 "Agent",
                 "--model",
@@ -1793,9 +1696,7 @@ mod tests {
                 "--permission-mode",
                 "auto",
                 "--settings",
-                // The sandbox of each worker (fleetd-p5 39) and its operator
-                // boundary of the fleet root.
-                r#"{"attribution":{"commit":"","pr":"","sessionUrl":false},"enabledPlugins":{"skill-creator@claude-plugins-official":false},"includeCoAuthoredBy":false,"permissions":{"blockReadsOutsideWorkingDirectories":true,"deny":["Bash(git worktree add:*)","Bash(git worktree remove:*)","Bash(git worktree prune:*)","Bash(git push:*)","Bash(gh pr merge:*)","Bash(gh release:*)","Read(//fleet/run/**)","Edit(//fleet/run/**)"]},"remoteControlAtStartup":false,"sandbox":{"allowUnsandboxedCommands":false,"enabled":true,"failIfUnavailable":true,"filesystem":{"allowRead":[],"allowWrite":[],"denyRead":["/fleet/run"],"denyWrite":["/fleet/run"]},"network":{"allowAllUnixSockets":false,"allowUnixSockets":[],"allowedDomains":["*"],"strictAllowlist":true}},"skillOverrides":{"anthropic-skills:skill-creator":"off","herdr-orchestrator":"off","herdr-worker":"off","herdr:herdr-orchestrator":"off","herdr:herdr-worker":"off","skill-creator":"off"},"syncClaudeAiSkills":false}"#,
+                r#"{"attribution":{"commit":"","pr":"","sessionUrl":false},"enabledPlugins":{"skill-creator@claude-plugins-official":false},"includeCoAuthoredBy":false,"permissions":{"blockReadsOutsideWorkingDirectories":true,"deny":["Bash(git worktree add:*)","Bash(git worktree remove:*)","Bash(git worktree prune:*)","Bash(git push:*)","Bash(gh pr merge:*)","Bash(gh release:*)","Bash(gh issue comment:*)","Bash(gh pr comment:*)","Bash(gh pr review:*)","Bash(gh discussion:*)","Read(//fleet/run/**)","Edit(//fleet/run/**)"]},"remoteControlAtStartup":false,"sandbox":{"allowUnsandboxedCommands":false,"enabled":true,"failIfUnavailable":true,"filesystem":{"allowRead":[],"allowWrite":[],"denyRead":["/fleet/run"],"denyWrite":["/fleet/run"]},"network":{"allowAllUnixSockets":false,"allowUnixSockets":[],"allowedDomains":["*"],"strictAllowlist":true}},"skillOverrides":{"anthropic-skills:skill-creator":"off","herdr-orchestrator":"off","herdr-worker":"off","herdr:herdr-orchestrator":"off","herdr:herdr-worker":"off","skill-creator":"off"},"syncClaudeAiSkills":false}"#,
                 "--session-id",
                 "sid",
                 "p"
@@ -1837,8 +1738,6 @@ mod tests {
         assert!(a.contains(&"rid".to_string()));
     }
 
-    /// A write pane runs the fleet write profile: its folder writable, never
-    /// asks, the network and web search on.
     #[test]
     fn codex_write_mode_selects_the_fleet_write_profile() {
         let r = Roster::builtin().unwrap();
@@ -1858,12 +1757,10 @@ mod tests {
         );
         assert!(a.windows(2).any(|w| w == ["-a", "never"]), "{a:?}");
         assert!(a.iter().any(|x| x == "--search"), "{a:?}");
-        // `-s` would switch codex back to the legacy sandbox and drop the profile.
         assert!(!a.iter().any(|x| x == "-s" || x == "--sandbox"), "{a:?}");
         assert!(!a.iter().any(|x| x == "--approve-for-me"), "{a:?}");
     }
 
-    /// A plan pane stays read-only and asks; no reviewer answers for it.
     #[test]
     fn codex_plan_pane_stays_read_only_without_a_reviewer() {
         let r = Roster::builtin().unwrap();
@@ -1883,8 +1780,6 @@ mod tests {
         );
     }
 
-    /// A teammate whose own args choose the sandbox keeps it: the plain
-    /// flags come first and its own `-s`, later, wins.
     #[test]
     fn codex_own_sandbox_keeps_the_plain_flags() {
         let r = Roster::builtin().unwrap();
@@ -2005,10 +1900,6 @@ mod tests {
         }
     }
 
-    /// The codex orchestrator is the one pane that launches codex with a model,
-    /// an effort and a sandbox all at once. The prompt must still land last: a
-    /// briefing swallowed by an earlier flag is an orchestrator that comes up
-    /// with no instructions and no error.
     #[test]
     fn the_codex_orchestrator_launches_with_astra_and_keeps_its_prompt_last() {
         let r = Roster::builtin().unwrap();
@@ -2036,9 +1927,6 @@ mod tests {
         assert_ne!(a[0], "resume", "a fresh orchestrator is not a resume");
     }
 
-    /// OpenCode takes its prompt as a FLAG, and its reasoning effort is a
-    /// provider "variant". A worker also needs `--auto`, or it stops on the
-    /// first permission prompt in a pane nobody is watching.
     #[test]
     fn opencode_passes_the_prompt_as_a_flag_and_auto_approves() {
         let r = Roster::builtin().unwrap();
@@ -2066,11 +1954,6 @@ mod tests {
         assert_eq!(a.last().unwrap(), "BRIEFING");
     }
 
-    /// `plugin_skills` narrows a plugin to the skills a teammate names: the
-    /// pane loads a filtered copy from the skills bundle (the named skill,
-    /// the plugin's hooks and scripts, no other skill and no command), the
-    /// installed original goes off and the copy goes on. A launch without a
-    /// bundle fails, and a `--check` catches a name the plugin does not ship.
     #[test]
     fn plugin_skills_load_a_filtered_copy_of_the_plugin() {
         let tmp = tempfile::tempdir().unwrap();
@@ -2148,7 +2031,6 @@ mod tests {
         };
         let r = Roster::builtin().unwrap();
 
-        // A plugin from plugin_dirs: its directory is swapped for the copy.
         let root = tmp.path().join("code");
         fixture(&root, "code");
         let mut t = r.require("opus").unwrap().clone();
@@ -2168,7 +2050,6 @@ mod tests {
         );
         check_copy(&copy, "code");
         assert_eq!(overlay_of(&a)["enabledPlugins"]["code@inline"], true);
-        // The plan (and so the ledger record) pins the named skill only.
         let review = bundle
             .plan()
             .activated
@@ -2182,15 +2063,12 @@ mod tests {
             horch_marketplace::integrity::tree_digest(&root.join("skills/review")).unwrap()
         );
         assert!(!bundle.plan().activated_ids().contains(&"code:lint"));
-        // The briefing names the reinforced one with its description.
         let brief = bundle.briefing_in(&t, None);
         assert!(brief.contains("- code:review: Does review."), "{brief}");
         assert!(!brief.contains("code:lint"), "{brief}");
         drop(bundle);
         assert!(!copy.exists(), "the copy goes with the bundle");
 
-        // A skill edited after the plan: the copy differs from the pinned
-        // digest, and the launch fails.
         let bundle = install(&t, &LaunchEnv::for_test());
         std::fs::write(root.join("skills/review/scripts/run.sh"), "echo edited\n").unwrap();
         let err = command_with_skills_in(
@@ -2209,7 +2087,6 @@ mod tests {
         );
         drop(bundle);
 
-        // An installed plugin: the copy is appended, every install goes off.
         let installed = tmp.path().join("cache/dev");
         fixture(&installed, "dev");
         std::fs::create_dir_all(home.join(".claude/plugins")).unwrap();
@@ -2243,13 +2120,11 @@ mod tests {
         assert_eq!(enabled["dev@inline"], true, "{enabled}");
         drop(bundle);
 
-        // No bundle: nowhere for the copy, so the launch fails.
         let err = command_in(&env, &t, Session::Unmanaged, "p", None)
             .unwrap_err()
             .to_string();
         assert!(err.contains("has no bundle"), "{err}");
 
-        // A skill the plugin does not ship fails the launch and the check.
         t.plugin_skills.insert("dev".into(), vec!["deploy".into()]);
         let err = command_in(&env, &t, Session::Unmanaged, "p", None)
             .unwrap_err()
@@ -2257,8 +2132,6 @@ mod tests {
         assert!(err.contains("no skill 'deploy'"), "{err}");
     }
 
-    /// Haiku has no effort setting: an override onto it drops `--effort`
-    /// instead of launching a claude that refuses the flag.
     #[test]
     fn a_haiku_override_launches_without_effort() {
         let r = Roster::builtin().unwrap();
@@ -2281,9 +2154,6 @@ mod tests {
         assert!(a.contains(&"--effort".to_string()), "{a:?}");
     }
 
-    /// A paid OpenCode model's effort reaches it as the build agent's
-    /// `variant` in the config overlay - never as `--variant`, which the TUI
-    /// swallows - and survives the skill bundle adding its own paths.
     #[test]
     fn opencode_effort_rides_the_config_overlay_alongside_skills() {
         fn overlay(cmd: &Command) -> serde_json::Value {
@@ -2329,7 +2199,6 @@ mod tests {
         assert_eq!(v["agent"]["build"]["variant"], "high", "{v}");
         assert!(v["skills"]["paths"].as_array().unwrap().len() == 1, "{v}");
 
-        // No effort: the builder sets only the harness default `config`.
         t.effort = None;
         t.env.clear();
         let cmd = command_in(&LaunchEnv::for_test(), &t, Session::Unmanaged, "p", None).unwrap();
@@ -2337,14 +2206,11 @@ mod tests {
             overlay(&cmd),
             serde_json::json!({"agent": {"title": {"disable": true}}})
         );
-        // No effort and no defaults: no overlay from the builder.
         t.harness_defaults.clear();
         let cmd = command_in(&LaunchEnv::for_test(), &t, Session::Unmanaged, "p", None).unwrap();
         assert!(cmd.get_envs().all(|(k, _)| k != "OPENCODE_CONFIG_CONTENT"));
     }
 
-    /// OpenCode mints its own `ses_...` ids, so a fresh launch says nothing
-    /// about sessions and a resume passes the harvested one back.
     #[test]
     fn opencode_only_names_a_session_when_resuming() {
         let r = Roster::builtin().unwrap();
@@ -2376,9 +2242,6 @@ mod tests {
         );
     }
 
-    /// LA-3: opencode 1.18.34 ignores `--prompt` beside `--session`, so a
-    /// resume gets its prompt typed in. The resume argv drops the flag
-    /// (U-64), so the typed prompt is the 1 delivery path.
     #[test]
     fn only_an_opencode_resume_types_its_prompt() {
         assert!(HarnessKind::OpenCode.adapter().resume_prompt_typed());
@@ -2392,8 +2255,6 @@ mod tests {
         }
     }
 
-    /// A resumed prompt that never reaches an idle agent is not silent: the
-    /// record gets a note that says why, and the orchestrator a BLOCKED line.
     #[test]
     fn an_undelivered_resume_prompt_is_recorded_and_reported() {
         use crate::messaging::delivery::{Readiness, Timing};
@@ -2411,7 +2272,6 @@ mod tests {
             poll: Duration::from_millis(1),
         };
         let tmp = tempfile::tempdir().unwrap();
-        // The fleetd of the session records (T-884).
         let _fleetd = crate::execution::store::test_serve(
             &tmp.path().join(crate::execution::store::STATE_DB),
         );
@@ -2474,8 +2334,6 @@ mod tests {
             "{blocked:?}"
         );
 
-        // #177: with no orchestrator pane to type into, the BLOCKED line
-        // still waits as orchestrator mail.
         let state = tempfile::tempdir().unwrap();
         let mail = mail::Mail::under(state.path(), "w1");
         let queue = |to: &str, line: &str| {
@@ -2509,7 +2367,6 @@ mod tests {
             "{pending:?}"
         );
 
-        // An idle agent gets the mail line, and its mail holds the prompt.
         let state = tempfile::tempdir().unwrap();
         let queue = |to: &str, line: &str| {
             mail::Mail::for_role(state.path(), "w1", to)
@@ -2542,8 +2399,6 @@ mod tests {
         assert_eq!(task[0].text, "TASK");
     }
 
-    /// A resumed push attempt is not told to claim (FR-5): its BLOCKED line
-    /// names the first line of its pane, which names `START.md`.
     #[test]
     fn an_undelivered_push_resume_asks_for_its_start_line_again() {
         use crate::messaging::delivery::{Readiness, Timing};
@@ -2597,9 +2452,6 @@ mod tests {
         assert!(!line.contains("claim"), "{line}");
     }
 
-    /// pi CAN be told its session id, so the ledger knows the resume handle
-    /// before the pane starts - the same deal claude gives. `--` fences the
-    /// prompt off from option parsing.
     #[test]
     fn pi_takes_a_caller_minted_session_and_fences_its_prompt() {
         let r = Roster::builtin().unwrap();
@@ -2630,8 +2482,6 @@ mod tests {
         assert_eq!(a.last().unwrap(), "-x BRIEF");
     }
 
-    /// Prime has no `--session-id` (verified against 0.9.4), so a fresh launch
-    /// must not invent one - `horch worker` owns its session directory instead.
     #[test]
     fn prime_never_claims_to_set_a_session_id() {
         let r = Roster::builtin().unwrap();
@@ -2666,8 +2516,6 @@ mod tests {
         );
     }
 
-    /// A permission_mode with no counterpart must stop the launch rather than
-    /// quietly running more permissively than the file asked for.
     #[test]
     fn a_mode_the_agent_cannot_express_is_refused() {
         let r = Roster::builtin().unwrap();
@@ -2679,8 +2527,6 @@ mod tests {
         assert!(err.contains("no opencode equivalent"), "{err}");
     }
 
-    /// A home holding `settings_json` as the operator's Claude settings, and
-    /// the launch environment that points at it.
     fn fake_home(settings_json: &str) -> (tempfile::TempDir, LaunchEnv) {
         let home = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(home.path().join(".claude")).unwrap();
@@ -2704,10 +2550,6 @@ mod tests {
         serde_json::from_str(&a[i + 1]).ok()
     }
 
-    /// The orchestrator keeps the operator's settings - they are already tuned
-    /// for token economy - and sheds only plugins and MCP servers. Not skills:
-    /// `--disable-slash-commands` also removes the built-in `/context` and
-    /// `/config`, and there is no way to keep just those two.
     #[test]
     fn the_orchestrator_sheds_plugins_and_mcp_but_keeps_settings_and_builtins() {
         let (_home, env) = fake_home(OPERATOR);
@@ -2746,7 +2588,6 @@ mod tests {
         );
         assert!(!a.contains(&"--plugin-dir".to_string()), "{a:?}");
 
-        // Only the operator's ENABLED plugins are switched off, by name.
         let overlay = settings_overlay(&a).expect("a --settings overlay");
         assert_eq!(overlay["enabledPlugins"]["herdr@m"], false);
         assert_eq!(overlay["enabledPlugins"]["ddd@m"], false);
@@ -2754,16 +2595,10 @@ mod tests {
             overlay["enabledPlugins"].get("old@m").is_none(),
             "{overlay}"
         );
-        // The claude.ai-synced skills and plugins go off too.
         assert_eq!(overlay["syncClaudeAiSkills"], false, "{overlay}");
         assert_eq!(overlay["syncClaudeAiPlugins"], false, "{overlay}");
-        // And nothing else rides along - no statusLine override and no tuning.
         assert!(overlay.get("statusLine").is_none(), "{overlay}");
         assert!(overlay.get("disableWorkflows").is_none(), "{overlay}");
-        // skillOverrides carries this teammate's own two entries and the
-        // ambient skill-creator copies, nothing else. The operator's
-        // `explain-diff-notion` override is not copied in: Claude merges
-        // settings per key, so it still applies by itself.
         assert_eq!(
             overlay["skillOverrides"],
             serde_json::json!({
@@ -2774,10 +2609,7 @@ mod tests {
             }),
             "{overlay}"
         );
-        // Remote Control is the orchestrator's alone.
         assert_eq!(overlay["remoteControlAtStartup"], true, "{overlay}");
-        // Its skill-creator is the bundled `horch:skill-creator`, never the
-        // official plugin: skillOverrides cannot hide a plugin skill.
         assert_eq!(
             overlay["enabledPlugins"]["skill-creator@claude-plugins-official"], false,
             "{overlay}"
@@ -2796,8 +2628,6 @@ mod tests {
         );
     }
 
-    /// `--strict-mcp-config` is what makes an `--mcp-config` subtractive. Without
-    /// it the operator's servers load too and the isolation is a no-op.
     #[test]
     fn declared_mcp_servers_are_strict_and_complete() {
         let r = Roster::builtin().unwrap();
@@ -2824,9 +2654,6 @@ mod tests {
         );
     }
 
-    /// `--mcp-config`, `--tools`, `--allowedTools`, `--disallowedTools` are
-    /// variadic. The prompt is the last positional. A variadic flag anywhere
-    /// after `--model` could reach it; a live probe lost the prompt this way.
     #[test]
     fn variadic_flags_are_fenced_off_from_the_prompt_by_model() {
         let (_home, env) = fake_home(OPERATOR);
@@ -2859,8 +2686,6 @@ mod tests {
         assert_eq!(a.last().unwrap(), "PROMPT");
     }
 
-    /// Plugin paths are written with `~` so a committed file is not bound to one
-    /// home directory; they must be expanded before the CLI sees them.
     #[test]
     fn plugin_paths_are_expanded_before_launch() {
         let r = Roster::builtin().unwrap();
@@ -2878,11 +2703,6 @@ mod tests {
         );
     }
 
-    /// A teammate that leaves these unset must not gain flags it never asked
-    /// for - the generics deliberately inherit the operator's environment. Two
-    /// things still ride in the overlay: the claude.ai-synced skills, off in
-    /// every pane whether plugins are inherited or not, and this teammate's own
-    /// `disabled_skills`, which name the stale external herdr briefings.
     #[test]
     fn unset_isolation_fields_add_no_flags() {
         let (_home, env) = fake_home(OPERATOR);
@@ -2913,7 +2733,11 @@ mod tests {
                     "Bash(git worktree prune:*)",
                     "Bash(git push:*)",
                     "Bash(gh pr merge:*)",
-                    "Bash(gh release:*)"
+                    "Bash(gh release:*)",
+                    "Bash(gh issue comment:*)",
+                    "Bash(gh pr comment:*)",
+                    "Bash(gh pr review:*)",
+                    "Bash(gh discussion:*)"
                 ]},
                 "attribution": {"commit": "", "pr": "", "sessionUrl": false},
                 "enabledPlugins": {"herdr@m": false, "skill-creator@claude-plugins-official": false},
@@ -2929,8 +2753,6 @@ mod tests {
         );
     }
 
-    /// `overlay` with the sandbox that each worker teammate has since
-    /// fleetd-p5 39, and its operator boundary of the fleet root `/fleet`.
     fn with_worker_sandbox(mut overlay: serde_json::Value) -> serde_json::Value {
         let permissions = &mut overlay["permissions"];
         permissions["blockReadsOutsideWorkingDirectories"] = serde_json::json!(true);
@@ -2957,9 +2779,6 @@ mod tests {
         overlay
     }
 
-    /// `inherit_claudeai_skills: true` leaves the switch out. `sonnet` still
-    /// gets a `--settings` overlay, because its `disabled_skills` go in the same
-    /// place; what must be absent is the `syncClaudeAiSkills` key itself.
     #[test]
     fn opting_in_to_claudeai_skills_leaves_the_switch_out() {
         let (_home, env) = fake_home(OPERATOR);
@@ -2978,7 +2797,11 @@ mod tests {
                     "Bash(git worktree prune:*)",
                     "Bash(git push:*)",
                     "Bash(gh pr merge:*)",
-                    "Bash(gh release:*)"
+                    "Bash(gh release:*)",
+                    "Bash(gh issue comment:*)",
+                    "Bash(gh pr comment:*)",
+                    "Bash(gh pr review:*)",
+                    "Bash(gh discussion:*)"
                 ]},
                 "attribution": {"commit": "", "pr": "", "sessionUrl": false},
                 "enabledPlugins": {"herdr@m": false, "skill-creator@claude-plugins-official": false},
@@ -2993,7 +2816,6 @@ mod tests {
             "the synced-skills switch must be the only thing opting out removes"
         );
 
-        // Opting in touches only this switch: the plugin off-map stays.
         let mut orch = r.require("orchestrator").unwrap().clone();
         orch.inherit_claudeai_skills = true;
         let a = argv(&command_in(&env, &orch, Session::Unmanaged, "p", None).unwrap());
@@ -3002,9 +2824,6 @@ mod tests {
         assert_eq!(overlay["enabledPlugins"]["herdr@m"], false);
     }
 
-    /// Each `disabled_skills` entry is switched off by name, next to the
-    /// synced-skills switch. The operator's own overrides are not restated:
-    /// Claude merges settings per key, so they still apply.
     #[test]
     fn disabled_skills_become_skill_overrides() {
         let (_home, env) = fake_home(OPERATOR);
@@ -3025,7 +2844,11 @@ mod tests {
                     "Bash(git worktree prune:*)",
                     "Bash(git push:*)",
                     "Bash(gh pr merge:*)",
-                    "Bash(gh release:*)"
+                    "Bash(gh release:*)",
+                    "Bash(gh issue comment:*)",
+                    "Bash(gh pr comment:*)",
+                    "Bash(gh pr review:*)",
+                    "Bash(gh discussion:*)"
                 ]},
                 "attribution": {"commit": "", "pr": "", "sessionUrl": false},
                 "enabledPlugins": {"skill-creator@claude-plugins-official": false},
@@ -3039,11 +2862,6 @@ mod tests {
         );
     }
 
-    /// A teammate's own `settings:` file replaces the plain overlay whole, so
-    /// that file has to carry the skill switches itself. (The skill-bundle
-    /// path in `skills.rs` merges into the file instead.) Only the
-    /// orchestrator's file passes as a path: a worker's file is read and
-    /// merged with its `git worktree` deny rules (FM-26).
     #[test]
     fn a_teammate_settings_file_replaces_the_plain_overlay() {
         let (_home, env) = fake_home(OPERATOR);
@@ -3060,9 +2878,6 @@ mod tests {
         assert!(settings_overlay(&a).is_none(), "{a:?}");
     }
 
-    /// The blunt instrument still keeps the status line: every pane in the
-    /// fleet shows the operator's, or the orchestrator runs blind on context
-    /// and cost, exactly where that information matters most.
     #[test]
     fn restricted_settings_keep_the_operator_status_line() {
         let (_home, env) = fake_home(OPERATOR);
@@ -3095,8 +2910,6 @@ mod tests {
         assert!(err.contains("agent: none"), "{err}");
     }
 
-    /// The marker carries the launch's `sessions_dir` to `discover_now`. An
-    /// empty marker, as an older horch wrote it, carries none.
     #[test]
     fn launch_marker_carries_the_sessions_dir() {
         let tmp = tempfile::tempdir().unwrap();
@@ -3109,9 +2922,6 @@ mod tests {
         assert_eq!(marker_sessions_dir(&tmp.path().join("gone")), None);
     }
 
-    /// U-14: a horch started under `git rebase -x` or a git hook has
-    /// `GIT_DIR` and its relatives set. An agent it launches must not see
-    /// them, or the agent's `git commit` writes into that other repository.
     #[cfg(unix)]
     #[test]
     fn an_agent_launch_drops_the_git_repository_variables() {
@@ -3160,6 +2970,10 @@ mod tests {
                 None,
                 None,
             ),
+            path: Some(super::super::claude::sandbox_tools_path(
+                &tmp.path().join("tools"),
+                true,
+            )),
             ..LaunchEnv::for_test()
         };
         let r = Roster::builtin().unwrap();
@@ -3178,7 +2992,6 @@ mod tests {
             .unwrap();
         assert!(status.success());
         let seen = std::fs::read_to_string(&seen).unwrap();
-        // Only the names: the rest of the environment can hold secrets.
         let leaked: Vec<&str> = [
             "GIT_DIR",
             "GIT_WORK_TREE",
@@ -3191,9 +3004,6 @@ mod tests {
         assert!(leaked.is_empty(), "the agent sees {leaked:?}");
     }
 
-    /// U-53: a teammate whose only skills are operator skills, all missing on
-    /// this host, has an empty plan and so no skill files. Its briefing still
-    /// carries the `Skipped:` note, and the harness exposes nothing.
     #[test]
     fn operator_only_teammate_with_every_skill_missing_still_gets_the_skipped_note() {
         let tmp = tempfile::tempdir().unwrap();
@@ -3236,7 +3046,6 @@ mod tests {
         assert!(!prompt.contains("Available native skills"), "{prompt}");
         assert!(!a.iter().any(|x| x == "--plugin-dir"), "{a:?}");
 
-        // No operator skill at all: no bundle, as before.
         t.operator_skills = None;
         let none = crate::skills::Bundle::install_from(
             &tmp.path().join("state"),
@@ -3249,9 +3058,6 @@ mod tests {
         assert!(none.is_none());
     }
 
-    /// ARC-29: the launch writes the harness's trust in its workdir before
-    /// the agent starts. A fake `claude` and a fake `codex` copy their stores
-    /// as they start; the copies already trust the workdir.
     #[cfg(unix)]
     #[test]
     fn arc_29_launch_trusts_the_workdir_before_the_agent_starts() {
@@ -3280,7 +3086,11 @@ mod tests {
         let ctx = RuntimeContext::from_env(
             &MapEnv::new(&workdir)
                 .with("HOME", &home.to_string_lossy())
-                .with("PATH", "/nonexistent")
+                .with(
+                    "PATH",
+                    &super::super::claude::sandbox_tools_path(&root.join("sandbox-bin"), true)
+                        .to_string_lossy(),
+                )
                 .with("HORCH_CLAUDE_BIN", &claude.to_string_lossy())
                 .with("HORCH_CODEX_BIN", &codex.to_string_lossy())
                 .with(
@@ -3334,10 +3144,6 @@ mod tests {
         assert_eq!(kept["numStartups"], 3);
     }
 
-    /// An exec launch of Claude Code exposes the skills of its bundle as a
-    /// `--plugin-dir`, as an interactive launch does: the plugin directory
-    /// is the private config home of the worker (conformance "Private home
-    /// honoured").
     #[test]
     fn claude_exec_launch_exposes_its_skills_as_a_plugin_dir() {
         let tmp = tempfile::tempdir().unwrap();
@@ -3345,6 +3151,7 @@ mod tests {
         for dir in ["home", "work", "task"] {
             std::fs::create_dir_all(tmp.path().join(dir)).unwrap();
         }
+        super::super::claude::sandbox_tools_path(&tmp.path().join("bin"), true);
         let env = crate::runtime::context::MapEnv::new(tmp.path().join("work"))
             .with("HOME", &p("home"))
             .with("PATH", &p("bin"))
@@ -3385,5 +3192,34 @@ mod tests {
             .unwrap_or_else(|| panic!("no --plugin-dir: {a:?}"));
         let parent = dir.parent().and_then(|d| d.file_name());
         assert_eq!(parent, Some("skill-bundles".as_ref()), "{dir:?}");
+    }
+
+    #[test]
+    fn hcb_12_spawn_refuses_a_harness_without_status_on_hc() {
+        assert_eq!(
+            super::HC_STATUS_HARNESSES,
+            &[
+                HarnessKind::Claude,
+                HarnessKind::Codex,
+                HarnessKind::Antigravity,
+            ]
+        );
+        for ok in [
+            HarnessKind::Claude,
+            HarnessKind::Codex,
+            HarnessKind::Antigravity,
+            HarnessKind::None,
+        ] {
+            assert_eq!(super::refusal_on_hc(ok), None, "{ok:?}");
+        }
+        for bad in [HarnessKind::OpenCode, HarnessKind::Pi, HarnessKind::Prime] {
+            let msg = super::refusal_on_hc(bad).expect("refused on hc");
+            assert_eq!(
+                msg,
+                format!(
+                    "{bad} does not report its status under hc, so horch cannot deliver to it there; run this fleet in the herdr TUI"
+                )
+            );
+        }
     }
 }

@@ -1,17 +1,6 @@
-//! The execution store: a project's session records.
-//!
-//! The records live in the `session_records` table of a task ledger file
-//! (TRF-45, D10), 1 row per [`LedgerRecordV1`], the record as JSON. Only
-//! fleetd writes the ledger (RR-5): a read-modify-write reads the rows
-//! read-only and sends the changed rows to fleetd in 1 `session_records`
-//! request (T-884). The old JSON ledger
-//! at `<state_root>/<slug>.json` (the path and slug rule of every earlier
-//! version) is read, never written: `horch ledger import` copies it, and a
-//! record only it holds moves into the table at the next write.
-
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{bail, ensure, Context, Result};
 use rusqlite::OptionalExtension;
@@ -28,21 +17,15 @@ use crate::execution::model::{
 };
 use crate::fleetd::fleet_runtime::adapters::channel_client::{self, Sent};
 use crate::fleetd::fleet_runtime::adapters::request_wire::Outcome;
-use crate::fleetd::fleet_runtime::domain::requests::Kind;
+use crate::fleetd::fleet_runtime::domain::requests::{Kind, RequestId};
 use crate::ids::{IdError, PaneId, WorkspaceId};
 use crate::runtime::{Paths, RuntimeContext};
 use crate::skills::activation::ResolvedSkillRef;
 use crate::taskledger::store::LedgerWriter;
 use crate::workspace::client::WorkspaceClient;
 
-/// The history text of a record that [`ExecutionStore::end_if_pane_closed`]
-/// ended.
 pub const PANE_CLOSED: &str = "pane closed without horch done";
 
-/// Turn a project path into a filename, matching `tr -c 'A-Za-z0-9' '-'`.
-///
-/// Operates on bytes, exactly as `tr` does, so a multi-byte character becomes one
-/// `-` per byte and slugs computed by the bash version still resolve.
 pub fn slug(project: &str) -> String {
     project
         .bytes()
@@ -56,9 +39,6 @@ pub fn slug(project: &str) -> String {
         .collect()
 }
 
-/// Every ledger file directly under `state_root`, sorted: each `*.json` file
-/// except `policy.json`. Directories are never ledgers, so the dataset tree
-/// under `<state_root>/multi-herdr/` is never read (OD3).
 pub(crate) fn ledger_paths(state_root: &Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(state_root) else {
         return Vec::new();
@@ -76,9 +56,6 @@ pub(crate) fn ledger_paths(state_root: &Path) -> Vec<PathBuf> {
     paths
 }
 
-/// One ledger file's records, or `None` when it cannot be read or does not
-/// parse right now (a write by an old binary may be in flight). An empty
-/// file is an empty ledger.
 pub(crate) fn read_ledger_file(path: &Path) -> Option<Vec<LedgerRecordV1>> {
     let text = std::fs::read_to_string(path).ok()?;
     if text.trim().is_empty() {
@@ -87,9 +64,6 @@ pub(crate) fn read_ledger_file(path: &Path) -> Option<Vec<LedgerRecordV1>> {
     serde_json::from_str(&text).ok()
 }
 
-/// Every ledger under `state_root` that reads right now, with its path, in
-/// path order. A ledger that does not parse is left out; a reader that runs
-/// across ticks keeps its last good copy itself (the telemetry collector).
 pub fn read_all_ledgers(state_root: &Path) -> Vec<(PathBuf, Vec<LedgerRecordV1>)> {
     ledger_paths(state_root)
         .into_iter()
@@ -97,25 +71,15 @@ pub fn read_all_ledgers(state_root: &Path) -> Vec<(PathBuf, Vec<LedgerRecordV1>)
         .collect()
 }
 
-/// The `label` prefix that marks a judge record; the attempt follows it.
-/// A judge has no key of its own: `round_id` plus `judge:<attempt>` is its
-/// key (architecture design §4.3).
 const JUDGE_LABEL: &str = "judge:";
 
-/// How long a `Planned` record may wait for its pane before a later spawn
-/// treats its spawner as gone. A spawn takes seconds from insert to pane.
 pub const ABANDONED_AFTER: chrono::Duration = chrono::Duration::minutes(5);
 
-/// Why a ledger record does not convert to an [`Execution`].
 #[derive(Debug)]
 pub enum LegacyError {
     Id(IdError),
     Agent(String),
-    /// `kind`, `experiment_id`, `round_id` and `label` do not name a kind.
-    Kind {
-        record: String,
-        reason: String,
-    },
+    Kind { record: String, reason: String },
 }
 
 impl std::fmt::Display for LegacyError {
@@ -189,11 +153,6 @@ fn judge_kind(r: &LedgerRecordV1, round: &str, label: &str) -> Result<ExecutionK
     })
 }
 
-/// The typed view of a ledger record. Every key of the record has a place in
-/// [`Execution`], so [`from_execution`] gives the record back unchanged.
-///
-/// A `session_id` of `""` (the bash spelling for none) reads as
-/// [`SessionState::Unavailable`] and writes back as `""`.
 pub fn to_execution(r: &LedgerRecordV1) -> Result<Execution, LegacyError> {
     let (workspace, pane) = placement(r)?;
     Ok(Execution {
@@ -215,6 +174,7 @@ pub fn to_execution(r: &LedgerRecordV1) -> Result<Execution, LegacyError> {
         workdir: r.workdir.as_ref().map(std::path::PathBuf::from),
         workspace,
         pane,
+        backend: r.backend,
         skills: r.skills.clone(),
         routing: r.routing.clone(),
         via: r.via.clone(),
@@ -249,7 +209,6 @@ fn task_of(r: &LedgerRecordV1) -> Result<Task, LegacyError> {
     })
 }
 
-/// The ledger record of an execution: the inverse of [`to_execution`].
 pub fn from_execution(e: &Execution) -> LedgerRecordV1 {
     let text =
         |p: &Option<std::path::PathBuf>| p.as_ref().map(|p| p.to_string_lossy().into_owned());
@@ -307,24 +266,12 @@ pub fn from_execution(e: &Execution) -> LedgerRecordV1 {
         skills: e.skills.clone(),
         compact_window: None,
         model_override: e.model_override,
+        backend: e.backend,
     }
 }
 
-/// The file name of the session records under a state root that has no
-/// task ledger of its own: a test, or a state dir moved with
-/// `HORCH_STATE_DIR` alone.
 pub const STATE_DB: &str = "ledger.sqlite3";
 
-/// The task ledger file that holds the session records of `paths`
-/// (TRF-45, T-890). An explicit value wins, in this order:
-/// 1. An explicit `HORCH_LEDGER_DB` gives that ledger. Only fleetd writes
-///    the session rows (T-884), so they must be in the ledger of that
-///    fleetd, and the fleetd launches each process with its ledger.
-/// 2. With no explicit ledger, a state dir moved with `HORCH_STATE_DIR` (a
-///    test, a smoke run) gives `<state_root>/ledger.sqlite3`, so it never
-///    writes the sessions of the operator's ledger.
-/// 3. Else the task ledger. A worker pane gets the default state dir by
-///    name, which is no move.
 pub fn session_db(paths: &Paths) -> PathBuf {
     if paths.ledger_override.is_some() || paths.state_root == paths.default_state_root {
         paths.ledger_db.clone()
@@ -333,9 +280,6 @@ pub fn session_db(paths: &Paths) -> PathBuf {
     }
 }
 
-/// The fleet root of the fleetd that owns the session records file `db`,
-/// for a process with `paths`: the fleet root of `paths` when `db` is its
-/// ledger, else the folder `fleet` beside `db`.
 pub fn session_fleet_root(paths: &Paths, db: &Path) -> PathBuf {
     if paths.ledger_db == db {
         paths.fleet_root.clone()
@@ -344,10 +288,6 @@ pub fn session_fleet_root(paths: &Paths, db: &Path) -> PathBuf {
     }
 }
 
-/// The session records file and the task ledger to overlay for a reader that
-/// knows only `state_root`: this process's own files when `state_root` is
-/// this process's state root, else `<state_root>/ledger.sqlite3` and no
-/// overlay.
 pub fn session_files(state_root: &Path) -> (PathBuf, Option<PathBuf>) {
     let paths = Paths::from_env(&crate::runtime::ProcessEnv);
     if paths.state_root == state_root {
@@ -357,8 +297,6 @@ pub fn session_files(state_root: &Path) -> (PathBuf, Option<PathBuf>) {
     }
 }
 
-/// The rule of [`ExecutionStore::record_exit`] for the record `r`, at
-/// `at`. True when it ended the record.
 fn exit_record(r: &mut LedgerRecordV1, code: Option<i32>, at: &str) -> bool {
     r.exit_code = code;
     r.updated_at = at.to_string();
@@ -376,13 +314,6 @@ fn exit_record(r: &mut LedgerRecordV1, code: Option<i32>, at: &str) -> bool {
     true
 }
 
-/// End the session record `record_id` in the open transaction `tx` of the
-/// ledger file that holds it, by the rule of
-/// [`ExecutionStore::record_exit`], at `at`. The ingest of `exit.json`
-/// uses it (fleetd-p5 ticket 43). A record that this file does not hold,
-/// or that does not parse, changes nothing. A record that already holds
-/// the end and `code` changes nothing, so a repeat is a no-op. True when
-/// it ended the record.
 pub fn record_exit_in(
     tx: &rusqlite::Connection,
     record_id: &str,
@@ -412,13 +343,39 @@ pub fn record_exit_in(
     Ok(ended)
 }
 
-/// The reason of a `session_records` request that fleetd refuses because a
-/// row changed after its client read it. The client reads again and sends
-/// again.
+pub fn record_history_in(
+    tx: &rusqlite::Connection,
+    record_id: &str,
+    event: &str,
+    text: &str,
+    at: &str,
+) -> Result<()> {
+    let json: Option<String> = tx
+        .query_row(
+            "SELECT record_json FROM session_records WHERE record_id = ?1",
+            [record_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(json) = json else {
+        return Ok(());
+    };
+    let mut r: LedgerRecordV1 = serde_json::from_str(&json)?;
+    r.updated_at = at.to_string();
+    r.history.push(HistoryEntry {
+        at: at.to_string(),
+        event: event.to_string(),
+        text: text.to_string(),
+    });
+    tx.execute(
+        "UPDATE session_records SET record_json = ?2, updated_at = ?3 WHERE record_id = ?1",
+        rusqlite::params![record_id, serde_json::to_string(&r)?, at],
+    )?;
+    Ok(())
+}
+
 pub const SESSION_RECORD_CHANGED: &str = "a session record changed after it was read";
 
-/// The error of a `session_records` row that changed after its client read
-/// it ([`SESSION_RECORD_CHANGED`]).
 #[derive(Debug)]
 pub struct SessionRecordChanged {
     pub record_id: String,
@@ -432,45 +389,31 @@ impl std::fmt::Display for SessionRecordChanged {
 
 impl std::error::Error for SessionRecordChanged {}
 
-/// The most bytes of a project path in a `session_records` request.
 const PROJECT_ROOT_MAX_BYTES: usize = 4096;
 
-/// The most bytes of a record id in a `session_records` request.
 const RECORD_ID_MAX_BYTES: usize = 64;
 
-/// The payload of the request kind `session_records` (T-884): the session
-/// records of 1 project that 1 [`ExecutionStore::update`] changed. fleetd
-/// is the only writer of the ledger (RR-5), so each process sends its
-/// change, and fleetd applies it with [`apply_session_records`].
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionRecordsPayload {
-    /// The project path as the store has it. Its slug names the rows.
     pub project_root: String,
     pub rows: Vec<SessionRowChange>,
 }
 
-/// 1 changed session record of a [`SessionRecordsPayload`].
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionRowChange {
     pub record_id: String,
-    /// The sha256 of the stored `record_json` that the client read. `None`:
-    /// the client read no row.
     #[serde(default)]
     pub expected: Option<String>,
-    /// The new record. `None` removes the row.
     #[serde(default)]
     pub record: Option<LedgerRecordV1>,
 }
 
-/// The sha256 of a stored `record_json`, as hex.
 fn row_hash(json: &str) -> String {
     crate::digest::sha256_bytes(json.as_bytes()).hex()
 }
 
-/// Whether `id` has the form of a record id: 1 to 64 ASCII letters,
-/// digits, `-` and `_`.
 fn record_id_ok(id: &str) -> bool {
     (1..=RECORD_ID_MAX_BYTES).contains(&id.len())
         && id
@@ -478,9 +421,6 @@ fn record_id_ok(id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
-/// Check the form of the untrusted payload `p`: a project path, at least 1
-/// row, each record id 1 time and of the record id form, each record with
-/// the id of its row, and each `expected` a sha256 in hex.
 fn check_session_records(p: &SessionRecordsPayload) -> Result<()> {
     ensure!(
         !p.project_root.trim().is_empty() && p.project_root.len() <= PROJECT_ROOT_MAX_BYTES,
@@ -514,13 +454,6 @@ fn check_session_records(p: &SessionRecordsPayload) -> Result<()> {
     Ok(())
 }
 
-/// Apply 1 `session_records` request in the open transaction `tx` of the
-/// ledger: the handler of fleetd. The payload is untrusted, so its form is
-/// checked first. Each row applies only when its stored `record_json` is the
-/// one that the client read, else the request is refused with
-/// [`SESSION_RECORD_CHANGED`] and writes nothing. A row of another project
-/// is refused. A changed row keeps its place in the write order, and a new
-/// row goes last.
 pub fn apply_session_records(tx: &rusqlite::Connection, payload: &Value) -> Result<Value> {
     let p: SessionRecordsPayload = serde_json::from_value(payload.clone())
         .context("the payload of session_records does not fit its kind")?;
@@ -552,8 +485,6 @@ pub fn apply_session_records(tx: &rusqlite::Connection, payload: &Value) -> Resu
     Ok(serde_json::json!({ "rows": p.rows.len() }))
 }
 
-/// Write the row change `row` of `project` in `tx`. `stored`: the row
-/// exists. A record's `status` is brought in line with its `state` first.
 fn put_row(
     tx: &rusqlite::Connection,
     project: &str,
@@ -593,14 +524,17 @@ fn put_row(
     Ok(())
 }
 
-/// The most reads of 1 [`ExecutionStore::update`] whose change fleetd
-/// refuses with [`SESSION_RECORD_CHANGED`].
+#[derive(Debug, PartialEq)]
+pub enum SessionWrite {
+    Committed,
+    Queued {
+        request_id: RequestId,
+        path: PathBuf,
+    },
+}
+
 const UPDATE_TRIES: usize = 3;
 
-/// The changes from the stored rows `stored` (record id to `record_json`)
-/// to `records`: each new or changed record, then each stored record that
-/// `records` dropped. A record id that appears twice keeps its last record.
-/// A record of the old JSON ledger only is new, so it moves into the table.
 fn row_changes(
     stored: &HashMap<String, String>,
     records: &[LedgerRecordV1],
@@ -640,17 +574,13 @@ fn row_changes(
     Ok(out)
 }
 
-/// 1 row of `session_records`.
 struct SessionRow {
     project_root: String,
     slug: String,
     record: LedgerRecordV1,
-    /// The stored `record_json`, for the hash of a change.
     json: String,
 }
 
-/// The session records of the slug `slug` (every slug with `None`), in write
-/// order. A record that does not parse is left out.
 fn session_rows(conn: &rusqlite::Connection, slug: Option<&str>) -> Result<Vec<SessionRow>> {
     let mut stmt = conn.prepare(
         "SELECT project_root, slug, record_json FROM session_records
@@ -679,8 +609,15 @@ fn session_rows(conn: &rusqlite::Connection, slug: Option<&str>) -> Result<Vec<S
         .collect())
 }
 
-/// The session records in `db` when the file exists, without creating it.
-/// A ledger that does not open or read gives none: a read never fails on it.
+fn has_session_records_table(conn: &rusqlite::Connection) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM sqlite_master
+                        WHERE type = 'table' AND name = 'session_records')",
+        [],
+        |row| row.get(0),
+    )?)
+}
+
 fn read_session_rows(db: &Path, slug: Option<&str>) -> Vec<SessionRow> {
     if !db.is_file() {
         return Vec::new();
@@ -690,8 +627,6 @@ fn read_session_rows(db: &Path, slug: Option<&str>) -> Vec<SessionRow> {
         .unwrap_or_default()
 }
 
-/// The old JSON records (read only) that no session record replaces, then
-/// the session records: 1 project's records in write order.
 fn merge_legacy(legacy: Vec<LedgerRecordV1>, rows: Vec<LedgerRecordV1>) -> Vec<LedgerRecordV1> {
     let stored: std::collections::HashSet<&str> =
         rows.iter().map(|r| r.record_id.as_str()).collect();
@@ -703,19 +638,12 @@ fn merge_legacy(legacy: Vec<LedgerRecordV1>, rows: Vec<LedgerRecordV1>) -> Vec<L
     out
 }
 
-/// 1 project's records, as [`read_all_projects`] reads them.
 pub struct ProjectRecords {
-    /// The path its JSON ledger had: `<state_root>/<slug>.json`.
     pub path: PathBuf,
-    /// The project path its session records or JSON records name.
     pub project: Option<String>,
     pub records: Vec<LedgerRecordV1>,
 }
 
-/// Every project's records under `state_root`, in path order: the old JSON
-/// ledgers (read only) merged with the session records in `db`, then the
-/// worker rows of `task_ledger` laid over each project. A JSON ledger that
-/// does not parse right now is left out.
 pub fn read_all_projects(
     state_root: &Path,
     db: &Path,
@@ -724,9 +652,6 @@ pub fn read_all_projects(
     merge_projects(state_root, read_all_ledgers(state_root), db, task_ledger)
 }
 
-/// [`read_all_projects`] over JSON ledgers the caller read already
-/// (`legacy`, path and records): a reader that keeps its last good copy of
-/// each file (the telemetry collector) passes its copies.
 pub fn merge_projects(
     state_root: &Path,
     legacy: Vec<(PathBuf, Vec<LedgerRecordV1>)>,
@@ -768,7 +693,6 @@ pub fn merge_projects(
         .collect()
 }
 
-/// [`read_all_projects`] as (path, records) pairs.
 pub fn read_all_sessions(
     state_root: &Path,
     db: &Path,
@@ -780,46 +704,32 @@ pub fn read_all_sessions(
         .collect()
 }
 
-/// A project's executions.
-///
-/// The records live in the `session_records` table of a task ledger file
-/// (TRF-45, D10): 1 row per record, the record as JSON. An old JSON ledger
-/// (`<state_root>/<slug>.json`) is read, never written: a record only it
-/// holds reads as before and moves into the table at the next write. Reads
-/// lay the task ledger's worker rows over the records (TRF-44,
-/// [`overlay_task_ledger`]). Every write is 1 `session_records` request to
-/// fleetd ([`ExecutionStore::update`]).
+struct WrapperRow {
+    db: PathBuf,
+    slug: String,
+    record: LedgerRecordV1,
+}
+
+static WRAPPER_ROWS: Mutex<Vec<WrapperRow>> = Mutex::new(Vec::new());
+
 #[derive(Debug, Clone)]
 pub struct ExecutionStore {
-    /// The old JSON ledger, read only.
     path: PathBuf,
-    /// The task ledger file that holds the session records.
     db: PathBuf,
-    /// The project path as given, and its slug.
     project: String,
     slug: String,
-    /// The task ledger and the project root its runs are under.
     task_ledger: Option<(PathBuf, PathBuf)>,
-    /// The context that reaches the fleetd of [`Self::db`], when the store
-    /// was opened from 1 ([`ExecutionStore::open_in`]).
     fleet: Option<Box<RuntimeContext>>,
-    /// The paths the store was opened with ([`ExecutionStore::open`]).
     paths: Option<Box<Paths>>,
-    /// The writer of fleetd: with it, a write applies in this process, on
-    /// the path of the `session_records` handler.
     writer: Option<Arc<LedgerWriter>>,
 }
 
 impl ExecutionStore {
-    /// The store for an explicit state root and project path. The session
-    /// records live in `<state_root>/ledger.sqlite3`.
     pub fn for_project(state_root: impl AsRef<Path>, project: &str) -> Self {
         let state_root = state_root.as_ref();
         Self::in_db(state_root, &state_root.join(STATE_DB), project)
     }
 
-    /// The store for `project` with its session records in `db` and its old
-    /// JSON ledger under `state_root`.
     pub fn in_db(state_root: &Path, db: &Path, project: &str) -> Self {
         let slug = slug(project);
         Self {
@@ -834,9 +744,6 @@ impl ExecutionStore {
         }
     }
 
-    /// The store for `project` under the state root of `paths`, with its
-    /// session records in [`session_db`], reading through the task ledger of
-    /// `paths`.
     pub fn open(paths: &Paths, project: &Path) -> Self {
         let mut store = Self::in_db(
             &paths.state_root,
@@ -848,43 +755,30 @@ impl ExecutionStore {
         store
     }
 
-    /// The store for the context's state root and project, reading through
-    /// the context's task ledger.
     pub fn open_in(ctx: &RuntimeContext) -> Result<Self> {
         let mut store = Self::open(&ctx.paths, &ctx.paths.project()?);
         store.fleet = Some(Box::new(ctx.clone()));
         Ok(store)
     }
 
-    /// Write through the writer of fleetd, in this process, with the
-    /// handler of `session_records` ([`apply_session_records`]). Only a
-    /// process that holds the writer (fleetd, or a test of the store) can
-    /// call it.
     pub fn with_writer(mut self, writer: Arc<LedgerWriter>) -> Self {
         self.writer = Some(writer);
         self
     }
 
-    /// Read the worker rows of `project`'s runs in the task ledger `db` over
-    /// the records. A ledger file that does not exist adds nothing.
     pub fn with_task_ledger(mut self, db: &Path, project: &Path) -> Self {
         self.task_ledger = Some((db.to_path_buf(), project.to_path_buf()));
         self
     }
 
-    /// The old JSON ledger of this project. Nothing writes it (TRF-45).
     pub fn path(&self) -> &Path {
         &self.path
     }
 
-    /// The task ledger file that holds this project's session records.
     pub fn db(&self) -> &Path {
         &self.db
     }
 
-    /// All records, oldest write order preserved, with the task ledger's
-    /// worker rows laid over them ([`overlay_task_ledger`]). No records read
-    /// as an empty ledger. A read never creates a file.
     pub fn read(&self) -> Result<Vec<LedgerRecordV1>> {
         let mut records = self.read_file()?;
         if let Some((db, project)) = &self.task_ledger {
@@ -893,24 +787,18 @@ impl ExecutionStore {
         Ok(records)
     }
 
-    /// The records as stored, without the overlay: what a write starts
-    /// from.
     fn read_file(&self) -> Result<Vec<LedgerRecordV1>> {
-        let rows = read_session_rows(&self.db, Some(&self.slug));
+        let rows = self.with_wrapper_rows(read_session_rows(&self.db, Some(&self.slug)));
         Ok(merge_legacy(
             self.read_legacy()?,
             rows.into_iter().map(|r| r.record).collect(),
         ))
     }
 
-    /// The stored records, without the overlay, rendered as a JSON ledger
-    /// was written ([`ExecutionStore::render_json`]): what a check of the
-    /// stored bytes reads now that no JSON file is written.
     pub fn stored_json(&self) -> Result<String> {
         Self::render_json(&self.read_file()?)
     }
 
-    /// The old JSON ledger's records. An absent or empty file is none.
     fn read_legacy(&self) -> Result<Vec<LedgerRecordV1>> {
         let raw = std::fs::read_to_string(&self.path).unwrap_or_default();
         if raw.trim().is_empty() {
@@ -920,18 +808,10 @@ impl ExecutionStore {
             .with_context(|| format!("parsing ledger {}", self.path.display()))
     }
 
-    /// The bytes `ExecutionStore::write` puts on disk for `records`:
-    /// `to_string_pretty`, no trailing newline, as every earlier version.
     pub fn render_json(records: &[LedgerRecordV1]) -> Result<String> {
         Ok(serde_json::to_string_pretty(records)?)
     }
 
-    /// The ledger for people and the orchestrator LLM, newest first: what
-    /// `horch sessions` prints. Every line it needs to weigh relevance and
-    /// pick a resumable session id. Orchestrators come first, in their own
-    /// section: they are never resumed with `horch spawn`, so they must not
-    /// read as candidates among the workers. A ledger with no orchestrator
-    /// record renders as before.
     pub fn render_text(records: &[LedgerRecordV1]) -> String {
         let mut records = records.to_vec();
         if records.is_empty() {
@@ -952,24 +832,78 @@ impl ExecutionStore {
         out
     }
 
-    /// The stored rows of this project, read-only. A file that does not
-    /// exist has none.
     fn stored_rows(&self) -> Result<Vec<SessionRow>> {
         if !self.db.is_file() {
-            return Ok(Vec::new());
+            return Ok(self.with_wrapper_rows(Vec::new()));
         }
         let store = crate::taskledger::Store::open_read_only(&self.db)
             .with_context(|| format!("reading the session records in {}", self.db.display()))?;
-        session_rows(store.conn(), Some(&self.slug))
+        if !has_session_records_table(store.conn())? {
+            return Ok(self.with_wrapper_rows(Vec::new()));
+        }
+        Ok(self.with_wrapper_rows(session_rows(store.conn(), Some(&self.slug))?))
     }
 
-    /// Mutate the records and send the change to fleetd, the only writer of
-    /// the ledger (RR-5, T-884): 1 `session_records` request with each
-    /// changed row and the hash of each row as it was read. fleetd refuses a
-    /// row that changed after the read; then `f` runs again on a new read,
-    /// so 2 writers cannot lose a change. When fleetd is down, the request
-    /// waits in a request file, and fleetd applies it at its start.
-    pub fn update<T>(&self, mut f: impl FnMut(&mut Vec<LedgerRecordV1>) -> Result<T>) -> Result<T> {
+    fn with_wrapper_rows(&self, mut rows: Vec<SessionRow>) -> Vec<SessionRow> {
+        if !channel_client::is_wrapper_process() {
+            return rows;
+        }
+        let kept = WRAPPER_ROWS.lock().unwrap_or_else(|e| e.into_inner());
+        for k in kept
+            .iter()
+            .filter(|k| k.db == self.db && k.slug == self.slug)
+        {
+            let row = SessionRow {
+                project_root: self.project.clone(),
+                slug: self.slug.clone(),
+                json: serde_json::to_string(&k.record).unwrap_or_default(),
+                record: k.record.clone(),
+            };
+            match rows
+                .iter_mut()
+                .find(|r| r.record.record_id == k.record.record_id)
+            {
+                Some(r) => *r = row,
+                None => rows.push(row),
+            }
+        }
+        rows
+    }
+
+    fn keep_in_wrapper(&self, rows: Vec<SessionRowChange>) {
+        let mut kept = WRAPPER_ROWS.lock().unwrap_or_else(|e| e.into_inner());
+        for change in rows {
+            let same = |k: &WrapperRow| {
+                k.db == self.db && k.slug == self.slug && k.record.record_id == change.record_id
+            };
+            kept.retain(|k| !same(k));
+            if let Some(record) = change.record {
+                kept.push(WrapperRow {
+                    db: self.db.clone(),
+                    slug: self.slug.clone(),
+                    record,
+                });
+            }
+        }
+    }
+
+    pub fn update<T>(&self, f: impl FnMut(&mut Vec<LedgerRecordV1>) -> Result<T>) -> Result<T> {
+        let (out, written) = self.update_written(f)?;
+        if let SessionWrite::Queued { request_id, path } = written {
+            eprintln!(
+                "the session records of {} are not committed: request {request_id} waits in {}. \
+                 When fleetd refuses it at start, 1 needs-you item names it.",
+                self.project,
+                path.display()
+            );
+        }
+        Ok(out)
+    }
+
+    pub fn update_written<T>(
+        &self,
+        mut f: impl FnMut(&mut Vec<LedgerRecordV1>) -> Result<T>,
+    ) -> Result<(T, SessionWrite)> {
         for _ in 0..UPDATE_TRIES {
             let rows = self.stored_rows()?;
             let stored: HashMap<String, String> = rows
@@ -983,19 +917,25 @@ impl ExecutionStore {
             let out = f(&mut records)?;
             let changed = row_changes(&stored, &records)?;
             if changed.is_empty() {
-                return Ok(out);
+                return Ok((out, SessionWrite::Committed));
+            }
+            if channel_client::is_wrapper_process() {
+                self.keep_in_wrapper(changed);
+                return Ok((out, SessionWrite::Committed));
             }
             if let Some(writer) = &self.writer {
                 match self.apply(writer, changed) {
-                    Ok(()) => return Ok(out),
+                    Ok(()) => return Ok((out, SessionWrite::Committed)),
                     Err(e) if e.downcast_ref::<SessionRecordChanged>().is_some() => continue,
                     Err(e) => return Err(e),
                 }
             }
             match self.send(changed)? {
-                Sent::Queued { .. } => return Ok(out),
+                Sent::Queued { request_id, path } => {
+                    return Ok((out, SessionWrite::Queued { request_id, path }))
+                }
                 Sent::Replied(reply) => match reply.outcome {
-                    Outcome::Applied(_) => return Ok(out),
+                    Outcome::Applied(_) => return Ok((out, SessionWrite::Committed)),
                     Outcome::Refused(reason) if reason.contains(SESSION_RECORD_CHANGED) => {}
                     Outcome::Refused(reason) => bail!(
                         "fleetd refused the session records of {}: {reason}",
@@ -1010,7 +950,6 @@ impl ExecutionStore {
         )
     }
 
-    /// The payload of the change `rows`.
     fn payload(&self, rows: Vec<SessionRowChange>) -> Result<Value> {
         Ok(serde_json::to_value(SessionRecordsPayload {
             project_root: self.project.clone(),
@@ -1018,7 +957,6 @@ impl ExecutionStore {
         })?)
     }
 
-    /// Apply the rows `rows` in this process with the writer of fleetd.
     fn apply(&self, writer: &LedgerWriter, rows: Vec<SessionRowChange>) -> Result<()> {
         let payload = self.payload(rows)?;
         let mut store = writer.open(&self.db)?;
@@ -1026,7 +964,6 @@ impl ExecutionStore {
         Ok(())
     }
 
-    /// Send the rows `rows` to the fleetd of [`Self::db`].
     fn send(&self, rows: Vec<SessionRowChange>) -> Result<Sent> {
         let Value::Object(payload) = self.payload(rows)? else {
             bail!("the payload of session_records is not an object");
@@ -1034,10 +971,6 @@ impl ExecutionStore {
         channel_client::send(&self.fleet_context()?, Kind::SessionRecords, payload)
     }
 
-    /// The context of the fleetd that owns [`Self::db`]: the context of the
-    /// store, else of this process with the paths of the store. A file that
-    /// is not the ledger of those paths is the ledger of the fleet root
-    /// beside it ([`session_fleet_root`]).
     fn fleet_context(&self) -> Result<RuntimeContext> {
         let mut ctx = match &self.fleet {
             Some(ctx) => (**ctx).clone(),
@@ -1051,8 +984,6 @@ impl ExecutionStore {
         Ok(ctx)
     }
 
-    /// Mutate every record addressed by `key` (record id or session id).
-    /// Fails, naming the file, when none matches.
     pub(crate) fn update_key(
         &self,
         key: &str,
@@ -1070,7 +1001,6 @@ impl ExecutionStore {
         })
     }
 
-    /// Append a record as given. Lifecycle defaults are the caller's job.
     pub fn insert(&self, record: LedgerRecordV1) -> Result<()> {
         self.update(|records| {
             records.push(record.clone());
@@ -1078,7 +1008,6 @@ impl ExecutionStore {
         })
     }
 
-    /// The newest record addressed by `key`.
     pub fn get(&self, key: &str) -> Result<LedgerRecordV1> {
         self.read()?
             .into_iter()
@@ -1086,8 +1015,6 @@ impl ExecutionStore {
             .with_context(|| format!("no record matches {key}"))
     }
 
-    /// Set the typed status of the records addressed by `key`; `status`
-    /// follows it. A terminal state stamps `finished_at` once.
     pub fn set_state(&self, key: &str, state: ExecutionStatus) -> Result<()> {
         let at = crate::clock::now_stamp();
         self.update_key(key, |r| {
@@ -1101,17 +1028,14 @@ impl ExecutionStore {
         })
     }
 
-    /// Record the exact skills the execution was briefed with (SKL-04).
     pub fn set_skills(&self, key: &str, skills: Vec<ResolvedSkillRef>) -> Result<()> {
         self.update_key(key, |r| r.skills = skills.clone())
     }
 
-    /// Record the launch's native-window decision (CTX-05).
     pub fn set_compact_window(&self, key: &str, window: &LedgerWindow) -> Result<()> {
         self.update_key(key, |r| r.compact_window = Some(window.clone()))
     }
 
-    /// Every record as an [`Execution`].
     pub fn load(&self) -> Result<Vec<Execution>> {
         self.read()?
             .iter()
@@ -1119,18 +1043,10 @@ impl ExecutionStore {
             .collect()
     }
 
-    /// Append an execution as given.
     pub fn insert_execution(&self, e: &Execution) -> Result<()> {
         self.insert(from_execution(e))
     }
 
-    /// The pane exists and runs the worker command: `Starting`, with its pane.
-    ///
-    /// The worker starts as soon as `pane run` answers, before this write.
-    /// On a loaded machine it can set `Running`, or even finish, first. Its
-    /// state stays then: only a record that no worker has touched yet
-    /// (`Planned`, or `LaunchFailed` by a spawn's recovery) becomes
-    /// `Starting`. The pane is recorded either way.
     pub fn mark_starting(&self, key: &str, pane: &str) -> Result<()> {
         let at = crate::clock::now_stamp();
         self.update_key(key, |r| {
@@ -1146,11 +1062,6 @@ impl ExecutionStore {
         })
     }
 
-    /// The worker launches its agent: `Running`. A record that has ended
-    /// keeps its end: the coordinator can time out or cancel a candidate
-    /// while its worker is still starting, and the closed pane then kills
-    /// the worker. `LaunchFailed` (a spawn's recovery) still becomes
-    /// `Running`, because the worker does run.
     pub fn mark_running(&self, key: &str) -> Result<()> {
         let at = crate::clock::now_stamp();
         self.update_key(key, |r| {
@@ -1166,10 +1077,6 @@ impl ExecutionStore {
         })
     }
 
-    /// End a record that has not ended yet with the terminal `state`. A
-    /// record that has ended keeps its end: the worker can run `horch done`
-    /// between a caller's read and this write. Returns the newest matching
-    /// record's state after the write, which the caller records.
     pub fn end_live(&self, key: &str, state: ExecutionStatus) -> Result<ExecutionStatus> {
         debug_assert!(state.is_terminal(), "end_live needs a terminal state");
         let at = crate::clock::now_stamp();
@@ -1187,14 +1094,6 @@ impl ExecutionStore {
         })
     }
 
-    /// The agent process ended with `code` (`None`: killed by a signal, or it
-    /// never started). A live record ends: `Done` on 0, and
-    /// `Failed(AgentExited)` otherwise, unless it is an orchestrator, which
-    /// keeps its state. A record that is already terminal (the worker ran
-    /// `horch done`) only gets the code.
-    ///
-    /// True when it ended the record: the agent left without `horch done`,
-    /// so nobody told the orchestrator.
     pub fn record_exit(&self, key: &str, code: Option<i32>) -> Result<bool> {
         let at = crate::clock::now_stamp();
         let mut ended = false;
@@ -1202,22 +1101,12 @@ impl ExecutionStore {
         Ok(ended)
     }
 
-    /// The recovery rule for a spawner that stopped between the insert and
-    /// the pane (a crash, or `HORCH_FAULT=abort-after-*`): a `Planned`
-    /// record without a pane whose last update is [`ABANDONED_AFTER`] or more
-    /// before `now` becomes `LaunchFailed`. Its role and brief are freed with
-    /// it. Returns the records it closed. Every `horch spawn` runs it first.
-    ///
-    /// The stage is the last one that may have run; the record cannot say
-    /// which did. A `Planned` record is never live, so until this runs only
-    /// the legacy `status` (`working`) is stale.
     pub fn recover_abandoned(&self, now: DateTime<Utc>) -> Result<Vec<LedgerRecordV1>> {
         let abandoned = |r: &LedgerRecordV1| {
             r.state == Some(ExecutionStatus::Planned)
                 && r.pane_id.is_none()
                 && crate::clock::parse(&r.updated_at).is_some_and(|t| now - t >= ABANDONED_AFTER)
         };
-        // Read first: most spawns find nothing, and then write nothing.
         if !self.read_file()?.iter().any(abandoned) {
             return Ok(Vec::new());
         }
@@ -1238,13 +1127,6 @@ impl ExecutionStore {
         })
     }
 
-    /// End the newest record addressed by `key` when its pane closed without
-    /// `horch done`: the record is still `working`, names a pane, and herdr
-    /// answers but does not have that pane. The record becomes
-    /// `Failed(PaneVanished)` with the history text [`PANE_CLOSED`], so
-    /// `horch spawn --resume` can reopen it. A pane that is open, a record
-    /// without a pane, an orchestrator, and a herdr that does not answer
-    /// leave the record alone. Returns whether it ended the record.
     pub fn end_if_pane_closed(&self, key: &str, ws: &dyn WorkspaceClient) -> Result<bool> {
         let at = crate::clock::now_stamp();
         match self.closed_working_record(key, ws) {
@@ -1253,8 +1135,6 @@ impl ExecutionStore {
         }
     }
 
-    /// The newest record `key` addresses, when it is a working worker whose
-    /// pane herdr (answering) does not have.
     fn closed_working_record(&self, key: &str, ws: &dyn WorkspaceClient) -> Option<LedgerRecordV1> {
         let record = self.get(key).ok()?;
         if record.status != STATUS_WORKING || record.is_orchestrator() {
@@ -1265,7 +1145,6 @@ impl ExecutionStore {
         gone.then_some(record)
     }
 
-    /// Records whose typed status is live: starting or running.
     pub fn live(&self) -> Result<Vec<LedgerRecordV1>> {
         Ok(self
             .read()?
@@ -1273,10 +1152,29 @@ impl ExecutionStore {
             .filter(|r| r.execution_status().is_live())
             .collect())
     }
+
+    pub fn backend_of_workspace(&self, workspace: &str) -> Result<Option<crate::runtime::Backend>> {
+        Ok(self
+            .read()?
+            .into_iter()
+            .rev()
+            .find(|r| r.workspace_id.as_deref() == Some(workspace))
+            .map(|r| r.backend))
+    }
 }
 
-/// End the still-working rows of `record_id` as `PaneVanished`. Re-checked
-/// under the lock: the worker may run `horch done` now.
+pub fn workspace_backend(paths: &Paths, workspace: &str) -> Option<crate::runtime::Backend> {
+    read_all_projects(
+        &paths.state_root,
+        &session_db(paths),
+        Some(&paths.ledger_db),
+    )
+    .into_iter()
+    .flat_map(|p| p.records.into_iter())
+    .rfind(|r| r.workspace_id.as_deref() == Some(workspace))
+    .map(|r| r.backend)
+}
+
 fn mark_pane_vanished(records: &mut [LedgerRecordV1], record_id: &str, at: &str) -> bool {
     let mut ended = false;
     for r in records.iter_mut() {
@@ -1300,7 +1198,6 @@ fn mark_pane_vanished(records: &mut [LedgerRecordV1], record_id: &str, at: &str)
     ended
 }
 
-/// The text of each record, in the given order.
 fn render_records(records: &[LedgerRecordV1], out: &mut String) {
     for r in records {
         let session = r.session_id.as_deref().unwrap_or("not-yet-known");
@@ -1352,16 +1249,11 @@ fn render_records(records: &[LedgerRecordV1], out: &mut String) {
     }
 }
 
-/// 1 worker row of the task ledger, with the task it claimed.
 struct LedgerWorker {
     worker: crate::taskledger::workers::Worker,
-    /// `T-<seq>: <title>` of the claimed task.
     task: Option<String>,
 }
 
-/// The worker rows of every run of `project` in the task ledger `db`, newest
-/// first. A ledger file that does not exist, or that does not open or read
-/// right now, gives none: a session read never fails on the task ledger.
 fn ledger_workers(db: &Path, project: &Path) -> Vec<LedgerWorker> {
     if !db.is_file() {
         return Vec::new();
@@ -1393,7 +1285,6 @@ fn ledger_workers(db: &Path, project: &Path) -> Vec<LedgerWorker> {
     read().unwrap_or_default()
 }
 
-/// The typed status of a worker row.
 fn worker_state(w: &crate::taskledger::workers::Worker) -> ExecutionStatus {
     use crate::taskledger::model::WorkerStatus as W;
     let reason = || w.end_reason.clone().unwrap_or_else(|| w.status.clone());
@@ -1416,7 +1307,6 @@ fn worker_state(w: &crate::taskledger::workers::Worker) -> ExecutionStatus {
     }
 }
 
-/// The newest of a worker row's stamps.
 fn worker_updated(w: &crate::taskledger::workers::Worker) -> Option<String> {
     [
         &w.spawned_at,
@@ -1431,9 +1321,6 @@ fn worker_updated(w: &crate::taskledger::workers::Worker) -> Option<String> {
     .cloned()
 }
 
-/// The JSON record a worker row stands for: the record it names, else the
-/// newest unclaimed record of its kind, role, workspace and liveness. An
-/// unnamed row matches only a record that no other row names.
 fn matching_record(
     records: &[LedgerRecordV1],
     w: &crate::taskledger::workers::Worker,
@@ -1465,9 +1352,6 @@ fn matching_record(
         .map(|(i, _)| i)
 }
 
-/// Lay a worker row over its JSON record. The row wins for what it records:
-/// the claimed task, liveness, session, pane and end. The record keeps what
-/// only it has: history, skills, routing and the window decision.
 fn overlay_record(r: &mut LedgerRecordV1, lw: &LedgerWorker) {
     let w = &lw.worker;
     if let Some(task) = &lw.task {
@@ -1492,6 +1376,9 @@ fn overlay_record(r: &mut LedgerRecordV1, lw: &LedgerWorker) {
     fill(&mut r.session_id, &w.session_id);
     fill(&mut r.pane_id, &w.pane_id);
     fill(&mut r.workspace_id, &w.workspace_id);
+    if w.backend != crate::runtime::Backend::Herdr {
+        r.backend = w.backend;
+    }
     if r.effort.is_none() {
         r.effort = w.effort.clone();
     }
@@ -1522,9 +1409,6 @@ fn overlay_record(r: &mut LedgerRecordV1, lw: &LedgerWorker) {
     }
 }
 
-/// The record of a worker row that has no JSON record: its id is the
-/// worker id. An orchestrator row without a harness takes the harness of
-/// the newest JSON orchestrator record of its workspace.
 fn synthesized_record(lw: &LedgerWorker, records: &[LedgerRecordV1]) -> LedgerRecordV1 {
     let w = &lw.worker;
     let orchestrator = w.kind == KIND_ORCHESTRATOR;
@@ -1566,6 +1450,7 @@ fn synthesized_record(lw: &LedgerWorker, records: &[LedgerRecordV1]) -> LedgerRe
         .to_string(),
         workspace_id: w.workspace_id.clone(),
         pane_id: w.pane_id.clone(),
+        backend: w.backend,
         ..LedgerRecordV1::default()
     };
     r.set_state(worker_state(w));
@@ -1573,11 +1458,6 @@ fn synthesized_record(lw: &LedgerWorker, records: &[LedgerRecordV1]) -> LedgerRe
     r
 }
 
-/// Lay the task ledger's worker rows for `project` over `records` (TRF-44,
-/// D10 step 1). A row that names a record, or matches one by kind, role and
-/// workspace, updates it in place (`overlay_record`). A row without a
-/// record is added after them (`synthesized_record`). Without the ledger
-/// file the records stay as read.
 pub fn overlay_task_ledger(records: &mut Vec<LedgerRecordV1>, db: &Path, project: &Path) {
     let rows = ledger_workers(db, project);
     if rows.is_empty() {
@@ -1592,7 +1472,6 @@ pub fn overlay_task_ledger(records: &mut Vec<LedgerRecordV1>, db: &Path, project
     for lw in &rows {
         match matching_record(records, &lw.worker, &taken, &named) {
             Some(i) if taken.insert(i) => overlay_record(&mut records[i], lw),
-            // A second row of 1 record (a resume) leaves it to the newest.
             Some(_) => {}
             None => added.push(synthesized_record(lw, records)),
         }
@@ -1612,7 +1491,6 @@ mod trf_44_tests {
     use crate::taskledger::Store;
 
     struct Fixture {
-        /// Declared first, so it drops before the folder.
         _fleetd: crate::fleetd::fleet_runtime::adapters::channel_server::ChannelServer,
         _tmp: tempfile::TempDir,
         project: PathBuf,
@@ -1658,8 +1536,6 @@ mod trf_44_tests {
             .unwrap();
     }
 
-    /// A run with task T-1 and 1 worker row; `set` is the SQL `SET` list
-    /// for the row, with `?2` the task id.
     fn add_worker(f: &Fixture, new: NewWorker, set: &str) -> String {
         let mut store = Store::open(&f.db).unwrap();
         store
@@ -1675,7 +1551,6 @@ mod trf_44_tests {
                         },
                     )?,
                 };
-                // FR-12: a task needs an idea in flight of the feature of its run.
                 crate::taskledger::schema::run_idea(
                     tx,
                     &run.run_id,
@@ -1749,7 +1624,6 @@ mod trf_44_tests {
         assert!(records[0].execution_status().is_live());
         let text = ExecutionStore::render_text(&records);
         assert!(text.contains("task: T-1: Fix the parser"), "{text}");
-        // The JSON file keeps what the writers wrote.
         assert_eq!(
             f.ledger.store().read_file().unwrap()[0].task,
             "Run horch ledger claim."
@@ -1854,7 +1728,6 @@ mod trf_44_tests {
             persona: "orchestrator".into(),
             ..worker("orchestrator", None)
         };
-        // The stopped row is the done record; the working row has none.
         add_worker(
             &f,
             orchestrator(),
@@ -1873,8 +1746,6 @@ mod trf_44_tests {
     }
 }
 
-/// Serve `session_records` for the ledger `db` on the fleet root beside it,
-/// where [`ExecutionStore::update`] of a store with no context finds it.
 #[cfg(test)]
 pub(crate) fn test_serve(
     db: &Path,
@@ -1917,8 +1788,6 @@ mod trf_45_tests {
             .unwrap();
     }
 
-    /// Spawn, worker start and exit, note and done write the session
-    /// records and never a JSON file.
     #[test]
     fn trf_45_every_session_write_goes_to_the_table_and_no_json_file() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1962,8 +1831,6 @@ mod trf_45_tests {
         assert_eq!(rows, 2);
     }
 
-    /// An old JSON ledger reads as before, is never written, and its
-    /// records move into the table at the next write.
     #[test]
     fn trf_45_an_old_json_ledger_is_read_and_never_written() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1989,7 +1856,6 @@ mod trf_45_tests {
         assert_eq!(store.read().unwrap().len(), 1, "no duplicate");
     }
 
-    /// A worker row that names a record links the session record to it.
     #[test]
     fn trf_45_a_session_record_names_its_worker_row() {
         use crate::taskledger::runs::{self, NewRun};
@@ -2007,7 +1873,6 @@ mod trf_45_tests {
                         ..Default::default()
                     },
                 )?;
-                // FR-12: a task needs an idea in flight of the feature of its run.
                 crate::taskledger::schema::run_idea(
                     tx,
                     &run.run_id,
@@ -2044,11 +1909,6 @@ mod trf_45_tests {
         assert_eq!(linked, Some(wid));
     }
 
-    /// A state dir moved alone keeps its sessions there; the default state
-    /// dir uses the task ledger. An explicit `HORCH_LEDGER_DB` wins over a
-    /// moved state dir (T-890). This changes the old rule "a moved state dir
-    /// wins over HORCH_LEDGER_DB": after T-884 only fleetd writes the session
-    /// rows, so they must be in the ledger of that fleetd.
     #[test]
     fn trf_45_session_db_is_the_task_ledger_unless_the_state_dir_moved() {
         use crate::runtime::MapEnv;
@@ -2069,8 +1929,6 @@ mod trf_45_tests {
     }
 }
 
-/// The request kind `session_records` (T-884): its payload check, the
-/// hash check of its handler, and the retry of [`ExecutionStore::update`].
 #[cfg(test)]
 mod session_records_tests {
     use std::cell::Cell;
@@ -2088,7 +1946,6 @@ mod session_records_tests {
         }
     }
 
-    /// Apply `payload` in 1 transaction of the ledger `db`.
     fn apply(db: &Path, payload: Value) -> Result<Value> {
         let mut store = crate::taskledger::Store::open(db).unwrap();
         store.immediate(|tx| apply_session_records(tx, &payload))
@@ -2163,9 +2020,6 @@ mod session_records_tests {
         assert!(read_session_rows(&db, None).is_empty());
     }
 
-    /// A row that another writer changed after the read is refused, and
-    /// the update reads again and runs its change on the new row: no
-    /// change is lost.
     #[test]
     fn update_reads_again_after_a_refused_change() {
         let tmp = tempfile::tempdir().unwrap();
@@ -2190,5 +2044,137 @@ mod session_records_tests {
         let r = store.get("r1").unwrap();
         assert_eq!(r.effort.as_deref(), Some("other"));
         assert_eq!(r.pane_id.as_deref(), Some("w1:p2"));
+    }
+
+    #[test]
+    fn hcb_03_a_record_without_backend_reads_as_herdr() {
+        let raw = r#"{
+  "record_id": "r-herdr",
+  "session_id": "s-1",
+  "agent": "claude",
+  "tier": "sonnet",
+  "model": "sonnet",
+  "role": "sonnet-1",
+  "status": "working",
+  "task": "t",
+  "history": [],
+  "created_at": "2026-11-19T00:00:00Z",
+  "updated_at": "2026-11-19T00:00:00Z",
+  "workspace_id": "w1",
+  "pane_id": "w1:p1"
+}"#;
+        let record: LedgerRecordV1 = serde_json::from_str(raw).unwrap();
+        assert_eq!(record.backend, crate::runtime::Backend::Herdr);
+        let exec = to_execution(&record).unwrap();
+        assert_eq!(exec.backend, crate::runtime::Backend::Herdr);
+    }
+
+    #[test]
+    fn hcb_03_a_herdr_record_keeps_its_bytes() {
+        let raw = r#"[
+  {
+    "record_id": "r-herdr",
+    "session_id": "s-1",
+    "agent": "claude",
+    "tier": "sonnet",
+    "model": "sonnet",
+    "role": "sonnet-1",
+    "status": "working",
+    "task": "t",
+    "history": [],
+    "created_at": "2026-11-19T00:00:00Z",
+    "updated_at": "2026-11-19T00:00:00Z",
+    "workspace_id": "w1",
+    "pane_id": "w1:p1"
+  }
+]"#;
+        let records: Vec<LedgerRecordV1> = serde_json::from_str(raw).unwrap();
+        let exec = to_execution(&records[0]).unwrap();
+        let round_tripped = from_execution(&exec);
+        let rendered = ExecutionStore::render_json(&[round_tripped]).unwrap();
+        assert_eq!(rendered, raw);
+        assert!(!rendered.contains("backend"));
+
+        let mut hc_exec = exec;
+        hc_exec.backend = crate::runtime::Backend::Hc;
+        let hc_record = from_execution(&hc_exec);
+        let hc_json = serde_json::to_value(&hc_record).unwrap();
+        assert_eq!(hc_json["backend"], "hc");
+        let back: LedgerRecordV1 = serde_json::from_value(hc_json).unwrap();
+        assert_eq!(
+            to_execution(&back).unwrap().backend,
+            crate::runtime::Backend::Hc
+        );
+    }
+
+    #[test]
+    fn hcb_03_backend_of_workspace_finds_the_owner() {
+        use crate::taskledger::runs::{self, NewRun};
+        use crate::taskledger::workers::{self, NewWorker};
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("ledger.sqlite3");
+        let mut ledger = crate::taskledger::Store::open(&db).unwrap();
+        ledger
+            .immediate(|tx| {
+                let run = runs::create(
+                    tx,
+                    Path::new("/repo"),
+                    &NewRun {
+                        slug: "r1".into(),
+                        workspace_id: Some("sp-row".into()),
+                        ..Default::default()
+                    },
+                )?;
+                workers::insert(
+                    tx,
+                    &NewWorker {
+                        run_id: run.run_id,
+                        persona: "opus".into(),
+                        workspace_id: Some("sp-row".into()),
+                        pane_id: Some("t3".into()),
+                        backend: crate::runtime::Backend::Hc,
+                        ..NewWorker::default()
+                    },
+                )
+            })
+            .unwrap();
+
+        let store = ExecutionStore::in_db(tmp.path(), &db, "/repo")
+            .with_task_ledger(&db, Path::new("/repo"));
+        let _fleetd = test_serve(&db);
+        store
+            .insert(LedgerRecordV1 {
+                record_id: "r-herdr".into(),
+                role: "sonnet-1".into(),
+                status: STATUS_WORKING.into(),
+                workspace_id: Some("ws-herdr".into()),
+                backend: crate::runtime::Backend::Herdr,
+                ..LedgerRecordV1::default()
+            })
+            .unwrap();
+        store
+            .insert(LedgerRecordV1 {
+                record_id: "r-hc".into(),
+                role: "sonnet-2".into(),
+                status: STATUS_WORKING.into(),
+                workspace_id: Some("sp-rec".into()),
+                backend: crate::runtime::Backend::Hc,
+                ..LedgerRecordV1::default()
+            })
+            .unwrap();
+
+        assert_eq!(
+            store.backend_of_workspace("ws-herdr").unwrap(),
+            Some(crate::runtime::Backend::Herdr)
+        );
+        assert_eq!(
+            store.backend_of_workspace("sp-rec").unwrap(),
+            Some(crate::runtime::Backend::Hc)
+        );
+        assert_eq!(
+            store.backend_of_workspace("sp-row").unwrap(),
+            Some(crate::runtime::Backend::Hc)
+        );
+        assert_eq!(store.backend_of_workspace("unknown").unwrap(), None);
     }
 }

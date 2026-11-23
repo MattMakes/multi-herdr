@@ -1,12 +1,3 @@
-//! SR-7 for the harness adapters (fleetd-p7 ticket 05): a process that an
-//! adapter of `crates/horch-core/src/harness/` starts never has a forbidden
-//! name, also when the parent has it.
-//!
-//! The parent test runs this test binary again with each forbidden name set,
-//! as the shell of the operator can have it. In that child, the version
-//! probe of the Codex adapter starts a fake `codex` that writes its
-//! environment to a file.
-
 #![cfg(unix)]
 
 use std::os::unix::fs::PermissionsExt as _;

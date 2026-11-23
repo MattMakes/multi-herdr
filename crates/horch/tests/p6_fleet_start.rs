@@ -1,12 +1,3 @@
-//! There is no long-lived orchestrator conversation (FM-16; ticket 45 of
-//! fleetd-p6): `horch fleet` starts fleetd and herdr with no orchestrator
-//! pane, an orchestrator launch or claim is refused with a line that names
-//! `horch idea add`, and the pass of fleetd respawns no orchestrator.
-//!
-//! Each test runs the development binary or the library with its own
-//! ledger, state, data and fleet folders in a temporary folder, and the
-//! watchdog off. herdr is a script that writes each call to a file.
-
 #![cfg(unix)]
 
 use std::os::unix::fs::PermissionsExt;
@@ -31,11 +22,8 @@ use rusqlite::{params, Connection};
 
 const PATH: &str = "/usr/bin:/bin";
 
-/// The line that each refused orchestrator launch and claim names.
 const NEW_COMMAND: &str = "horch idea add";
 
-/// A project, a ledger with 1 active run, and a fake herdr that answers
-/// each call with 1 workspace `w1` and its root pane `p1`.
 struct World {
     _tmp: tempfile::TempDir,
     root: PathBuf,
@@ -48,7 +36,7 @@ impl World {
             .prefix("p6f")
             .tempdir_in("/tmp")
             .unwrap();
-        let root = tmp.path().canonicalize().unwrap();
+        let root = horch_platform::path::canonicalize(tmp.path()).unwrap();
         for dir in ["proj", "home", "state", "data", "f"] {
             std::fs::create_dir_all(root.join(dir)).unwrap();
         }
@@ -91,7 +79,6 @@ impl World {
         Connection::open(self.db()).unwrap()
     }
 
-    /// `horch <args>` in the project.
     fn horch(&self, args: &[&str]) -> (i32, String, String) {
         let root = &self.root;
         let o = Command::new(env!("CARGO_BIN_EXE_horch"))
@@ -119,7 +106,6 @@ impl World {
         )
     }
 
-    /// Each call of the fake herdr, 1 line of its arguments each.
     fn herdr_calls(&self) -> Vec<String> {
         std::fs::read_to_string(self.root.join("herdr-calls.txt"))
             .unwrap_or_default()
@@ -128,7 +114,6 @@ impl World {
             .collect()
     }
 
-    /// The orchestrator rows of the ledger.
     fn orchestrators(&self) -> i64 {
         self.ledger()
             .query_row(
@@ -170,7 +155,6 @@ fn fleet_start_launches_no_orchestrator() {
 fn orchestrator_claim_is_refused_with_the_new_command() {
     let w = World::new();
 
-    // The fleetd side: the claim of the run by an orchestrator pane.
     let mut conn = w.ledger();
     let tx = conn.transaction().unwrap();
     let err = orchestrator::claim(&tx, &w.run.run_id, "w1", Some("p1"), &DeadOrchestrator)
@@ -182,14 +166,12 @@ fn orchestrator_claim_is_refused_with_the_new_command() {
     );
     drop(tx);
 
-    // The pane side: the run that an orchestrator launch continues.
     let err = orchestrator::launch_run().unwrap_err().to_string();
     assert!(
         err.contains(NEW_COMMAND),
         "the launch names the new command: {err}"
     );
 
-    // The pane launch of a fleet orchestrator starts no agent.
     let (code, out, err) = w.horch(&[
         "pane-launch",
         "--role",
@@ -224,8 +206,6 @@ impl World {
     }
 }
 
-/// The orchestrator facts of a dead orchestrator: no lock holder, no live
-/// process, and an open workspace.
 struct DeadOrchestrator;
 
 impl orchestrator::Probe for DeadOrchestrator {
@@ -242,7 +222,6 @@ impl orchestrator::Probe for DeadOrchestrator {
     }
 }
 
-/// herdr and the transcript: an agent that is alive and shows nothing.
 struct Quiet;
 
 impl Observer for Quiet {
@@ -255,7 +234,6 @@ impl Observer for Quiet {
     }
 }
 
-/// The duty effects: none, and nothing to clean up.
 struct NoEffects;
 
 impl DutyEffects for NoEffects {
@@ -270,14 +248,12 @@ impl DutyEffects for NoEffects {
 fn no_respawn_duty_in_the_pass() {
     let w = World::new();
     let mut conn = w.ledger();
-    // The fleetd row of generation 1: the guard of the writes of the pass.
     conn.execute(
         "INSERT INTO fleetd (id, generation, pid, pid_start, started_at, fleet_clock_s, clock_ticked_at)
          VALUES (1, 1, ?1, 0, 'now', 0, 'now')",
         params![i64::from(std::process::id())],
     )
     .unwrap();
-    // The orchestrator of the run was registered, and its agent is gone.
     let old = workers::insert(
         &conn,
         &NewWorker {
@@ -302,7 +278,7 @@ fn no_respawn_duty_in_the_pass() {
     .unwrap();
     runs::set_orchestrator(&conn, &w.run.run_id, &old).unwrap();
 
-    let duties = WatchdogDuties::new(&Quiet, &NoEffects, w.root.join("state"));
+    let duties = WatchdogDuties::new(&Quiet, &NoEffects);
     let facts = Facts::default();
     let time_up = || false;
     let budget = || DutyBudget {

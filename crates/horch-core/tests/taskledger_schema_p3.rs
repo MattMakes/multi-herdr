@@ -1,8 +1,3 @@
-//! The schema step of Phase 3 (docs/specs/fleetd/design.md, "Ledger" and
-//! "Migration plan" item 5; docs/tickets/fleetd-p3/02-schema-phase3.md): the
-//! state, owner and rescue columns of `worktrees`, and the release backfill
-//! (MAP.md, Q19).
-
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -10,17 +5,10 @@ use horch_core::taskledger::model::WorktreeStatus;
 use horch_core::taskledger::schema;
 use rusqlite::Connection;
 
-/// The 8 states of a worktree in the design.
 const STATES: [&str; 8] = [
     "reserved", "created", "active", "landing", "landed", "removed", "orphaned", "rescued",
 ];
 
-/// A Phase 2 ledger at `path`, built by the real steps:
-/// - `t1` runs with the live attempt `t1/A2` of `w1`, and the ended attempt
-///   `t1/A1` of `w0`.
-/// - `t2` runs, and its only attempt `t2/A1` of `w2` ended.
-/// - `t3` runs with the live attempt `t3/A1` of `w3`.
-/// - `t4` runs with the live attempt `t4/A1` of `w4`, still `launching`.
 fn phase_2_file(path: &Path) {
     let mut conn = Connection::open(path).unwrap();
     schema::migrate_to(&mut conn, schema::PHASE_2_VERSION).unwrap();
@@ -49,7 +37,6 @@ fn phase_2_file(path: &Path) {
     .unwrap();
 }
 
-/// 1 `worktrees` row, and its `worktree_modes` row when `scratch` is set.
 fn tree(
     conn: &Connection,
     id: &str,
@@ -73,9 +60,6 @@ fn tree(
     }
 }
 
-/// The migration of the file at `path` up to the Phase 3 step, with foreign
-/// keys on as `Store::open` sets them. A later step does not change what
-/// these tests see.
 fn migrate(path: &Path) -> Connection {
     let mut conn = Connection::open(path).unwrap();
     conn.pragma_update(None, "foreign_keys", true).unwrap();
@@ -83,8 +67,6 @@ fn migrate(path: &Path) -> Connection {
     conn
 }
 
-/// A Phase 2 ledger with the rows that `add` writes, migrated: its folder
-/// (kept alive) and a connection with foreign keys on.
 fn migrated(add: impl FnOnce(&Connection)) -> (tempfile::TempDir, Connection) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("ledger.sqlite3");
@@ -94,7 +76,6 @@ fn migrated(add: impl FnOnce(&Connection)) -> (tempfile::TempDir, Connection) {
     (dir, conn)
 }
 
-/// `worktree_id -> (state, owner_attempt)` of each row.
 fn states(conn: &Connection) -> BTreeMap<String, (String, Option<String>)> {
     conn.prepare("SELECT worktree_id, state, owner_attempt FROM worktrees")
         .unwrap()
@@ -113,7 +94,6 @@ fn user_version(conn: &Connection) -> i64 {
         .unwrap()
 }
 
-/// `name -> (type, not null, default)` of each column of `worktrees`.
 fn worktree_columns(conn: &Connection) -> BTreeMap<String, (String, bool, Option<String>)> {
     conn.prepare("SELECT name, type, \"notnull\", dflt_value FROM pragma_table_info('worktrees')")
         .unwrap()
@@ -140,7 +120,6 @@ fn worktrees_gains_state_owner_head_dirty_rescue_and_seen_columns() {
     assert_eq!(col("dirty"), ("INTEGER".into(), true, Some("0".into())));
     assert_eq!(col("rescue_ref"), ("TEXT".into(), false, None));
     assert_eq!(col("seen_at"), ("TEXT".into(), false, None));
-    // The design's base_sha and disk_bytes are today's columns.
     for kept in ["base_commit", "bytes_on_disk", "status", "task_id"] {
         assert!(cols.contains_key(kept), "{kept} is kept");
     }
@@ -149,7 +128,6 @@ fn worktrees_gains_state_owner_head_dirty_rescue_and_seen_columns() {
     }
     assert!(!col("task_id").1, "task_id stays nullable");
 
-    // owner_attempt names an attempt.
     let refs: Vec<(String, String, String)> = conn
         .prepare("SELECT \"from\", \"table\", \"to\" FROM pragma_foreign_key_list('worktrees')")
         .unwrap()
@@ -159,7 +137,6 @@ fn worktrees_gains_state_owner_head_dirty_rescue_and_seen_columns() {
         .unwrap();
     assert!(refs.contains(&("owner_attempt".into(), "attempts".into(), "id".into())));
 
-    // Each state word of the design is accepted, and each other word refused.
     tree(&conn, "wt", (Some("t1"), Some("w1")), "open", None);
     for word in STATES {
         conn.execute(
@@ -211,7 +188,6 @@ fn backfill_makes_a_tree_with_a_live_attempt_active_with_its_owner() {
 #[test]
 fn backfill_makes_each_other_tree_orphaned() {
     let (_dir, conn) = migrated(|c| {
-        // 1 tree of each status word of today, of a task with no live attempt.
         for status in WorktreeStatus::ALL {
             if *status != WorktreeStatus::Cleaned {
                 tree(
@@ -223,14 +199,10 @@ fn backfill_makes_each_other_tree_orphaned() {
                 );
             }
         }
-        // The task has a live attempt, but of another worker.
         tree(c, "handed", (Some("t1"), Some("w0")), "open", None);
-        // The attempt of the worker is still launching.
         tree(c, "launching", (Some("t4"), Some("w4")), "open", None);
-        // No worker, and no task.
         tree(c, "no-worker", (Some("t1"), None), "open", None);
         tree(c, "no-task", (None, Some("w1")), "abandoned", None);
-        // The worker is live on t3, but the tree is not a scratch tree of it.
         tree(
             c,
             "other-task",
@@ -250,7 +222,6 @@ fn backfill_makes_each_other_tree_orphaned() {
 fn backfill_makes_a_cleaned_tree_removed() {
     let (_dir, conn) = migrated(|c| {
         tree(c, "gone", (Some("t2"), Some("w2")), "cleaned", None);
-        // A live attempt does not hold a tree that is cleaned.
         tree(c, "gone-live", (Some("t1"), Some("w1")), "cleaned", None);
         tree(c, "gone-scratch", (None, Some("w3")), "cleaned", Some(true));
     });
@@ -262,7 +233,6 @@ fn backfill_makes_a_cleaned_tree_removed() {
 #[test]
 fn backfill_makes_a_scratch_tree_of_a_live_worker_active() {
     let (_dir, conn) = migrated(|c| {
-        // A scratch tree has no task: the live attempt of its worker holds it.
         tree(c, "scratch-live", (None, Some("w3")), "open", Some(true));
         tree(c, "scratch-dead", (None, Some("w2")), "open", Some(true));
         tree(
@@ -296,7 +266,6 @@ fn migration_to_the_phase_3_version_writes_a_backup_first() {
     let conn = migrate(&path);
     assert_eq!(user_version(&conn), schema::PHASE_3_VERSION);
 
-    // The backup holds the Phase 2 file as it was before the step.
     let backups = schema::backups_in(dir.path());
     assert_eq!(backups.len(), 1);
     let name = backups[0]
@@ -317,7 +286,6 @@ fn migration_to_the_phase_3_version_writes_a_backup_first() {
     assert_eq!(rows, 1);
 }
 
-/// `worktree_id -> (status, path, branch)` of each row.
 fn kept_fields(conn: &Connection) -> BTreeMap<String, (String, String, String)> {
     conn.prepare("SELECT worktree_id, status, path, branch FROM worktrees")
         .unwrap()

@@ -1,36 +1,3 @@
-//! The release test of Phase 6 (`docs/specs/fleetd/design.md`, "What a
-//! release does to a run in flight", row Phase 6; ticket 62 of
-//! `docs/tickets/fleetd-p6/`; Q5, Q6 and Q11 of its MAP.md).
-//!
-//! A run with an open question starts on Phase 5. After the update, it has
-//! 1 idea row and 1 feature row, and its question has 1 owner, the
-//! sub-orchestrator `idea-lead:<feature id>`. The old orchestrator gets no
-//! message, no task is lost, and the run's `MAP.md` stays readable by
-//! `horch ledger add-map --dry-run`.
-//!
-//! The Phase 5 ledger is built by the real migration steps: the project and
-//! the run `r1` are written before the step of [`schema::PHASE_4_VERSION`],
-//! so its backfill gives the run its feature row, then the ledger goes to
-//! [`schema::PHASE_5_VERSION`]. The other rows of the run in flight are
-//! written as a Phase 5 binary left them:
-//! - the orchestrator of the run, in the pane `w1:p1`;
-//! - [`RUNNING_TASK`] `running`, with its live push attempt, its lease and
-//!   its task folder;
-//! - [`QUEUED_TASK`] `pending`: it waits for [`RUNNING_TASK`];
-//! - [`DONE_TASK`] `done`;
-//! - 1 open question of [`RUNNING_TASK`]: its mail question, delivered to
-//!   the orchestrator before the update, its `questions` row owned by the
-//!   orchestrator, and its `question` event;
-//! - the `fleetd` row of the Phase 5 fleetd.
-//!
-//! The orchestrator, the worker of the live attempt and the old fleetd are
-//! stand-ins: `sleep` processes that the rows name.
-//!
-//! The update: the test stops the old fleetd, migrates the ledger to
-//! [`schema::PHASE_6_VERSION`] and starts `horch fleetd` of this branch,
-//! with the fake herdr and the fake agents. Each process uses the temporary
-//! folders of its harness, and each wait is for an event.
-
 #![cfg(unix)]
 
 use std::process::{Child, Command, Output};
@@ -46,57 +13,38 @@ use horch_e2e::harness::{fixtures, wait_for_or, Harness};
 use rusqlite::Connection;
 use serde_json::{json, Value};
 
-/// The fleet clock of the Phase 5 `fleetd` row at the update.
 const CLOCK: i64 = 5000;
-/// The lease of the live attempt and the time limit of the question end 1
-/// day of the fleet clock after the update: neither ends in a test.
 const LATER: i64 = CLOCK + 86_400;
 
-/// The `fleet.toml` of each test: 1 pass each second.
 const FLEET_TOML: &str = "pass_period_s = 1\n";
 
-/// The run in flight, its slug and its branch.
 const RUN: &str = "r1";
 const SLUG: &str = "zeta";
 const RUN_BRANCH: &str = "fleet/zeta";
-/// The herdr workspace of the run, and the pane of its orchestrator.
 const WORKSPACE: &str = "w1";
 const ORCHESTRATOR_PANE: &str = "w1:p1";
-/// The orchestrator of the run.
 const ORCHESTRATOR: &str = "w-orchestrator";
 
-/// The feature and the idea that the run gets: `F-<run rowid>` and
-/// `I-<run rowid>` (Q5).
 const FEATURE: &str = "F-0001";
 const IDEA: &str = "I-0001";
 
-/// The task with the live attempt, its attempt and its worker.
 const RUNNING_TASK: &str = "T-1";
 const RUNNING_ATTEMPT: &str = "T-1/A1";
 const WORKER: &str = "w-running";
-/// The task that waits for [`RUNNING_TASK`].
 const QUEUED_TASK: &str = "T-2";
-/// The task that is done.
 const DONE_TASK: &str = "T-3";
 
-/// The `questions` row of the open question: attempt id and number, as
-/// the question flow of Phase 5 names it.
 const QUESTION: &str = "T-1/A1/Q1";
-/// The text of the mail question of the worker.
 const QUESTION_TEXT: &str = "QUESTION: Which limit does the reader use? I recommend 10.";
 
-/// The folder of the tickets of the run, in the project.
 const TICKETS: &str = "docs/tickets/zeta";
 
-/// The tickets of the run: the task, its seq, its file name, its title.
 const RUN_TASKS: [(&str, i64, &str, &str); 3] = [
     (RUNNING_TASK, 1, "01-read.md", "Read the limit"),
     (QUEUED_TASK, 2, "02-log.md", "Log each retry"),
     (DONE_TASK, 3, "03-docs.md", "Document the limit"),
 ];
 
-/// A stand-in process: a `sleep` that a ledger row names. Killed at the
-/// end of the test.
 struct StandIn {
     child: Child,
     started: u64,
@@ -117,7 +65,6 @@ impl StandIn {
         procid::alive(self.pid(), Some(self.started))
     }
 
-    /// Stop it, and wait until it is gone.
     fn stop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
@@ -130,9 +77,6 @@ impl Drop for StandIn {
     }
 }
 
-/// The run in flight on Phase 5 and fleetd of this branch after the
-/// update. The fields drop in this order: each process stops before the
-/// teardown of the harness checks that none is left.
 struct Flight {
     fleetds: Fleetds,
     worker: StandIn,
@@ -142,8 +86,6 @@ struct Flight {
 }
 
 impl Flight {
-    /// The Phase 5 run of the test `name`. fleetd of this branch does not
-    /// run yet.
     fn on_phase_5(name: &str) -> Flight {
         let h = world(name);
         run_tickets(&h);
@@ -162,9 +104,6 @@ impl Flight {
         }
     }
 
-    /// The update: stop the old fleetd, migrate the ledger to the schema of
-    /// Phase 6 and start fleetd of this branch. Wait until its release duty
-    /// wrote the approval of the idea of the run, then for 2 more passes.
     fn update(&mut self) {
         self.old_fleetd.stop();
         let mut conn = read(&self.h);
@@ -185,15 +124,12 @@ impl Flight {
         self.wait_passes(2);
     }
 
-    /// The `at` of the heartbeat of fleetd: it changes at the end of each
-    /// pass.
     fn heartbeat_at(&self) -> Option<String> {
         let path = self.h.fleet_root().join("run").join("heartbeat.json");
         let hb: Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
         hb["at"].as_str().map(str::to_string)
     }
 
-    /// Wait for the end of `n` passes of fleetd after this call.
     fn wait_passes(&self, n: usize) {
         for _ in 0..n {
             let before = self.heartbeat_at();
@@ -208,7 +144,6 @@ impl Flight {
         }
     }
 
-    /// The rows of `sql`, each as 1 text column.
     fn rows(&self, sql: &str) -> Vec<String> {
         let conn = read(&self.h);
         let mut stmt = conn.prepare(sql).unwrap();
@@ -220,9 +155,6 @@ impl Flight {
         rows
     }
 
-    /// What a failed wait or assertion shows: the output of fleetd, the
-    /// ideas, the features, the questions, the attempts, the tasks and
-    /// their events.
     fn diagnostics(&self) -> String {
         let section = |name: &str, sql: &str| format!("{name}:\n{}", self.rows(sql).join("\n"));
         [
@@ -261,11 +193,6 @@ impl Flight {
     }
 }
 
-/// A harness with its own ledger, fleet root, data folder and git
-/// repository, no watchdog, a healthy quota, the workspace `w1` of the fake
-/// herdr, and an empty local folder as the docs pages of the `docs_sync`
-/// runs: no test uses the network. The fake agents stay live after their
-/// start, so a sub-orchestrator does not end in a test.
 fn world(name: &str) -> Harness {
     let mut h = Harness::new(name).with_git();
     let fleet = h.root.join("fleet");
@@ -293,13 +220,11 @@ fn world(name: &str) -> Harness {
     h
 }
 
-/// Run `git` in the project. It must pass.
 fn git(h: &Harness, args: &[&str]) {
     let o = h.git_cmd(args).output().unwrap();
     assert!(o.status.success(), "git {args:?}: {o:?}");
 }
 
-/// The ticket of `title` in format C1.
 fn ticket(title: &str) -> String {
     format!(
         "# {title}\n\n<!-- horch-ticket: 1 -->\n\
@@ -313,9 +238,6 @@ fn ticket(title: &str) -> String {
     )
 }
 
-/// The `MAP.md` of the run and its tickets, committed in the project as the
-/// planner of the old flow left them, the declared gates, and the run
-/// branch.
 fn run_tickets(h: &Harness) {
     let dir = h.project.join(TICKETS);
     std::fs::create_dir_all(&dir).unwrap();
@@ -329,8 +251,6 @@ fn run_tickets(h: &Harness) {
         ));
     }
     std::fs::write(dir.join("MAP.md"), map).unwrap();
-    // The project declares its gates, so no hold of a missing fast gate
-    // stops the run (Phase 4, Q-C).
     std::fs::write(
         h.project.join("fleet.toml"),
         "[gates]\nfast = \"true\"\nfull = \"true\"\n",
@@ -344,27 +264,20 @@ fn run_tickets(h: &Harness) {
     git(h, &["branch", RUN_BRANCH]);
 }
 
-/// A connection of the test to the ledger.
 fn read(h: &Harness) -> Connection {
     Connection::open(h.ledger_db()).unwrap()
 }
 
-/// The ticket snapshot of `task`, as `add-map` stored it.
 fn snapshot(task: &str) -> String {
     let (_, _, _, title) = RUN_TASKS.iter().find(|t| t.0 == task).unwrap();
     ticket(title)
 }
 
-/// The Phase 5 ledger of `h`: the run [`RUN`] with its feature, its
-/// orchestrator, its 3 tasks, the live attempt of [`RUNNING_TASK`] and its
-/// open question, and the `fleetd` row of `old`.
 fn phase_5_ledger(h: &Harness, old: &StandIn, orchestrator: &StandIn, worker: &StandIn) {
     let mut conn = read(h);
     let now = util::now();
     let host = util::host_name();
 
-    // The run exists before the step of Phase 4: its backfill writes the
-    // feature row and the branch row of the run.
     schema::migrate_to(&mut conn, schema::PHASE_4_VERSION - 1).unwrap();
     conn.execute(
         "INSERT INTO projects (project_id, root, created_at) VALUES ('p', ?1, ?2)",
@@ -442,7 +355,6 @@ fn phase_5_ledger(h: &Harness, old: &StandIn, orchestrator: &StandIn, worker: &S
     )
     .unwrap();
 
-    // The live push attempt of the running task.
     conn.execute(
         "INSERT INTO workers (worker_id, run_id, kind, persona, role, host, workspace_id,
                 agent_pid, agent_started, last_checkin_at, task_id, attempt, status, spawned_at,
@@ -490,10 +402,6 @@ fn phase_5_ledger(h: &Harness, old: &StandIn, orchestrator: &StandIn, worker: &S
     open_question(h, &conn, &now);
 }
 
-/// The open question of the worker of [`RUNNING_TASK`], as Phase 5 left
-/// it: the mail question, delivered to the orchestrator; the `questions`
-/// row of the run, owned by the orchestrator; and its `question` event,
-/// which holds the mail id.
 fn open_question(h: &Harness, conn: &Connection, now: &str) {
     let mail = Mail::under(&h.state, WORKSPACE);
     let id = mail.enqueue(WORKER, QUESTION_TEXT).unwrap();
@@ -530,9 +438,6 @@ fn open_question(h: &Harness, conn: &Connection, now: &str) {
     .unwrap();
 }
 
-/// The task folder and the outbox of the live attempt, as the launch of
-/// Phase 5 made them: `task.yaml`, `START.md` and an empty outbox, each
-/// folder with mode 0700.
 fn running_task_folder(h: &Harness) {
     use std::os::unix::fs::PermissionsExt;
     let dir = h.fleet_root().join("tasks").join(RUNNING_TASK);
@@ -565,7 +470,6 @@ fn text(o: &Output) -> String {
     )
 }
 
-/// The herdr calls that type into the pane `pane` or prompt its agent.
 fn messages_to(h: &Harness, pane: &str) -> Vec<String> {
     h.calls_of("herdr")
         .into_iter()
@@ -586,11 +490,6 @@ fn messages_to(h: &Harness, pane: &str) -> Vec<String> {
         .collect()
 }
 
-/// A run with an open question starts on Phase 5. After the update it has
-/// 1 idea row, `in_progress`, and 1 feature row. Its question has 1 owner,
-/// the sub-orchestrator of the feature, and fleetd starts that
-/// sub-orchestrator. The old orchestrator gets no message, and the run's
-/// `MAP.md` stays readable by `add-map --dry-run`.
 #[test]
 fn p6_release_run_with_an_open_question_gets_1_idea_1_feature_and_1_owner() {
     let mut f = Flight::on_phase_5("p6-release-owner");
@@ -618,8 +517,6 @@ fn p6_release_run_with_an_open_question_gets_1_idea_1_feature_and_1_owner() {
         "the question of the run has 1 owner, the sub-orchestrator of the feature\n{}",
         f.diagnostics()
     );
-    // The owner runs: fleetd starts 1 sub-orchestrator for the feature
-    // (I13), and it takes the open question of the run.
     let sub_orchestrator = format!(
         "SELECT id FROM attempts WHERE task_id IS NULL AND idea_id = '{IDEA}' ORDER BY rowid"
     );
@@ -628,8 +525,6 @@ fn p6_release_run_with_an_open_question_gets_1_idea_1_feature_and_1_owner() {
         || (!f.rows(&sub_orchestrator).is_empty()).then_some(()),
         || f.diagnostics(),
     );
-    // I13: at most 1 sub-orchestrator of the feature runs at a time. An
-    // attempt whose process ended is followed by a new one.
     f.wait_passes(1);
     let running = format!(
         "SELECT id FROM attempts WHERE task_id IS NULL AND idea_id = '{IDEA}' AND state <> 'ended'"
@@ -646,8 +541,6 @@ fn p6_release_run_with_an_open_question_gets_1_idea_1_feature_and_1_owner() {
         f.diagnostics()
     );
 
-    // The old orchestrator gets no message after the update: no text is
-    // typed into its pane, and its mail has no pending message.
     assert_eq!(
         messages_to(&f.h, ORCHESTRATOR_PANE),
         Vec::<String>::new(),
@@ -670,7 +563,6 @@ fn p6_release_run_with_an_open_question_gets_1_idea_1_feature_and_1_owner() {
         "the release does not stop the process of the old orchestrator"
     );
 
-    // The MAP.md of the run in flight stays readable.
     let map = format!("{TICKETS}/MAP.md");
     assert!(f.h.project.join(&map).is_file());
     let o = f.h.run(&["ledger", "add-map", "--dry-run", &map]);
@@ -681,7 +573,6 @@ fn p6_release_run_with_an_open_question_gets_1_idea_1_feature_and_1_owner() {
     );
 }
 
-/// A task row: its id, status, idea, ticket snapshot and ticket sha.
 type TaskRow = (
     String,
     String,
@@ -690,9 +581,6 @@ type TaskRow = (
     Option<String>,
 );
 
-/// No task of the run in flight is lost at the update: each task keeps its
-/// row, its ticket snapshot and its state, or reaches `done`, and each
-/// gets the idea of the run. The live attempt goes on.
 #[test]
 fn p6_release_loses_no_task() {
     let mut f = Flight::on_phase_5("p6-release-tasks");
@@ -748,8 +636,6 @@ fn p6_release_loses_no_task() {
         );
     }
 
-    // The live attempt goes on: fleetd does not stop its worker, and the
-    // queued task still waits for it.
     assert!(f.worker.alive(), "fleetd stops no live worker");
     assert_eq!(
         f.rows(&format!(

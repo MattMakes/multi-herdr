@@ -1,37 +1,15 @@
-//! The health guards and pacing (OR-4, OR-5).
-//!
-//! `docs/specs/fleetd/design.md`, "Worker profiles and adapters" (No budget,
-//! no cap, and the model guide) and "Supervision, liveness and
-//! reconciliation" (Holds on dispatch are visible). The 5 health guards
-//! pause new dispatch while 1 reading of the machine probe is past its
-//! floor, and dispatch resumes by itself when the reading comes back. They
-//! are not a cap on parallel work (D8). A reading that the probe does not
-//! know is neither a pass nor a hold: [`health`] reports it as
-//! [`Finding::Unknown`] (`preservation-06`, row S12). Pacing holds a pool
-//! whose usage runs ahead of its window.
-//!
-//! This module is pure: the inputs are readings and floors, the output is a
-//! list of holds and unknowns.
-
 use super::config::FleetConfig;
 
-/// 1 GB of the disk floor, in bytes (binary).
 const GB: u64 = 1 << 30;
-/// 1 MB of the memory floor, in bytes (binary).
 const MB: u64 = 1 << 20;
 
-/// Why a probe with no value is unknown.
 pub const NO_READING: &str = "the probe has no reading";
 
-/// Why a fact that the platform does not support is unknown.
 pub const NOT_SUPPORTED: &str = "not supported on this platform";
 
-/// 1 reading of the machine probe.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Reading<T> {
     Known(T),
-    /// The probe has no safe value, and why: the read failed, the platform
-    /// does not support it, or the value does not mean what the guard needs.
     Unknown(&'static str),
 }
 
@@ -41,9 +19,6 @@ impl<T> From<Option<T>> for Reading<T> {
     }
 }
 
-/// The readings of the 5 health guards. Each count has a limit of the same
-/// scope: the processes of the user with the process limit of the user,
-/// and the open files of the system with the open file limit of the system.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Readings {
     pub free_disk_bytes: Reading<u64>,
@@ -56,7 +31,6 @@ pub struct Readings {
     pub system_open_file_limit: Reading<u64>,
 }
 
-/// The floors of the health guards, from `fleet.toml`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Floors {
     pub min_free_disk_gb: u64,
@@ -78,7 +52,6 @@ impl From<&FleetConfig> for Floors {
     }
 }
 
-/// The fact that 1 health guard reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Fact {
     FreeDisk,
@@ -89,7 +62,6 @@ pub enum Fact {
 }
 
 impl Fact {
-    /// The name of the fact in an event and a note.
     pub fn as_str(self) -> &'static str {
         match self {
             Fact::FreeDisk => "free_disk",
@@ -100,7 +72,6 @@ impl Fact {
         }
     }
 
-    /// The `fleet.toml` key of the floor of the fact.
     pub fn key(self) -> &'static str {
         match self {
             Fact::FreeDisk => "health_min_free_disk_gb",
@@ -112,19 +83,13 @@ impl Fact {
     }
 }
 
-/// A hold on new dispatch, with its cause: the floor and the reading.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Hold {
-    /// A health floor: a global hold.
     Floor { fact: Fact, cause: String },
-    /// Pacing of 1 pool: it holds only the dispatch to that pool.
     Pacing { pool: String, cause: String },
-    /// The worktrees stay above their disk budget with no tree left to
-    /// remove for space (FM-28, OR-1): a global hold.
     WorktreeDisk { cause: String },
 }
 
-/// The name of the global hold of the worktree disk budget.
 pub const WORKTREE_DISK: &str = "worktree_disk";
 
 impl Hold {
@@ -136,8 +101,6 @@ impl Hold {
         }
     }
 
-    /// The name of a global hold, as its events write it; `None` for a
-    /// hold of 1 pool.
     pub fn global(&self) -> Option<&'static str> {
         match self {
             Hold::Floor { fact, .. } => Some(fact.as_str()),
@@ -147,23 +110,12 @@ impl Hold {
     }
 }
 
-/// 1 output of [`health`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum Finding {
     Hold(Hold),
-    /// The probe has no safe reading for the fact: no hold, and no pass.
-    Unknown {
-        fact: Fact,
-        why: &'static str,
-    },
+    Unknown { fact: Fact, why: &'static str },
 }
 
-/// The holds and the unknowns of the 5 health guards. A guard that passes
-/// gives nothing.
-///
-/// Free disk and free memory hold below their floor. Load holds at or above
-/// `max_load_per_cpu` for each CPU, with the `>=` of the load note of
-/// `horch spawn`. The 2 counts hold above their share of the limit.
 pub fn health(r: &Readings, f: &Floors) -> Vec<Finding> {
     [
         free_disk(r, f),
@@ -269,30 +221,19 @@ fn share(fact: Fact, count: Reading<u64>, limit: Reading<u64>, max: f64) -> Opti
     )
 }
 
-/// 1 usage window of a pool, as pacing reads it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PoolWindow {
-    /// The label of the window: `5h`, `7d`, `7d:fable`.
     pub label: String,
-    /// `used / elapsed` of the window. `None` when the reset time is not
-    /// known.
     pub pace: Option<f64>,
-    /// The fraction of the window that is used, 0 to 1.
     pub used: f64,
 }
 
-/// The pacing rule of today (`routing/policy.rs`): a window paces its pool
-/// when its pace is above `pace_factor` and its use is at least
-/// `pace_min_used`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PaceRule {
     pub pace_factor: f64,
     pub pace_min_used: f64,
 }
 
-/// The pacing hold of `pool`: its first window that runs ahead of its
-/// window (OR-4). `None` when each window is on pace, so the usage of the
-/// pool is consumed by the reset.
 pub fn pacing(pool: &str, windows: &[PoolWindow], rule: &PaceRule) -> Option<Hold> {
     windows.iter().find_map(|w| {
         let pace = w.pace.filter(|p| *p > rule.pace_factor)?;
@@ -316,7 +257,6 @@ mod tests {
         Floors::from(&FleetConfig::default())
     }
 
-    /// A healthy machine for the default floors.
     fn normal() -> Readings {
         Readings {
             free_disk_bytes: Reading::Known(200 * GB),
@@ -372,7 +312,6 @@ mod tests {
         let f = floors();
         let at = Readings {
             free_disk_bytes: Reading::Known(f.min_free_disk_gb * GB),
-            // Load holds at its value (`>=`), as the load note of today.
             load_1m: Reading::Known(31.99),
             cpus: Reading::Known(8),
             free_memory_bytes: Reading::Known(f.min_free_memory_mb * MB),
@@ -426,7 +365,6 @@ mod tests {
 
     #[test]
     fn pres_06_s12_unknown_probe_neither_pauses_nor_passes() {
-        // Windows today: the probe knows nothing.
         let none = Reading::Unknown(NO_READING);
         let unknown = Readings {
             free_disk_bytes: none,
@@ -453,7 +391,6 @@ mod tests {
         })
         .collect();
         assert_eq!(found, expected);
-        // 1 known reading past its floor still holds beside the unknowns.
         let low = Readings {
             free_disk_bytes: Reading::Known(GB),
             ..unknown
@@ -461,7 +398,6 @@ mod tests {
         assert_eq!(facts(&low), vec![Fact::FreeDisk]);
     }
 
-    /// The cause of the 1 floor hold of `r`.
     fn cause(r: &Readings) -> String {
         match holds(r).as_slice() {
             [hold] => hold.cause().to_string(),
@@ -497,7 +433,6 @@ mod tests {
 
     #[test]
     fn not_supported_fact_gives_unknown_and_no_hold() {
-        // Without the unknown count, 1 open file of a limit of 1 holds.
         let r = Readings {
             system_open_files: Reading::Unknown(NOT_SUPPORTED),
             system_open_file_limit: Reading::Known(1),
@@ -515,7 +450,6 @@ mod tests {
 
     #[test]
     fn pacing_holds_a_pool_ahead_of_its_window_and_frees_one_on_pace() {
-        // The numbers of today: `routing/policy.rs`.
         let rule = PaceRule {
             pace_factor: 1.25,
             pace_min_used: 0.50,

@@ -1,18 +1,3 @@
-//! The limit of the resolver and fix attempts of a task branch: a failed
-//! attempt (a failed check, a stall, a crash, no result, a lease expiry)
-//! does not move the `done` task. It adds 1 to `repair_attempts` of the
-//! branch, and the next attempt starts after the backoff. At `max_attempts`
-//! of the task, 1 needs-you item opens. `horch task requeue` of the `done`
-//! task sets `repair_attempts` to 0 and starts 1 more attempt
-//! (docs/specs/fleetd/design.md, "Landing a task branch on its feature
-//! branch", "Leases, not claims", FM-38, RR-6;
-//! docs/tickets/fleetd-p4/34-repair-attempt-failures.md).
-//!
-//! Each test makes its own temporary git repository, ledger and fleet
-//! root. No test starts a `horch` binary, and no test reads the load, the
-//! limits or the clock of this machine: the time is the fleet clock that
-//! the test gives, and the config is the default.
-
 #![cfg(unix)]
 
 #[path = "common/test_jobs.rs"]
@@ -58,14 +43,11 @@ const SNAPSHOT: &str = "# A ticket\n\nDo the work.\n";
 const CHECK: &str = "cargo test -p demo";
 const PERSONA: &str = "opus";
 
-/// The numbers of a worker in these tests.
 const LIMITS: Limits = Limits {
     lease_s: 120,
     stall_after_s: 300,
     heartbeat_max_age_s: 30,
 };
-
-// ─── the world of a test ────────────────────────────────────────────────
 
 struct World {
     _tmp: tempfile::TempDir,
@@ -80,8 +62,6 @@ struct World {
     tree: PathBuf,
 }
 
-/// Run git in `dir` for the test itself, with no hook and no config of the
-/// user, and give its trimmed output.
 fn git(dir: &Path, args: &[&str]) -> String {
     let o = Command::new("git")
         .arg("-C")
@@ -119,12 +99,9 @@ fn cause(text: &str) -> Cause<'_> {
 }
 
 impl World {
-    /// A repository with a run branch and its feature, and 1 task whose
-    /// first attempt worked in its own worktree, committed 1 file and ended.
-    /// The task is `done`, and its task branch is `in_bundle`.
     fn new() -> World {
         let tmp = tempfile::tempdir().unwrap();
-        let top = tmp.path().canonicalize().unwrap();
+        let top = horch_platform::path::canonicalize(tmp.path()).unwrap();
         let root = top.join("repo");
         let fleet_root = top.join("fleet");
         std::fs::create_dir_all(&root).unwrap();
@@ -156,7 +133,6 @@ impl World {
                     primary_branch: "main",
                 };
                 rows::insert_feature(tx, None, &feature, cause("feature accepted"))?;
-                // FR-12: a task needs an idea in flight of the feature of its run.
                 horch_core::taskledger::schema::run_idea(
                     tx,
                     &run.run_id,
@@ -190,8 +166,6 @@ impl World {
         }
     }
 
-    /// The task, its first attempt, its tree with 1 commit, the attempt
-    /// ended, the task `done` and its branch `in_bundle`.
     fn first_attempt_done(&mut self) {
         let mut t = NewTask::work("t1", "docs/t1.md", PERSONA);
         t.ticket_snapshot = Some(SNAPSHOT.into());
@@ -252,8 +226,6 @@ impl World {
         ]);
     }
 
-    /// Move the task branch along `path` through the 1 door, as the use
-    /// cases of other tickets move it.
     fn enter(&mut self, path: &[LandingState]) {
         let config = self.config.clone();
         let branch = self.branch.clone();
@@ -272,7 +244,6 @@ impl World {
             .unwrap();
     }
 
-    /// A job row of `kind` that ended `state` with `result`.
     fn ended_job(&self, kind: &str, subject: &str, state: &str, result: &serde_json::Value) -> i64 {
         let conn = self.store.conn();
         conn.execute(
@@ -292,7 +263,6 @@ impl World {
         conn.last_insert_rowid()
     }
 
-    /// A bundle of the task branch in `state`, with the job `job`.
     fn bundle(&self, state: &str, job: i64) -> i64 {
         let conn = self.store.conn();
         let base = git(&self.root, &["rev-parse", RUN_BRANCH]);
@@ -311,8 +281,6 @@ impl World {
         id
     }
 
-    /// The build of a bundle of the branch conflicted on `files`: the
-    /// branch is `conflicted`.
     fn conflicted(&mut self, files: &[&str]) {
         let data = serde_json::json!({
             "passed": false,
@@ -325,8 +293,6 @@ impl World {
         self.enter(&[LandingState::Conflicted]);
     }
 
-    /// The fast gate of a bundle of the branch alone failed with the output
-    /// `output`: the branch is `gate_failed`.
     fn gate_failed(&mut self, output: &str) {
         let data = serde_json::json!({"passed": false, "verdict": true, "text": "exit 101"});
         let job = self.ended_job("fast_gate", FEATURE, "failed", &data);
@@ -352,7 +318,6 @@ impl World {
         self.enter(&[LandingState::GateFailed]);
     }
 
-    /// 1 pass of the repair start at fleet clock `clock`, committed.
     fn start(&mut self, clock: i64) -> Vec<Started> {
         let config = self.config.clone();
         let git = Git::new("git");
@@ -370,7 +335,6 @@ impl World {
             .unwrap()
     }
 
-    /// 1 pass of the repair results at fleet clock `clock`, committed.
     fn observe(&mut self, clock: i64) -> Report {
         let config = self.config.clone();
         let tip = git(&self.root, &["rev-parse", &self.branch]);
@@ -406,8 +370,6 @@ impl World {
             .unwrap()
     }
 
-    /// The repair attempt commits `file` in the tree and writes its
-    /// `result.json`, which the ingest accepted.
     fn result_of(&self, attempt: &str, file: &str) {
         std::fs::write(self.tree.join(file), "fixed\n").unwrap();
         git(&self.tree, &["add", file]);
@@ -427,7 +389,6 @@ impl World {
             .unwrap();
     }
 
-    /// The `task_check` job of the task ends `state`.
     fn end_check(&self, state: &str) {
         let job = jobs_store::last(self.store.conn(), Kind::TaskCheck, &self.task)
             .unwrap()
@@ -443,8 +404,6 @@ impl World {
             .unwrap();
     }
 
-    /// 1 renewal pass at `clock` in which the attempt `attempt` shows
-    /// `process` and no other signal.
     fn renew_or_expire(&mut self, clock: i64, attempt: &str, process: Seen) {
         let facts = BTreeMap::from([(
             attempt.to_string(),
@@ -461,7 +420,6 @@ impl World {
             .unwrap();
     }
 
-    /// The `max_attempts` of the run of the task.
     fn max_attempts(&self, n: i64) {
         self.store
             .conn()
@@ -479,7 +437,6 @@ impl World {
             .repair_attempts
     }
 
-    /// The attempt `attempt` ends `outcome` with no result: a crash.
     fn crash(&self, attempt: &str) {
         self.store
             .conn()
@@ -491,7 +448,6 @@ impl World {
             .unwrap();
     }
 
-    /// The open needs-you items of the repair limit, as (key, entity id).
     fn limit_items(&self) -> Vec<(String, String)> {
         needs_you::open_items(self.store.conn())
             .unwrap()
@@ -501,7 +457,6 @@ impl World {
             .collect()
     }
 
-    /// `horch task requeue` of the task, as fleetd applies its request.
     fn requeue(&mut self) -> anyhow::Result<String> {
         let config = self.config.clone();
         let task = self.task.clone();
@@ -517,13 +472,10 @@ impl World {
     }
 }
 
-/// The only repair attempt that `started` holds.
 fn only(started: &[Started]) -> &Started {
     assert_eq!(started.len(), 1, "1 repair attempt: {started:?}");
     &started[0]
 }
-
-// ─── the tests ──────────────────────────────────────────────────────────
 
 #[test]
 fn failed_resolver_attempt_starts_the_next_after_the_backoff() {
@@ -532,7 +484,6 @@ fn failed_resolver_attempt_starts_the_next_after_the_backoff() {
     w.conflicted(&["a.txt"]);
     let first = only(&w.start(10)).bound.attempt_id.clone();
 
-    // The result of the resolver fails its check at fleet clock 12.
     w.result_of(&first, "a.txt");
     w.observe(11);
     w.end_check("failed");
@@ -548,8 +499,6 @@ fn failed_resolver_attempt_starts_the_next_after_the_backoff() {
     );
     assert_eq!(w.landing_state(), "conflicted");
 
-    // The process of the attempt exits. The backoff of 30 s holds the next
-    // attempt until fleet clock 42.
     w.crash(&first);
     w.observe(14);
     assert_eq!(w.repair_attempts(), 1, "the attempt failed 1 time");
@@ -559,7 +508,6 @@ fn failed_resolver_attempt_starts_the_next_after_the_backoff() {
     assert_ne!(second.bound.attempt_id, first);
     assert_eq!(w.task_status(), "done");
 
-    // A crash with no result is a failure too: 2 min of backoff.
     w.crash(&second.bound.attempt_id);
     let r = w.observe(50);
     assert_eq!(r.failed, vec![w.branch.clone()]);
@@ -603,7 +551,6 @@ fn at_max_attempts_1_needs_you_item_opens() {
     w.observe(50);
     assert_eq!(w.repair_attempts(), 2);
 
-    // At max_attempts no attempt starts, and 1 item opens.
     assert!(w.start(170).is_empty());
     assert_eq!(
         w.limit_items(),
@@ -622,7 +569,6 @@ fn at_max_attempts_1_needs_you_item_opens() {
 
 #[test]
 fn requeue_of_a_done_task_resets_repair_attempts_and_starts_1_more() {
-    // A done task with no branch to repair is not held: the requeue refuses.
     let mut w = World::new();
     let e = w.requeue().unwrap_err().to_string();
     assert!(e.contains("no branch"), "{e}");
@@ -639,13 +585,10 @@ fn requeue_of_a_done_task_resets_repair_attempts_and_starts_1_more() {
     assert_eq!(w.requeue().unwrap(), "done", "the task stays done");
     assert_eq!(w.repair_attempts(), 0);
 
-    // The next pass starts 1 more attempt with no backoff, and the item
-    // resolves.
     let next = only(&w.start(101)).bound.attempt_id.clone();
     assert_ne!(next, first);
     assert!(w.limit_items().is_empty());
 
-    // It fails too: the limit holds again.
     w.crash(&next);
     w.observe(102);
     assert_eq!(w.repair_attempts(), 1);

@@ -1,11 +1,3 @@
-//! The `requests` rows: pending, then applied or refused in 1 transaction,
-//! and the stored result for a seen `request_id`
-//! (docs/tickets/fleetd-p5/12-requests-store-and-apply.md; RR-8, FM-15,
-//! SR-8).
-//!
-//! Each test uses a temp ledger at generation 1 and a test handler that
-//! counts its calls and writes 1 row of the table `probe` for each call.
-
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -27,7 +19,6 @@ const ID: &str = "6f1c2a3e-0b9d-4c55-8e7f-1a2b3c4d5e6f";
 const AUTH: &str = "token; request file";
 const ME: &str = "me";
 
-/// A temp ledger at generation 1, with the table `probe` of the handler.
 struct World {
     _temp: tempfile::TempDir,
     conn: Connection,
@@ -65,8 +56,6 @@ fn authorized() -> Decision {
     Decision::Authorized { auth: AUTH.into() }
 }
 
-/// Handlers with 1 handler for `kind`: it counts its calls, writes 1 row of
-/// `probe`, and returns the count of its calls.
 fn counting(kind: Kind) -> (Handlers, Arc<AtomicUsize>) {
     let calls = Arc::new(AtomicUsize::new(0));
     let seen = Arc::clone(&calls);
@@ -104,7 +93,6 @@ fn requests(conn: &Connection) -> i64 {
         .unwrap()
 }
 
-/// The columns of the row of [`ID`] that the tests check.
 #[derive(Debug, PartialEq)]
 struct Row {
     kind: String,
@@ -223,8 +211,6 @@ fn refused_request_returns_its_reason() {
     };
 
     let first = send(&mut w, &req, &refused, &handlers);
-    // A later send of the same request gets the stored refusal, also when
-    // its own decision authorizes it.
     let second = send(&mut w, &req, &authorized(), &handlers);
 
     assert_eq!(refused_reason(&first), "the caller is unknown");
@@ -244,7 +230,6 @@ fn pending_row_of_a_crash_is_applied_once_when_the_id_comes_again() {
     let mut w = world();
     let (handlers, calls) = counting(Kind::TaskCancel);
     let req = request(Kind::TaskCancel, json!({ "task": "T-1" }));
-    // A crash after the pending row and before the apply leaves this row.
     {
         let tx = w
             .conn

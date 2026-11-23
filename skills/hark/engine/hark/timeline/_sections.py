@@ -16,8 +16,6 @@ GENERIC_AST = {"Music", "Musical instrument", "Speech", "Silence", "Sound effect
                "Outside, rural or natural", "Outside, urban or manmade", "Inside, large room or hall", "Animal"}
 
 
-# ---------------------------------------------------------------- windows and novelty
-
 def window_starts(dur: float, win: float, hop: float) -> list[float]:
     starts, s = [], 0.0
     while s <= max(dur - win, 0) + 1e-9:
@@ -83,8 +81,6 @@ def refine_bound(m: np.ndarray, t: float, radius: float) -> float:
             best, best_t = d, tk
     return round(best_t, 2)
 
-
-# ---------------------------------------------------------------- merging
 
 def _unit(v: np.ndarray) -> np.ndarray:
     return v / (np.linalg.norm(v) + 1e-12)
@@ -164,8 +160,6 @@ def merge_slivers(segs, bounds) -> tuple[list, list[float]]:
             k += 1
     return segs, bounds
 
-
-# ---------------------------------------------------------------- fields and labels
 
 def _level(x: np.ndarray, a: float, b: float) -> tuple[float | None, bool]:
     from hark.core.features import integrated_lufs
@@ -271,8 +265,6 @@ def merge_alike(secs: list[dict], bounds, x: np.ndarray) -> list[dict]:
     return out
 
 
-# ---------------------------------------------------------------- AST crops
-
 def plan_crops(secs: list[dict], budget: int) -> dict[int, int]:
     order = sorted(range(len(secs)), key=lambda k: -(secs[k]["end"] - secs[k]["start"]))
     plan = {k: 1 for k in order[:budget]}
@@ -308,8 +300,6 @@ def section_ast(secs, budget, m, offset, cache) -> int:
         total += len(spans)
     return total
 
-
-# ---------------------------------------------------------------- the pass
 
 def _section_rows(segs, edges, emb, x, vocab) -> list[dict]:
     cal = vocab.calibrate(np.vstack([s.vec for s in segs]))

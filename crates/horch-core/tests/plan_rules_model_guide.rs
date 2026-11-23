@@ -1,8 +1,3 @@
-//! The model guide rule of the plan validator (ticket 11 of fleetd-p6;
-//! design D8): Opus 5.5 at medium effort is the default, a higher effort
-//! has a reason, a Sonnet task says no decisions, and Fable needs the flag
-//! of the operator.
-
 use horch_core::fleetd::ideas::domain::plan::{Acceptance, Kind, Plan, PlannedTask};
 use horch_core::fleetd::ideas::domain::plan_rules_model_guide::RULE;
 use horch_core::fleetd::ideas::domain::plan_validator::{
@@ -32,7 +27,6 @@ fn facts() -> PlanFacts {
     }
 }
 
-/// A plan with 1 task `a` that runs on `profile`.
 fn plan(profile: &str) -> Plan {
     Plan {
         idea: "I-0001".into(),
@@ -52,7 +46,6 @@ fn plan(profile: &str) -> Plan {
     }
 }
 
-/// The problems of the model guide rule.
 fn problems(plan: &Plan) -> Vec<Problem> {
     PlanValidator::validate(plan, &facts())
         .into_iter()

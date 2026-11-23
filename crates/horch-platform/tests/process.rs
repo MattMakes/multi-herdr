@@ -1,10 +1,7 @@
-//! The concern process: process identity and liveness.
-
 use horch_platform::process;
 use std::process::{Child, Command};
 use std::time::SystemTime;
 
-/// A child that ends at once.
 fn short_child() -> Child {
     #[cfg(unix)]
     let child = Command::new("true").spawn();
@@ -13,7 +10,6 @@ fn short_child() -> Child {
     child.expect("start a child")
 }
 
-/// The pid of a child that has ended and that this process has reaped.
 fn reaped_pid() -> u32 {
     let mut child = short_child();
     let pid = child.id();
@@ -70,8 +66,6 @@ fn parent_of_a_child_is_this_process() {
     assert_eq!(parent, Ok(Some(std::process::id())));
 }
 
-/// PID 1 is a process of root. Its parent is read all the same, so that a
-/// parent chain can reach PID 1 (ticket 11 of fleetd-p5).
 #[cfg(unix)]
 #[test]
 fn parent_of_a_root_process_is_read() {

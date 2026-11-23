@@ -1,5 +1,3 @@
-//! The concern rest for the code of macOS and Linux.
-
 use std::io;
 use std::path::Path;
 use std::process::Command;
@@ -44,9 +42,6 @@ pub(crate) fn replace_process(mut cmd: Command) -> io::Error {
     cmd.exec()
 }
 
-/// macOS and Linux keep the user PATH in the shell config, not in a
-/// registry (`docs/specs/fleetd/preservation-06-wiring-and-platform.md`,
-/// section 6, row "Other").
 pub(crate) fn ensure_user_path(
     _dir: &Path,
     _prepend: &dyn Fn(&str, &str) -> Option<String>,

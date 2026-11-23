@@ -1,8 +1,3 @@
-//! The concern machine for Windows. Windows has no machine probe today:
-//! each reading is `NotSupported`
-//! (`docs/specs/fleetd/preservation-06-wiring-and-platform.md`, section 6,
-//! row "Other", and row S12).
-
 use std::path::Path;
 
 use crate::machine::{Disk, Gpu, Memory, Run};
@@ -14,7 +9,6 @@ pub(crate) fn load_average() -> Result<Option<f64>, NotSupported> {
     Err(GAP)
 }
 
-/// No gethostname here: the caller reads `COMPUTERNAME`.
 pub(crate) fn host_name() -> Result<Option<String>, NotSupported> {
     Err(GAP)
 }
@@ -47,7 +41,6 @@ pub(crate) fn system_open_file_count() -> Result<Option<u64>, NotSupported> {
     Err(GAP)
 }
 
-/// The caller uses `std::env::consts::ARCH`, as today.
 pub(crate) fn uname_arch(_run: Run<'_>) -> Result<Option<String>, NotSupported> {
     Err(GAP)
 }

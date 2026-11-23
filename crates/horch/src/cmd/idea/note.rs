@@ -1,14 +1,3 @@
-//! `horch idea note <id> [--question <qid> --case <case> [--cite <file:line>]]
-//! [--dismiss <finding>] <text>`: the sub-orchestrator records 1 note in the
-//! idea folder (`docs/specs/fleetd/design.md`, "Ideas"; protocol rule 5;
-//! A35).
-//!
-//! The note is a file of class worker in `ideas/I-NNNN/notes/`: it never
-//! uses the command channel or the request folder, and the command writes
-//! no ledger row. Only the live sub-orchestrator attempt of the idea, found
-//! by the parent chain of this process, may write it. fleetd ingests each
-//! note 1 time.
-
 use std::process::ExitCode;
 
 use anyhow::{bail, Result};
@@ -19,7 +8,6 @@ use horch_core::fleetd::task_execution::adapters::outbox_writer::NO_LIVE_ATTEMPT
 use horch_core::runtime::RuntimeContext;
 use horch_core::taskledger;
 
-/// The separator of the question and the answer of an interview note.
 const INTERVIEW_SEPARATOR: &str = " - ";
 
 /// How an answer to a question is handled.
@@ -40,7 +28,8 @@ pub enum AnswerCase {
 pub struct NoteArgs {
     /// The idea id.
     pub id: String,
-    /// The note: a question and its answer, or the reason of a dismiss.
+    /// The note: a question and its answer, an open question with --ask, or
+    /// the reason of a dismiss.
     pub text: String,
     /// The id of the question that this note answers.
     #[arg(long, value_name = "QID", requires = "case")]
@@ -54,6 +43,9 @@ pub struct NoteArgs {
     /// Dismiss this judge finding.
     #[arg(long, value_name = "FINDING")]
     pub dismiss: Option<String>,
+    /// Record <TEXT> as an open interview question that waits for your answer.
+    #[arg(long, conflicts_with_all = ["question", "dismiss"])]
+    pub ask: bool,
 }
 
 impl From<AnswerCase> for notes::AnswerCase {
@@ -67,7 +59,6 @@ impl From<AnswerCase> for notes::AnswerCase {
     }
 }
 
-/// `horch idea note`.
 pub fn run(ctx: &RuntimeContext, args: NoteArgs) -> Result<ExitCode> {
     let body = body(&args)?;
     let Some(store) = taskledger::open_existing_read_only(ctx)? else {
@@ -85,9 +76,12 @@ pub fn run(ctx: &RuntimeContext, args: NoteArgs) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// The note of `args`: a dismiss, an answer to a worker question, or else
-/// 1 question of the interview and its answer as `<question> - <answer>`.
 fn body(args: &NoteArgs) -> Result<NoteBody> {
+    if args.ask {
+        return Ok(NoteBody::Ask {
+            question: args.text.clone(),
+        });
+    }
     if let Some(finding) = &args.dismiss {
         if args.question.is_some() {
             bail!("--dismiss and --question cannot be used together");

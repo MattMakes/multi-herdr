@@ -1,7 +1,3 @@
-//! The Phase 6 keys of `fleet.toml`: the timers of an idea that waits on
-//! you (design, "The numbers of the design"; FM-29, PL-4) and the working
-//! hours of the reminders (`docs/tickets/fleetd-p6/MAP.md`, Q3).
-
 use horch_core::fleetd::fleet_runtime::adapters::config_file;
 use horch_core::fleetd::fleet_runtime::domain::config::{FleetConfig, Weekday, WorkingHours};
 
@@ -56,8 +52,6 @@ fn each_phase6_key_out_of_range_is_refused_with_its_name() {
 #[test]
 fn working_hours_parses_days_and_hours() {
     let h = WorkingHours::parse("Mon-Fri 09:00-18:00").unwrap();
-    // The fleet gives the weekday and the minute of the day in the local
-    // time zone; the test fixes both and never reads a clock.
     assert!(h.contains(Weekday::Mon, 9 * 60));
     assert!(h.contains(Weekday::Wed, 12 * 60 + 30));
     assert!(h.contains(Weekday::Fri, 17 * 60 + 59));
@@ -66,13 +60,11 @@ fn working_hours_parses_days_and_hours() {
     assert!(!h.contains(Weekday::Sat, 12 * 60));
     assert!(!h.contains(Weekday::Sun, 12 * 60));
 
-    // A day range can pass the end of the week.
     let h = WorkingHours::parse("Fri-Mon 22:00-23:30").unwrap();
     assert!(h.contains(Weekday::Sun, 22 * 60));
     assert!(h.contains(Weekday::Mon, 23 * 60 + 29));
     assert!(!h.contains(Weekday::Tue, 22 * 60));
 
-    // 1 day.
     let h = WorkingHours::parse("Wed-Wed 00:00-23:59").unwrap();
     assert!(h.contains(Weekday::Wed, 0));
     assert!(!h.contains(Weekday::Thu, 0));

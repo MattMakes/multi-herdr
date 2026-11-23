@@ -1,20 +1,12 @@
-//! The DAG rule of the plan validator: the task dependencies have no cycle
-//! and name only tasks of the plan (FR-3, FM-10).
-//!
-//! `judges:` is not a dependency, so this rule reads only `after:`.
-
 use std::collections::BTreeMap;
 
 use super::plan::Plan;
 use super::plan_validator::{PlanFacts, Problem};
 
-/// The rule name.
 pub const RULE: &str = "dag";
 
-/// Each `after:` key that names no task, and each cycle, once.
 pub fn check(plan: &Plan, _facts: &PlanFacts) -> Vec<Problem> {
     let mut out = Vec::new();
-    // The first task of a key: the schema rule reports a duplicate key.
     let mut after: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     for task in &plan.tasks {
         if after.contains_key(task.key.as_str()) {
@@ -45,8 +37,6 @@ pub fn check(plan: &Plan, _facts: &PlanFacts) -> Vec<Problem> {
     out
 }
 
-/// Each cycle of the graph, as its keys from its smallest key back to it.
-/// A key in 2 cycles is reported in the first one found.
 fn cycles<'a>(after: &BTreeMap<&'a str, Vec<&'a str>>) -> Vec<Vec<&'a str>> {
     #[derive(Clone, Copy, PartialEq)]
     enum Mark {
@@ -60,8 +50,6 @@ fn cycles<'a>(after: &BTreeMap<&'a str, Vec<&'a str>>) -> Vec<Vec<&'a str>> {
         if mark[start] != Mark::New {
             continue;
         }
-        // An explicit stack of (key, index of its next dependency), so a
-        // long chain does not use the call stack.
         let mut path: Vec<(&str, usize)> = vec![(start, 0)];
         mark.insert(start, Mark::OnPath);
         while let Some((key, next)) = path.last_mut() {

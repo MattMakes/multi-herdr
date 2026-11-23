@@ -76,8 +76,6 @@ SPACE: dict[str, Any] = {
     "g_verb": ["hall", "fdn"], "g_mat": list(G_MATS), "g_bend": (0.0, 2.0), "g_chorus": (0.0, 1.0),
 }
 
-# ------------------------------------------------------------------------------------------------ bases (15.4)
-
 REVEAL = {"mode": "reveal", "root": 880.0, "chord": "add9", "material": "bar", "bloom_decay": 2.2, "bright": 0.6,
           "open_ms": 120.0,
               "strike": 0.5, "shimmer": 0.25, "hit": 0.3, "sub": 0.25, "swell": 0.0, "swell_level": 0.2, "verb": 0.35,
@@ -110,9 +108,6 @@ GESTURE = {"mode": "gesture", "gesture": "chirp_hum", "g_f0": 1600.0, "g_f1": 16
                "g_tone": 1.0,
                "g_mat": "sine", "g_bend": 0.0, "g_chorus": 0.0, "g_verb": "hall"}
 BASES = {"chirp": CHIRP_R2, "launch": LAUNCH, "gesture": GESTURE, "reveal": REVEAL}
-
-# ------------------------------------------------------------------------------------------------ families (15.5)
-
 
 def _members(bed: dict, spec_rows: list[tuple[str, dict]]) -> list[tuple[str, dict]]:
     return [(label, {**bed, **extra}) for label, extra in spec_rows]
@@ -265,8 +260,6 @@ STUDY_STING = {
                        "corr": (0.9, 1.0), "ridge0": (900, 2400), "ridge1": (55, 110)},
 }
 
-# ------------------------------------------------------------------------------------------------ search (15.6)
-
 SEARCH = {
     "logo_sting": (["lead_s", "lead_level", "tick", "tick_f", "thump", "ring", "strike_tau", "ring_mix", "ring_tau",
                     "shimmer", "verb", "width", "low_cut", "bright", "bloom_delay"],
@@ -299,9 +292,6 @@ def recipe_for(cat: str, preset: int | str = 0) -> types.SimpleNamespace:
     label, pset = fams[cat][preset] if isinstance(preset, int) else (preset, dict(fams[cat])[preset])
     return types.SimpleNamespace(MODULE=MODULE, SPACE=space_for(cat), DEFAULTS=dict(pset), render=render,
                                  TARGET=tgts[cat], ALTS=list(alt_list), REFSET=cat, PRESET=label)
-
-
-# ------------------------------------------------------------------------------------------------ small helpers
 
 
 def _up(wav: np.ndarray) -> np.ndarray:
@@ -368,9 +358,6 @@ def low_strike(lf: float, lt: float, ns: int) -> np.ndarray:
     phase = 2 * np.pi * np.cumsum(lf * (1 + 1.5 * np.exp(-tax / 0.035))) / SR
     sig = (np.sin(phase) + 0.25 * np.sin(2 * phase)) * np.clip(tax / 0.012, 0, 1) ** 2 * np.exp(-tax / lt)
     return _up(bw(sig, "high", 25, 2))
-
-
-# ------------------------------------------------------------------------------------------------ chirp (15.8)
 
 
 def _chirp_track(cfg: dict, ns: int) -> tuple[int, float, np.ndarray, np.ndarray]:
@@ -501,9 +488,6 @@ def render_chirp(cfg: dict, gen: np.random.Generator) -> np.ndarray:
     return np.column_stack([sig, sig])
 
 
-# ------------------------------------------------------------------------------------------------ reveal (15.9)
-
-
 def _bell_partials(matname: str) -> Any:
     return TRIANGLE if matname == "triangle" else matname
 
@@ -582,9 +566,6 @@ def render_reveal(cfg: dict, gen: np.random.Generator) -> np.ndarray:
         mix = np.concatenate([_reveal_swell(cfg, bl, np.max(np.abs(mix)), gen), mix])
     mix = dsp.trim_tail(_hp_cut(mix, cfg["low_cut"]), -66.0, 0.05)
     return dsp.fade(mix, 0.001, min(0.4, 0.15 * len(mix) / SR))
-
-
-# ------------------------------------------------------------------------------------------------ launch (15.10)
 
 
 def lead_whoosh(cfg: dict, ns: int, gen) -> np.ndarray:
@@ -739,9 +720,6 @@ def render_launch(cfg: dict, gen: np.random.Generator) -> np.ndarray:
         mix[n_lead:n_lead + ns] += (cfg["low"] * peak * low_strike(cfg["low_f"], cfg["low_tau"], ns))[:, None]
     mix = dsp.trim_tail(bw(mix, "low", 16500, 4), -62.0, 0.05)
     return dsp.fade(mix, 0.0015, min(0.3, 0.2 * len(mix) / SR))
-
-
-# ------------------------------------------------------------------------------------------------ gesture (15.11)
 
 
 def g_sweep(ns: int, fa: float, fb: float, dur: float, chan: float, gen) -> tuple[np.ndarray, np.ndarray]:
@@ -985,8 +963,6 @@ def render_gesture(cfg: dict, gen: np.random.Generator) -> np.ndarray:
     mix = dsp.trim_tail(bw(mix, "low", 16000, 4), -64.0, 0.05)
     return dsp.fade(mix, 0.0008, min(0.25, 0.2 * len(mix) / SR))
 
-
-# ------------------------------------------------------------------------------------------------ render (15.7)
 
 _DISPATCH = ({"chirp": render_chirp, "launch": render_launch, "gesture": render_gesture}, BASES, REVEAL, DEFAULTS)
 

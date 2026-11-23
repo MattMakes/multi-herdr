@@ -24,8 +24,6 @@ def _inside(m: dict, study: dict) -> int:
     return sum(1 for k, (lo, hi, _) in study.items() if m.get(k) is not None and lo <= m[k] <= hi)
 
 
-# ---- subdrop
-
 def test_8_4_subdrop_length(take):
     pro = dict(dict(subdrop.FAMILIES["sub_drop"])["pro"])
     assert subdrop.seconds_of(pro) == pytest.approx(1.4)
@@ -85,8 +83,6 @@ def test_subdrop_ends_on_a_fade(take):
     assert np.max(np.abs(y[-10:])) < 1e-3
 
 
-# ---- cuthit
-
 def test_cuthit_family_and_space():
     names = [n for n, _ in cuthit.FAMILIES["cut_hit"]]
     assert names == ["sub", "kick", "punch", "rumble", "air"]
@@ -130,8 +126,6 @@ def test_cuthit_end_cut():
     assert len(cuthit.end_cut(np.ones((500, 2)))) == 500
 
 
-# ---- thump
-
 def test_8_7_thump_off_equals_the_pass_engine(take):
     whoosh = pytest.importorskip("hark.forge.recipes.motion.whoosh")
     from hark.forge.recipes.impacts import thump
@@ -168,8 +162,6 @@ def test_thump_take_independent_of_thump_level(take):
     b = take(thump.render, {"thump_db": -6.0})
     assert a.shape == b.shape
 
-
-# ---- knock
 
 def test_8_8_knock_profile():
     wood = knock.FAMILY["knock"][knock.FAMILY_NAMES["knock"].index("wood")]

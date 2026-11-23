@@ -1,12 +1,3 @@
-//! The git gateway of integration: compare-and-set ref moves, the by-content
-//! check of I8, the candidate of a bundle, the fleet branch and stash reads,
-//! and the git settings of fleetd (docs/specs/fleetd/design.md, "No work is
-//! lost", I8, I9, I11, I12, "The bundle", "fleetd sets the git settings that
-//! it needs"; docs/tickets/fleetd-p4/23-integration-git-gateway.md).
-//!
-//! Each test makes its own temporary git repository. No test touches this
-//! repository.
-
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -21,13 +12,12 @@ struct World {
     _dir: tempfile::TempDir,
     root: PathBuf,
     repo: PathBuf,
-    /// The first commit of `main`.
     base: String,
 }
 
 fn world() -> World {
     let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().canonicalize().unwrap();
+    let root = horch_platform::path::canonicalize(dir.path()).unwrap();
     let repo = root.join("repo");
     std::fs::create_dir(&repo).unwrap();
     git(&repo, &["init", "-q", "-b", "main"]);
@@ -45,8 +35,6 @@ fn world() -> World {
 }
 
 impl World {
-    /// The gateway of fleetd: it can write only the git folder of the
-    /// repository.
     fn gateway(&self) -> CliGitGateway {
         CliGitGateway::new(
             CliWorktreeGit::new("git", self.root.join("fleet")).writing(&[self.repo.join(".git")]),
@@ -57,8 +45,6 @@ impl World {
         git(&self.repo, &["rev-parse", rev])
     }
 
-    /// Check out `branch` (made from `from` when it is new), write each
-    /// file of `files`, and commit them. Returns the new tip.
     fn commit_on(&self, branch: &str, from: &str, files: &[(&str, &str)], msg: &str) -> String {
         if git_out(&self.repo, &["rev-parse", "--verify", "-q", branch])
             .status
@@ -78,7 +64,6 @@ impl World {
         tip
     }
 
-    /// The number of entries in the reflog of `name`: 1 for each move.
     fn moves(&self, name: &str) -> usize {
         git(&self.repo, &["reflog", "show", "--format=%H", name])
             .lines()
@@ -126,8 +111,6 @@ fn git_out(dir: &Path, args: &[&str]) -> std::process::Output {
 
 const BRANCH: &str = "refs/heads/fleet/f";
 
-// ─── I9: compare-and-set ref moves ─────────────────────────────────────
-
 #[test]
 fn update_ref_moves_only_from_the_expected_old_tip() {
     let w = world();
@@ -142,7 +125,6 @@ fn update_ref_moves_only_from_the_expected_old_tip() {
     assert_eq!(moved, RefMove::Moved);
     assert_eq!(gw.tip(&w.repo, BRANCH).unwrap(), Some(next.clone()));
 
-    // A new ref is made only when it does not exist.
     let candidate = "refs/horch/bundle/1";
     assert_eq!(
         gw.update_ref(&w.repo, candidate, &next, None).unwrap(),
@@ -156,7 +138,6 @@ fn update_ref_moves_only_from_the_expected_old_tip() {
     );
     assert_eq!(w.tip(candidate), next);
 
-    // A delete is a compare-and-set too.
     assert_eq!(
         gw.delete_ref(&w.repo, candidate, &next).unwrap(),
         RefMove::Moved
@@ -169,7 +150,6 @@ fn update_ref_with_a_moved_tip_moves_nothing_and_returns_the_tip() {
     let w = world();
     let gw = w.gateway();
     let ours = w.commit_on("fleet/f", &w.base, &[("a.txt", "ours\n")], "ours");
-    // Someone else moves the branch after fleetd saw it at the base.
     git(&w.repo, &["update-ref", BRANCH, &w.base]);
     let theirs = w.commit_on("fleet/f", &w.base, &[("b.txt", "theirs\n")], "theirs");
     let before = w.moves(BRANCH);
@@ -187,7 +167,6 @@ fn update_ref_with_a_moved_tip_moves_nothing_and_returns_the_tip() {
     assert_eq!(w.tip(BRANCH), theirs);
     assert_eq!(w.moves(BRANCH), before, "no move is recorded");
 
-    // A delete on a moved tip deletes nothing.
     assert_eq!(
         gw.delete_ref(&w.repo, BRANCH, &w.base).unwrap(),
         RefMove::Mismatch {
@@ -196,7 +175,6 @@ fn update_ref_with_a_moved_tip_moves_nothing_and_returns_the_tip() {
     );
     assert_eq!(w.tip(BRANCH), theirs);
 
-    // A ref that is gone is a mismatch with no tip.
     assert_eq!(
         gw.update_ref(&w.repo, "refs/heads/fleet/gone", &ours, Some(&w.base))
             .unwrap(),
@@ -218,11 +196,6 @@ fn update_ref_refuses_a_short_name_and_a_revision_that_is_not_an_id() {
     assert_eq!(gw.tip(&w.repo, BRANCH).unwrap(), None);
 }
 
-// ─── I8: the by-content check ──────────────────────────────────────────
-
-/// A branch that changes `a.txt` and adds `c.txt`, a main that changes
-/// `a.txt` too, and a squash merge of the branch into main with the
-/// conflict on `a.txt` resolved to `resolved`. Returns the branch tip.
 fn squash_with_conflict(w: &World, resolved: &str) -> String {
     let branch = w.commit_on(
         "fleet/t",
@@ -255,16 +228,12 @@ fn i8_squash_merge_with_a_conflict_resolution_is_seen_as_landed() {
 #[test]
 fn i8_branch_with_a_change_missing_in_the_target_is_not_landed() {
     let w = world();
-    // Q14: the resolution kept main's text, so the change of the branch
-    // to a.txt is not in the target.
     let branch = squash_with_conflict(&w, "main\n");
     let target = w.tip("main");
     let gw = w.gateway();
 
     assert!(!gw.changes_in(&w.repo, &branch, &w.base, &target).unwrap());
 
-    // A file that the branch deletes and the target keeps is a change that
-    // is missing too.
     git(&w.repo, &["checkout", "-q", "-b", "fleet/d", &w.base]);
     git(&w.repo, &["rm", "-q", "b.txt"]);
     git(&w.repo, &["commit", "-q", "-m", "delete b"]);
@@ -290,8 +259,6 @@ fn i8_merged_branch_is_landed_after_the_target_changes_its_file() {
         .changes_in(&w.repo, &branch, &w.base, &target)
         .unwrap());
 }
-
-// ─── Q15: the candidate of a bundle ────────────────────────────────────
 
 fn member(name: &str, tip: &str) -> Member {
     Member {
@@ -327,7 +294,6 @@ fn candidate_of_3_members_keeps_each_commit() {
     for c in &commits {
         assert!(w.is_ancestor(c, &tip), "commit {c} is kept");
     }
-    // 1 merge commit for each member, in queue order.
     let chain = git(&w.repo, &["rev-list", "--first-parent", &tip]);
     let chain: Vec<&str> = chain.lines().collect();
     assert_eq!(chain.len(), 4);
@@ -342,7 +308,6 @@ fn candidate_of_3_members_keeps_each_commit() {
         let blob = format!("{tip}:t{n}.txt");
         assert_eq!(git(&w.repo, &["cat-file", "blob", &blob]), "2");
     }
-    // No checkout, no worktree, no ref.
     assert_eq!(w.tip("HEAD"), head);
     assert_eq!(git(&w.repo, &["status", "--porcelain"]), "");
     assert_eq!(git(&w.repo, &["worktree", "list"]).lines().count(), 1);
@@ -379,8 +344,6 @@ fn candidate_with_a_conflict_names_the_member_and_its_files() {
         }
     );
 }
-
-// ─── the reads ─────────────────────────────────────────────────────────
 
 #[test]
 fn stash_list_names_its_branch() {
@@ -435,8 +398,6 @@ fn fleet_branches_and_the_fleet_toml_of_a_tip_are_read() {
     assert_eq!(gw.fleet_toml(&w.repo, &g).unwrap(), None);
 }
 
-// ─── the settings of fleetd ────────────────────────────────────────────
-
 #[test]
 fn fleet_settings_are_set_in_the_repository() {
     let w = world();
@@ -464,10 +425,6 @@ fn fleet_settings_are_set_in_the_repository() {
     }
 }
 
-// ─── the crash test of a ref move ──────────────────────────────────────
-
-/// The rows of the ledger that a ref move needs: the tip that fleetd last
-/// saw, and the intended move, committed before its effect.
 #[derive(Debug, Clone, Default)]
 struct Rows {
     seen_tip: String,
@@ -478,17 +435,11 @@ struct Rows {
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Fault {
     None,
-    /// The process stops before the commit of the intended row.
     BeforeCommit,
-    /// The process stops after the commit and before the effect.
     BeforeEffect,
-    /// The process stops after the effect and before its outcome is
-    /// recorded.
     BeforeOutcome,
 }
 
-/// 1 pass: it ends an intended move of a row first, else it decides to
-/// move the branch to `next`. Returns `false` when the fault stops it.
 fn pass(
     gw: &dyn IntegrationGitGateway,
     repo: &Path,
@@ -568,7 +519,6 @@ fn crash_before_the_effect_on_a_moved_tip_fails_the_move_once_and_keeps_the_tip(
         ..Rows::default()
     };
     assert!(!pass(&gw, &w.repo, &mut rows, &next, Fault::BeforeEffect));
-    // While fleetd is down, someone moves the branch.
     let theirs = w.commit_on("fleet/f", &w.base, &[("b.txt", "theirs\n")], "theirs");
     let before = w.moves(BRANCH);
 
@@ -580,8 +530,6 @@ fn crash_before_the_effect_on_a_moved_tip_fails_the_move_once_and_keeps_the_tip(
     assert_eq!(w.tip(BRANCH), theirs);
     assert_eq!(w.moves(BRANCH), before);
 }
-
-// ─── the fleetd git rule (Q26) ─────────────────────────────────────────
 
 #[test]
 fn candidate_build_runs_no_merge_driver_of_the_project() {

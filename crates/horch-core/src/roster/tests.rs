@@ -1,6 +1,3 @@
-//! ARC-08: the roster split keeps strict serde, the overlay order and every
-//! frontmatter shape the fleet has shipped.
-
 use std::path::{Path, PathBuf};
 
 use super::parser::{md_files, parse_base, parse_teammate};
@@ -15,7 +12,6 @@ fn repo_teammates() -> PathBuf {
     manifest_dir().join("../../teammates")
 }
 
-/// The built-in `opus.md`, with its `brief_description` replaced.
 fn opus_saying(brief: &str) -> String {
     let text = std::fs::read_to_string(repo_teammates().join("opus.md")).unwrap();
     text.lines()
@@ -94,14 +90,12 @@ fn arc_08_legacy_frontmatter_corpus_parses() {
         parse_base(&stem, &text).unwrap_or_else(|e| panic!("{}: {e:#}", path.display()));
     }
 
-    // Before the usage-pool fallbacks (c3e673d~1).
     let fixtures = manifest_dir().join("tests/fixtures/roster");
     let text = std::fs::read_to_string(fixtures.join("pre-fallbacks/opus.md")).unwrap();
     let opus = parse_teammate("opus", &text).unwrap();
     assert!(opus.fallbacks.is_empty());
     assert_eq!(opus.effort.as_deref(), Some("medium"));
 
-    // Before codex teammates stated an effort (a1e6798).
     let text = std::fs::read_to_string(fixtures.join("pre-effort/codex-sol.md")).unwrap();
     let sol = parse_teammate("codex-sol", &text).unwrap();
     assert_eq!(sol.effort, None);
@@ -109,9 +103,6 @@ fn arc_08_legacy_frontmatter_corpus_parses() {
     assert!(sol.fallbacks.is_empty());
 }
 
-/// The roster reads files and nothing else: it never talks to the terminal
-/// server, starts a process or reads the environment. This test file is
-/// skipped: it is test code, and the test's own name holds a needle.
 #[test]
 fn arc_08_roster_never_calls_herdr() {
     let needles = ["herdr", "Herdr", "std::process", "std::env::var"];
@@ -137,8 +128,6 @@ fn arc_08_roster_never_calls_herdr() {
     assert!(scanned >= 9, "only {scanned} files scanned");
 }
 
-/// F7: a teammate file whose `requires` names a value this binary does not
-/// know, as when the live roster is ahead of the installed `horch`.
 fn write_ahead(dir: &Path, name: &str) -> PathBuf {
     std::fs::create_dir_all(dir).unwrap();
     let text = opus_saying("ahead of the binary")
@@ -178,13 +167,11 @@ fn f7_bad_overlay_file_skips_only_that_teammate() {
     assert!(w.contains("unknown variant `no-such-tool`"), "{w}");
     assert!(w.contains("teammate 'newcomer' is not available"), "{w}");
 
-    // Spawn by name: the parse error, not "unknown teammate".
     let err = format!("{:#}", r.require("newcomer").unwrap_err());
     assert!(!err.contains("unknown teammate"), "{err}");
     assert!(err.contains("unknown variant `no-such-tool`"), "{err}");
     assert!(err.contains(&path.display().to_string()), "{err}");
 
-    // The gate stays strict.
     assert!(r.check().contains(w), "{:?}", r.check());
 }
 
@@ -251,7 +238,7 @@ fn f7_bad_base_file_keeps_the_builtin_base() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().join("teammates");
     std::fs::create_dir_all(dir.join("_base")).unwrap();
-    let path = dir.join("_base/fleet-worker.md");
+    let path = dir.join("_base").join("fleet-worker.md");
     std::fs::write(&path, "no frontmatter here\n").unwrap();
 
     let r = Roster::load_layered(None, Some(&dir), None).unwrap();
@@ -270,8 +257,6 @@ fn f7_bad_base_file_keeps_the_builtin_base() {
     assert!(r.check().contains(&warnings[0]), "{:?}", r.check());
 }
 
-/// Every built-in teammate on `model: opus` carries the compiled-in
-/// `sr_eng_system_prompt`, and an overlay `system_prompt/` file replaces it.
 #[test]
 fn opus_teammates_carry_the_sr_eng_system_prompt() {
     let source =
@@ -314,7 +299,6 @@ fn opus_teammates_carry_the_sr_eng_system_prompt() {
     );
 }
 
-/// `--check` fails a prompt name with no file, and a non-Claude agent.
 #[test]
 fn check_refuses_an_unknown_or_non_claude_system_prompt() {
     let mut r = Roster::builtin().unwrap();
@@ -335,10 +319,6 @@ fn check_refuses_an_unknown_or_non_claude_system_prompt() {
     );
 }
 
-// Ticket fleetd-p2/06: the profile of a persona and the required fallback.
-
-/// The built-in roster with `probe`: a copy of `opus.md` whose `fallbacks`
-/// line is replaced by `lines`.
 fn roster_with_probe(lines: &str) -> Roster {
     let text = std::fs::read_to_string(repo_teammates().join("opus.md")).unwrap();
     let text = text
@@ -351,7 +331,6 @@ fn roster_with_probe(lines: &str) -> Roster {
     roster
 }
 
-/// The lines of `check` about the file `probe.md`.
 fn probe_problems(roster: &Roster) -> Vec<String> {
     roster
         .check()
@@ -436,7 +415,6 @@ fn liveness_and_retry_absent_give_the_design_defaults() {
     assert_eq!(profile.retry.max_attempts, None);
     assert_eq!(profile.retry.backoff_s, [30, 120, 480]);
 
-    // A partial block keeps the default of each field it leaves out.
     let roster = roster_with_probe(
         "fallbacks: [codex-sol]\nliveness: {max_wait_s: 600}\nretry: {max_attempts: 5}",
     );
@@ -489,16 +467,6 @@ fn fallback_is_the_first_entry_of_fallbacks() {
     );
 }
 
-/// No fallback lowers confidentiality, for the parts of the ladder a teammate
-/// file states: a local persona never falls back to a cloud pool, a persona
-/// that does not train on its input never falls back to one that does, and a
-/// persona with a Claude `sandbox:` block that walls more than the fleet
-/// worker block, or with `horch_access: report`, names no fallback, because
-/// a fallback launches without that block. The fleet worker block only
-/// turns the sandbox on with the network of today (ticket 39); profile
-/// validation refuses a fallback whose own sandbox does not deny the
-/// operator path. The sandbox of codex and agy comes from the harness, not
-/// from the file, so this test cannot read it.
 #[test]
 fn no_fallback_lowers_confidentiality() {
     use crate::routing::quota::{pool_for, POOL_LOCAL};
@@ -535,9 +503,6 @@ fn no_fallback_lowers_confidentiality() {
     }
 }
 
-/// The escape from D2 cannot grow in silence: the exact list of shipped
-/// personas whose file gave a written reason for no fallback before ticket
-/// fleetd-p2/06 (confidentiality, trust, safety or capability).
 #[test]
 fn the_shipped_personas_with_no_fallback_reason_are_pinned() {
     let roster = Roster::builtin().unwrap();
@@ -557,6 +522,7 @@ fn the_shipped_personas_with_no_fallback_reason_are_pinned() {
             "blender-artist",
             "blender-builder",
             "blender-qa",
+            "comment-remover",
             "idea-lead",
             "intake-analyst",
             "intake-auditor",

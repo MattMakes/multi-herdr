@@ -1,24 +1,3 @@
-//! `horch worker` - the port of `scripts/herdr-fleet/worker.sh`.
-//!
-//! `horch spawn` writes a brief (the resolved teammate, model, task, session and
-//! record ids) into the workspace mailbox and then runs this command in the
-//! fresh pane. `execution::lifecycle::run_worker` registers the role, renders
-//! that teammate's briefing, launches the agent CLI and records how it ended.
-//!
-//! The bash version `exec`ed the agent. There is no `exec` on Windows, so the
-//! agent runs as a child and its exit status is propagated.
-//!
-//! Until the fleet-run wrapper of Phase 5, this command is the wrapper of a
-//! push attempt. When its agent exits with commits since the base and with
-//! no `result.json` and no question file, it runs the repair pass of FM-6:
-//! 1 short resume of the same session with the fixed line of
-//! `domain/repair.rs`, before it records the exit. The wrapper writes no
-//! ledger row (RR-5): `exit.json` of the attempt says that the repair ran.
-//!
-//! An exec attempt (fleetd-p7 ticket 17) has the same repair pass, with
-//! its resume in exec mode. An exec attempt that ended on a usage limit
-//! has none: its `exit.json` has the outcome hint `quota`.
-
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -41,8 +20,6 @@ use rusqlite::OptionalExtension;
 use super::resultcmd::{has_question, is_regular};
 
 pub fn worker(ctx: &mut RuntimeContext, role: &str) -> Result<ExitCode> {
-    // The process's working directory, not an environment variable: the
-    // agent starts here, and a relative roster path resolves from here.
     let enter_dir = |dir: &Path| Ok(std::env::set_current_dir(dir)?);
     let code = run_worker(&mut Repairing(PaneWorker::new(ctx, role, &enter_dir)))?;
     Ok(match code {
@@ -51,7 +28,6 @@ pub fn worker(ctx: &mut RuntimeContext, role: &str) -> Result<ExitCode> {
     })
 }
 
-/// The pane worker, with the repair pass after its agent exits.
 struct Repairing<'a>(PaneWorker<'a>);
 
 impl WorkerSteps for Repairing<'_> {
@@ -71,9 +47,6 @@ impl WorkerSteps for Repairing<'_> {
         self.0.set_running(brief)
     }
 
-    /// The agent, then the repair pass. The code is the one of the first
-    /// exit: the repair is not an attempt. An exec attempt that ended on a
-    /// usage limit ends with `quota`, not without its result: no repair.
     fn launch(&mut self, brief: &Brief) -> Result<Option<i32>> {
         let code = self.0.launch(brief)?;
         if self.0.exec_end().is_some_and(|end| !end.repair_applies()) {
@@ -106,8 +79,6 @@ impl WorkerSteps for Repairing<'_> {
 }
 
 impl Repairing<'_> {
-    /// The repair pass of the push attempt of this worker. A worker with no
-    /// task ledger or no push attempt has none.
     fn repair(&mut self, brief: &Brief) -> Result<()> {
         let Some((db, worker_id)) = self
             .0
@@ -147,8 +118,6 @@ impl Repairing<'_> {
     }
 }
 
-/// The push attempt of a worker: its tree, the base of its branch and its
-/// outbox.
 #[derive(Debug)]
 struct PushAttempt {
     id: String,
@@ -158,8 +127,6 @@ struct PushAttempt {
 }
 
 impl PushAttempt {
-    /// The newest attempt of `worker_id` with `via = push`. `None` for a
-    /// worker of a claim attempt, or of no task.
     fn of_worker(db: &Path, worker_id: &str, fleet_root: &Path) -> Result<Option<PushAttempt>> {
         let store = Store::open_read_only(db)?;
         let conn = store.conn();
@@ -197,23 +164,17 @@ impl PushAttempt {
     }
 }
 
-/// The repair pass of 1 push attempt on the task ledger (read-only), its
-/// tree and its outbox.
 struct LedgerRepair<'r> {
     db: PathBuf,
     attempt: PushAttempt,
     git: Git,
     resume: &'r mut dyn FnMut(&str) -> Result<Option<i32>>,
-    /// The repair is recorded: this wrapper ran it, and its `exit.json`
-    /// says so.
     recorded: bool,
 }
 
 impl RepairPort for LedgerRepair<'_> {
     type Error = anyhow::Error;
 
-    /// Read after the agent exited. The outbox rule is the one of the Stop
-    /// hook (`horch result --check`).
     fn facts(&mut self) -> Result<RepairFacts> {
         let a = &self.attempt;
         let range = format!("{}..HEAD", a.base);
@@ -239,8 +200,6 @@ impl RepairPort for LedgerRepair<'_> {
         })
     }
 
-    /// No ledger row (RR-5): `exit.json` carries the repair, and fleetd
-    /// writes its event.
     fn record(&mut self) -> Result<()> {
         self.recorded = true;
         Ok(())
@@ -251,7 +210,6 @@ impl RepairPort for LedgerRepair<'_> {
     }
 }
 
-// The tests make git worktrees, as the push dispatch tests do: Unix only.
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
@@ -269,7 +227,6 @@ mod tests {
 
     const RUN_BRANCH: &str = "fleet/r1";
 
-    /// Run git in `dir` with no hook and no config of the user.
     fn git(dir: &Path, args: &[&str]) -> String {
         let o = Command::new("git")
             .arg("-C")
@@ -294,16 +251,12 @@ mod tests {
         String::from_utf8_lossy(&o.stdout).trim().to_string()
     }
 
-    /// A repository, a ledger, a fleet root, and 1 task bound to its first
-    /// push attempt, with the tree of the attempt made.
     struct World {
         _tmp: tempfile::TempDir,
         db: PathBuf,
         fleet_root: PathBuf,
         bound: Bound,
         tree: PathBuf,
-        /// The repairs that the wrapper recorded: `exit.json` says
-        /// `repaired` when it is more than 0.
         repairs: std::cell::Cell<i64>,
     }
 
@@ -345,7 +298,6 @@ mod tests {
                             ..Default::default()
                         },
                     )?;
-                    // FR-12: a task needs an idea in flight of the feature of its run.
                     horch_core::taskledger::schema::run_idea(
                         tx,
                         &run.run_id,
@@ -392,7 +344,6 @@ mod tests {
             .join("outbox")
         }
 
-        /// 1 repair pass of the attempt; the lines its resume got.
         fn pass(&self) -> (Repaired, Vec<String>) {
             let attempt = PushAttempt::of_worker(&self.db, &self.bound.worker_id, &self.fleet_root)
                 .unwrap()
@@ -417,8 +368,6 @@ mod tests {
             (done, lines)
         }
 
-        /// The repairs that the wrapper recorded for `exit.json`. The
-        /// wrapper writes no ledger event of a repair (RR-5).
         fn repair_events(&self) -> i64 {
             let events: i64 = Store::open_read_only(&self.db)
                 .unwrap()
@@ -434,8 +383,6 @@ mod tests {
             self.repairs.get()
         }
 
-        /// The attempt count and status of the task, its attempt rows, and
-        /// the state of the attempt.
         fn attempts(&self) -> (i64, String, i64, String) {
             let store = Store::open(&self.db).unwrap();
             let conn = store.conn();
@@ -487,7 +434,6 @@ mod tests {
         w.commit();
         let questions = w.outbox().join("questions");
         std::fs::create_dir_all(&questions).unwrap();
-        // A temp file is not a question file (protocol rule 1).
         std::fs::write(questions.join("q1.json.tmp"), "{}").unwrap();
         assert_eq!(w.pass().0, Repaired::Resumed(Some(0)));
         let w = World::new();

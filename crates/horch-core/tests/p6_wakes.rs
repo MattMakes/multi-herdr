@@ -1,11 +1,3 @@
-//! The wakes of today's orchestrator go to their new owner: fleetd acts,
-//! the sub-orchestrator of the feature gets a doorbell, and you get the
-//! needs-you list (docs/specs/fleetd/design.md, FM-16, OR-3;
-//! docs/tickets/fleetd-p6/46-wakes.md).
-//!
-//! Each test makes its own temporary ledger. No test reads the clock, the
-//! load or the limits of the machine, and no test starts a process.
-
 use horch_core::fleetd::fleet_runtime::application::ledger::{transition, Cause};
 use horch_core::fleetd::fleet_runtime::domain::ledger::Entity;
 use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
@@ -36,7 +28,6 @@ impl World {
         World { _dir: dir, store }
     }
 
-    /// A new run. Its first task gives it the feature `F-<run rowid>`.
     fn run(&mut self, slug: &str) -> Run {
         let root = self._dir.path().join(slug);
         let new = NewRun {
@@ -46,7 +37,6 @@ impl World {
         self.store
             .immediate(|tx| {
                 let run = runs::create(tx, &root, &new)?;
-                // FR-12: a task needs an idea in flight of the feature of its run.
                 horch_core::taskledger::schema::run_idea(
                     tx,
                     &run.run_id,
@@ -58,7 +48,6 @@ impl World {
             .unwrap()
     }
 
-    /// A new task `title` of `run`, blocked by `blocked_by`.
     fn task(&mut self, run: &Run, title: &str, blocked_by: &[&str]) -> String {
         let mut t = NewTask::work(title, &format!("tickets/{title}.md"), "dev");
         t.blocked_by = blocked_by.iter().map(|b| b.to_string()).collect();
@@ -123,7 +112,6 @@ impl World {
             .unwrap();
     }
 
-    /// A worker of `run` on `task`.
     fn worker(&mut self, run: &Run, task: &str) -> String {
         let new = NewWorker {
             run_id: run.run_id.clone(),
@@ -215,7 +203,6 @@ fn stuck_wake_is_1_needs_you_item_of_the_feature() {
         .expect("the run is stuck");
     assert_eq!(item.key, format!("stuck:{feature}"));
     assert!(item.text.contains("stuck"), "{}", item.text);
-    // A repeat pass writes the same key: 1 item.
     w.open_all(&[item.clone(), item]);
     assert_eq!(w.open_items().len(), 1);
 }
@@ -250,7 +237,6 @@ fn blocker_wake_is_1_needs_you_item_of_the_blocker() {
     let run = w.run("r1");
     let a = w.task(&run, "a", &[]);
     let b = w.task(&run, "b", &[&a]);
-    // No item while the blocker is live.
     assert!(wakes::blocker_item(w.store.conn(), &a).unwrap().is_none());
     w.move_task(&a, "cancelled");
     let item = wakes::blocker_item(w.store.conn(), &a)
@@ -270,7 +256,6 @@ fn settled_wake_is_a_needs_you_item_only_for_a_ready_feature() {
     let a = w.task(&run, "a", &[]);
     let feature = w.feature_of(&a);
     w.move_task(&a, "cancelled");
-    // The run is settled, but the feature is `open`: no item.
     assert!(wakes::settled_item(w.store.conn(), &run).unwrap().is_none());
     w.sql(
         "UPDATE features SET state = 'ready' WHERE id = ?1",
@@ -315,7 +300,6 @@ fn verdict_wake_rings_the_sub_orchestrator_of_the_feature_of_its_task() {
         }
         other => panic!("not a doorbell: {other:?}"),
     }
-    // Another verdict wakes nobody.
     assert!(
         wakes::verdict_doorbell(w.store.conn(), &checked(&worker, "ok"))
             .unwrap()

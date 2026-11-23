@@ -1,9 +1,3 @@
-//! `horch teammates --check` prints the context-policy warnings and still
-//! exits 0 (u3 review finding 2b).
-//!
-//! Hermetic: the environment is cleared and the roster is the built-ins plus
-//! a temp `HORCH_TEAMMATES_DIR`.
-
 use std::path::Path;
 use std::process::{Command, Output};
 
@@ -12,7 +6,7 @@ fn horch(root: &Path, args: &[&str]) -> Output {
         .args(args)
         .current_dir(root)
         .env_clear()
-        .env("HOME", root.join("home"))
+        .env(horch_platform::path::HOME_VAR, root.join("home"))
         .env("XDG_DATA_HOME", root.join("data"))
         .env("HORCH_STATE_DIR", root.join("state"))
         .env("HORCH_TEAMMATES_DIR", root.join("teammates"))
@@ -23,7 +17,7 @@ fn horch(root: &Path, args: &[&str]) -> Output {
 #[test]
 fn teammates_check_warns_about_a_copied_messages_base_and_passes() {
     let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().canonicalize().unwrap();
+    let root = horch_platform::path::canonicalize(tmp.path()).unwrap();
     for dir in ["home", "state", "data", "teammates/_base"] {
         std::fs::create_dir_all(root.join(dir)).unwrap();
     }

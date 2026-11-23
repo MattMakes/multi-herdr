@@ -1,35 +1,20 @@
-//! Per-workspace mailbox: the role -> pane-id registry that makes `horch tell`
-//! possible, plus the brief a spawned worker reads to learn who it is.
-//!
-//! Lives under horch's state folder keyed by workspace id, so the OS cannot
-//! clear it from under an idle fleet. A fleet started before that move still
-//! has its registry in the system temp dir. The first use copies it once
-//! into the state folder, when this user owns it and others cannot write it
-//! (#77); after that it is never read. Only [`Mailbox::unregister`] deletes
-//! from it. The registry dir is mode 0700 and its files 0600.
-
 use std::path::{Path, PathBuf};
 
 use crate::runtime::RuntimeContext;
 use crate::workspace::client::WorkspaceClient;
-use crate::workspace::herdr::Herdr;
+use crate::workspace::host::PaneHost;
 use anyhow::{bail, Context, Result};
 
-/// The brief moved to [`crate::messaging::brief`] in A2.
 use crate::messaging::brief::Brief;
 use crate::messaging::private;
 
-/// Whether herdr still has a registered role's pane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaneState {
     Open,
-    /// herdr answered and does not list the pane.
     Closed,
-    /// herdr did not answer.
     Unknown,
 }
 
-/// One registered role, as [`Mailbox::role_states`] reads it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RoleEntry {
     pub role: String,
@@ -37,19 +22,14 @@ pub struct RoleEntry {
     pub state: PaneState,
 }
 
-/// The mailbox directory for one herdr workspace.
 #[derive(Debug, Clone)]
 pub struct Mailbox {
     dir: PathBuf,
-    /// The pre-upgrade mailbox in the temp dir, copied once into `dir`.
-    /// Nothing is written to it; `unregister` removes a role's files from it.
     legacy_dir: Option<PathBuf>,
     workspace_id: String,
 }
 
 impl Mailbox {
-    /// A mailbox handle for `workspace_id` under the state folder
-    /// (`RuntimeContext::paths.state_root`).
     pub fn under(state_root: impl AsRef<Path>, workspace_id: &str) -> Self {
         Self {
             dir: Self::dir_in(state_root.as_ref(), workspace_id),
@@ -62,27 +42,17 @@ impl Mailbox {
         root.join(format!("herdr-orchestration-{workspace_id}"))
     }
 
-    /// Also read the registry that an older horch left under `temp_root`.
     pub fn with_legacy_root(mut self, temp_root: impl AsRef<Path>) -> Self {
         self.legacy_dir = Some(Self::dir_in(temp_root.as_ref(), &self.workspace_id));
         self
     }
 
-    /// [`Mailbox::under`] the context's state folder, with its temp dir as
-    /// the fallback for reads and for removing a role.
     pub fn in_context(ctx: &RuntimeContext, workspace_id: &str) -> Self {
         Self::under(&ctx.paths.state_root, workspace_id).with_legacy_root(&ctx.paths.temp_root)
     }
 
-    /// Resolve the workspace this process belongs to, then open its mailbox.
-    ///
-    /// `workspace` is `HORCH_WORKSPACE_ID`, which a registered pane hands to
-    /// its children, so they hit the cheap path. Otherwise fall back to this
-    /// pane's own `HERDR_PANE_ID` (`pane`) - herdr exports an internal id there
-    /// (`p_2`), which `herdr pane get` upgrades to the public workspace id. That
-    /// fallback is what lets these commands also work from an unregistered pane.
     fn resolve(
-        herdr: &Herdr,
+        herdr: &PaneHost,
         state_root: &Path,
         temp_root: &Path,
         workspace: Option<&str>,
@@ -94,7 +64,7 @@ impl Mailbox {
         }
         let Some(pane_id) = pane.filter(|p| !p.is_empty()) else {
             bail!(
-                "not inside a herdr pane (HERDR_PANE_ID is unset) and HORCH_WORKSPACE_ID is not set"
+                "not inside a herdr pane or a Herdr app terminal (HERDR_PANE_ID and HC_TERMINAL_ID are unset) and HORCH_WORKSPACE_ID is not set"
             )
         };
         let pane = herdr.pane_get(pane_id)?;
@@ -104,8 +74,7 @@ impl Mailbox {
         Ok(open(&ws))
     }
 
-    /// `Mailbox::resolve` with the context's dirs, workspace and pane.
-    pub fn resolve_in(herdr: &Herdr, ctx: &RuntimeContext) -> Result<Self> {
+    pub fn resolve_in(herdr: &PaneHost, ctx: &RuntimeContext) -> Result<Self> {
         Self::resolve(
             herdr,
             &ctx.paths.state_root,
@@ -128,18 +97,11 @@ impl Mailbox {
         self.dir.is_dir()
     }
 
-    /// Where to read `file`, after the one-time copy of an old registry.
     fn read_path(&self, file: &str) -> PathBuf {
         self.settle();
         self.dir.join(file)
     }
 
-    /// Copy the old temp registry into the state folder, once, and only
-    /// when this user owns the old dir, it is not a link, and no other user
-    /// can write it. A registry the state folder already has gets only the
-    /// old files it lacks: a fleet that started before the move keeps its
-    /// roles. A marker file ends the copy for good. A refusal is printed
-    /// once.
     fn settle(&self) {
         let Some(legacy) = &self.legacy_dir else {
             return;
@@ -169,7 +131,6 @@ impl Mailbox {
             .dir
             .parent()
             .context("the registry has no parent dir")?;
-        // The state root is the user's: create it, but leave its mode.
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating {}", parent.display()))?;
         let staging = parent.join(format!(
@@ -189,7 +150,6 @@ impl Mailbox {
         })();
         if copied.is_err() {
             let _ = std::fs::remove_dir_all(&staging);
-            // Another process copied it first.
             if self.dir.is_dir() {
                 return Ok(());
             }
@@ -197,8 +157,6 @@ impl Mailbox {
         copied
     }
 
-    /// Whether the registry dir may be read: a dir that another user owns
-    /// or can write is not, and that is printed.
     fn trusted(&self) -> bool {
         match private::check(&self.dir) {
             Ok(()) => true,
@@ -209,7 +167,6 @@ impl Mailbox {
         }
     }
 
-    /// Create the registry dir mode 0700, or check the existing one.
     fn ensure_dir(&self) -> Result<()> {
         self.settle();
         private::ensure_dir(&self.dir).with_context(|| format!("mailbox {}", self.dir.display()))
@@ -231,21 +188,15 @@ impl Mailbox {
         self.read_path(&Self::brief_file(role))
     }
 
-    /// Find the mailbox of this pane's workspace and create its dir.
-    ///
-    /// `pane` is this pane's `HERDR_PANE_ID`. Returns the mailbox and the
-    /// resolved public pane id. The caller hands [`Mailbox::workspace_id`] to
-    /// its children as `HORCH_WORKSPACE_ID`; this process's environment is
-    /// left alone.
     fn locate(
-        herdr: &Herdr,
+        herdr: &PaneHost,
         state_root: &Path,
         temp_root: &Path,
         pane: Option<&str>,
     ) -> Result<(Self, String)> {
         let internal = pane
             .filter(|s| !s.is_empty())
-            .context("must run inside a herdr pane (HERDR_PANE_ID is unset)")?;
+            .context("not inside a herdr pane or a Herdr app terminal (HERDR_PANE_ID and HC_TERMINAL_ID are unset)")?;
         let pane = herdr.pane_get(internal)?;
         let ws = pane
             .workspace_id
@@ -256,19 +207,12 @@ impl Mailbox {
         Ok((mailbox, pane.pane_id))
     }
 
-    /// Record `pane` under `role` so other panes can address it. This
-    /// replaces the pane of `role`: a fleet orchestrator calls it only while
-    /// it holds the workspace orchestrator lock (TRF-39).
     pub fn register_role(&self, role: &str, pane: &str) -> Result<()> {
         private::write(&self.dir.join(Self::id_file(role)), pane.as_bytes())
             .with_context(|| format!("registering role '{role}'"))
     }
 
-    /// The mailbox of this context's pane and the pane's public id, with no
-    /// role registered yet ([`Mailbox::register_role`]). The workspace is
-    /// recorded in the context, so everything this process does next, and
-    /// every child it starts, belongs to that workspace.
-    pub fn locate_in(herdr: &Herdr, ctx: &mut RuntimeContext) -> Result<(Self, String)> {
+    pub fn locate_in(herdr: &PaneHost, ctx: &mut RuntimeContext) -> Result<(Self, String)> {
         let pane = ctx.herdr.pane.as_ref().map(|p| p.to_string());
         let (mailbox, pane_id) = Self::locate(
             herdr,
@@ -280,10 +224,8 @@ impl Mailbox {
         Ok((mailbox, pane_id))
     }
 
-    /// [`Mailbox::locate_in`] this context's pane, then register it under
-    /// `role`.
     pub fn register_in(
-        herdr: &Herdr,
+        herdr: &PaneHost,
         ctx: &mut RuntimeContext,
         role: &str,
     ) -> Result<(Self, String)> {
@@ -292,7 +234,6 @@ impl Mailbox {
         Ok((mailbox, pane_id))
     }
 
-    /// The pane id registered for `role`, if any.
     pub fn pane_for(&self, role: &str) -> Option<String> {
         let path = self.id_read_path(role);
         if !self.trusted() {
@@ -303,7 +244,6 @@ impl Mailbox {
         (!trimmed.is_empty()).then_some(trimmed)
     }
 
-    /// When `role` registered: the modification time of its id file.
     pub fn registered_at(&self, role: &str) -> Option<std::time::SystemTime> {
         std::fs::metadata(self.id_read_path(role))
             .ok()?
@@ -311,7 +251,6 @@ impl Mailbox {
             .ok()
     }
 
-    /// Every registered `(role, pane_id)`, sorted by role.
     pub fn roles(&self) -> Vec<(String, String)> {
         self.settle();
         if !self.trusted() {
@@ -340,11 +279,6 @@ impl Mailbox {
             .collect()
     }
 
-    /// Every registered role with whether herdr still has its pane, from one
-    /// `pane list` of this workspace. A worker whose pane closed without
-    /// `horch done` leaves its id file behind; this is how `horch inbox`
-    /// tells it apart. When herdr does not answer, every pane is
-    /// [`PaneState::Unknown`].
     pub fn role_states(&self, ws: &dyn WorkspaceClient) -> Vec<RoleEntry> {
         let open: Option<Vec<String>> = ws
             .pane_list(&self.workspace_id)
@@ -363,12 +297,10 @@ impl Mailbox {
             .collect()
     }
 
-    /// Map of pane id -> role, for labelling layout output.
     pub(crate) fn panes_to_roles(&self) -> Vec<(String, String)> {
         self.roles().into_iter().map(|(r, p)| (p, r)).collect()
     }
 
-    /// Write `brief` atomically: the worker never reads half of one.
     pub fn write_brief(&self, brief: &Brief) -> Result<()> {
         self.ensure_dir()?;
         let path = self.dir.join(Self::brief_file(&brief.role));
@@ -376,8 +308,6 @@ impl Mailbox {
         private::write(&path, json.as_bytes()).context("writing the brief")
     }
 
-    /// A brief names the binaries the worker runs: one in a dir that
-    /// another user can write is refused.
     pub fn read_brief(&self, role: &str) -> Result<Brief> {
         let path = self.brief_read_path(role);
         private::check(&self.dir)?;
@@ -390,24 +320,16 @@ impl Mailbox {
         Brief::from_json(&raw).with_context(|| format!("parsing brief {}", path.display()))
     }
 
-    /// True when anything already claims this role in this workspace.
     pub fn role_taken(&self, role: &str) -> bool {
         self.id_read_path(role).exists() || self.brief_read_path(role).exists()
     }
 
-    /// Drop a role's registration and brief, so the role name frees up.
-    /// A removal that fails is logged; [`Self::try_unregister`] returns it.
     pub fn unregister(&self, role: &str) {
         if let Err(e) = self.try_unregister(role) {
             eprintln!("horch: {e:#}");
         }
     }
 
-    /// Drop a role's registration and brief, and the discovery files its
-    /// launch left. Every file is tried; the error names the first removal
-    /// that failed. The discovery files go first: once the id and brief are
-    /// gone the role name can start again, and its new launch writes a new
-    /// marker that this call must not delete.
     pub fn try_unregister(&self, role: &str) -> Result<()> {
         let mut first_error = None;
         let groups = [
@@ -440,9 +362,7 @@ impl Mailbox {
         first_error.map_or(Ok(()), Err)
     }
 
-    /// Next per-teammate ordinal for auto-naming a role `<teammate>-<n>`.
     pub(crate) fn next_seq(&self, teammate: &str) -> Result<u32> {
-        // The copy of an old registry continues the old fleet's count.
         self.ensure_dir()?;
         let file = format!(".seq-{teammate}");
         let path = self.dir.join(&file);
@@ -455,14 +375,10 @@ impl Mailbox {
         Ok(next)
     }
 
-    /// Marker file used to bound the codex rollout-file search to sessions
-    /// created after this worker launched.
     pub(crate) fn launch_marker(&self, role: &str) -> PathBuf {
         self.dir.join(Self::launch_marker_file(role))
     }
 
-    /// The marker to read: one a worker launched before the upgrade left
-    /// in the old temp location arrives with the one-time copy.
     pub(crate) fn launch_marker_read_path(&self, role: &str) -> PathBuf {
         self.read_path(&Self::launch_marker_file(role))
     }
@@ -480,11 +396,8 @@ impl Mailbox {
     }
 }
 
-/// In the state registry: the old temp registry was copied in.
 const LEGACY_COPIED: &str = ".legacy-copied";
 
-/// Copy each plain file of `from` into `to`, mode 0600. A link is skipped:
-/// it could point anywhere. Without `replace`, a file `to` has is kept.
 fn copy_plain_files(from: &Path, to: &Path, replace: bool) -> Result<()> {
     for entry in std::fs::read_dir(from).with_context(|| format!("reading {}", from.display()))? {
         let entry = entry?;
@@ -533,11 +446,10 @@ mod tests {
             fleet_root: None,
             controller: None,
             task_yaml: None,
+            backend: Default::default(),
         }
     }
 
-    /// A pane is a fresh shell, so an agent-CLI override only reaches the worker
-    /// if it survives the brief round-trip.
     #[test]
     fn brief_carries_agent_cli_overrides() {
         let tmp = tempfile::tempdir().unwrap();
@@ -551,7 +463,6 @@ mod tests {
         assert_eq!(back.codex_bin, None);
     }
 
-    /// Briefs written before these fields existed must still load.
     #[test]
     fn brief_without_overrides_still_parses() {
         let tmp = tempfile::tempdir().unwrap();
@@ -570,8 +481,6 @@ mod tests {
         assert_eq!(back.role, "old");
     }
 
-    /// The session mode is typed in memory but keeps the brief's two fields
-    /// on disk, so a worker from either side of A1 reads the other's brief.
     #[test]
     fn arc_04_brief_session_wire_unchanged() {
         let s1: crate::ids::SessionId = "s1".parse().unwrap();
@@ -590,7 +499,6 @@ mod tests {
             assert_eq!(back.session, session);
         }
 
-        // A missing session_id is a fresh session whose id is not known yet.
         let v = serde_json::json!({"role":"r","teammate":"t","agent":"codex","model":"m",
             "record_id":"r1","resume":false,"project_dir":"/p"});
         let b: Brief = serde_json::from_value(v).unwrap();
@@ -607,7 +515,6 @@ mod tests {
         assert_eq!(mb.dir(), Path::new("/state/herdr-orchestration-w42"));
     }
 
-    /// A fleet started before the upgrade keeps its registry in the temp dir.
     fn legacy_mailbox(state: &Path, temp: &Path) -> (Mailbox, PathBuf) {
         let legacy = temp.join("herdr-orchestration-w1");
         std::fs::create_dir_all(&legacy).unwrap();
@@ -661,8 +568,6 @@ mod tests {
         assert!(!legacy.join(".seq-sonnet").exists());
     }
 
-    /// #77: once the state folder has a registry, the old location is
-    /// never read: a file planted there later reaches nobody.
     #[test]
     fn the_old_location_is_not_read_once_the_state_folder_has_a_registry() {
         let state = tempfile::tempdir().unwrap();
@@ -683,9 +588,6 @@ mod tests {
         assert_eq!(mb.pane_for("orchestrator"), None);
     }
 
-    /// A fleet that started before the move can have a split registry: the
-    /// orchestrator in the old temp dir, newer workers in the state folder.
-    /// The files the state folder lacks are copied once; its own win.
     #[test]
     fn a_split_registry_gets_the_old_files_it_lacks_once() {
         let state = tempfile::tempdir().unwrap();
@@ -705,8 +607,6 @@ mod tests {
         assert_eq!(mb.pane_for("planted"), None, "the copy ran only once");
     }
 
-    /// #77: the old temp dir is in a dir all users share. A link there is
-    /// not followed, even to a dir this user owns.
     #[cfg(unix)]
     #[test]
     fn an_old_registry_that_is_a_link_is_not_copied() {
@@ -722,8 +622,6 @@ mod tests {
         assert!(!mb.dir().exists(), "nothing was copied");
     }
 
-    /// #77: an old registry that other users can write is not copied, and
-    /// nothing in it is read.
     #[cfg(unix)]
     #[test]
     fn an_old_registry_others_can_write_is_not_copied() {
@@ -741,8 +639,6 @@ mod tests {
         assert!(mb.read_brief("orchestrator").is_err());
     }
 
-    /// #77: a registry in the state folder that others can write is refused
-    /// with an error that names it.
     #[cfg(unix)]
     #[test]
     fn a_registry_others_can_write_is_refused_by_name() {
@@ -760,8 +656,6 @@ mod tests {
         assert!(mb.write_brief(&brief("sonnet-2")).is_err());
     }
 
-    /// #77: a new registry dir is 0700, and its id, brief and count files
-    /// are 0600. A copied old registry gets the same modes.
     #[cfg(unix)]
     #[test]
     fn registry_dirs_are_0700_and_files_0600() {
@@ -807,8 +701,6 @@ mod tests {
         assert!(!mb.role_taken("sonnet-1"));
     }
 
-    /// An upgraded fleet keeps counting from its old counter, so the next
-    /// auto-name does not collide with a role that is still registered.
     #[test]
     fn seq_counter_continues_from_the_old_location() {
         let state = tempfile::tempdir().unwrap();
@@ -824,8 +716,6 @@ mod tests {
         );
     }
 
-    /// A removal that fails for a reason other than "missing" does not panic
-    /// and leaves the role registered, so the warning is the only signal.
     #[test]
     fn unregister_survives_a_removal_that_fails() {
         let state = tempfile::tempdir().unwrap();
@@ -839,9 +729,6 @@ mod tests {
         assert!(mb.role_taken("sonnet-1"));
     }
 
-    /// A removal that fails for a reason other than "missing" leaves the role
-    /// registered, and the caller gets the error with the path. Every other
-    /// file is still tried, in both locations.
     #[test]
     fn try_unregister_returns_a_removal_that_fails_and_tries_the_rest() {
         let state = tempfile::tempdir().unwrap();
@@ -874,8 +761,6 @@ mod tests {
         }
     }
 
-    /// A launch marker that cannot be removed would fail the next launch of
-    /// the role, so the caller gets that error too.
     #[test]
     fn try_unregister_returns_a_discovery_file_that_stays() {
         let state = tempfile::tempdir().unwrap();
@@ -888,9 +773,6 @@ mod tests {
         assert!(text.contains(&marker.display().to_string()), "{text}");
     }
 
-    /// A discovery that failed leaves a harvest log, and one that never found
-    /// its session leaves the marker; unregistering the role removes both,
-    /// from the state folder and the old location.
     #[test]
     fn unregister_removes_the_launch_marker_and_harvest_log() {
         let state = tempfile::tempdir().unwrap();
@@ -962,8 +844,6 @@ mod tests {
         );
     }
 
-    /// An empty id file means "registration started but did not finish"; it must
-    /// not read back as a reachable role.
     #[test]
     fn empty_id_file_is_not_a_reachable_role() {
         let tmp = tempfile::tempdir().unwrap();
@@ -974,8 +854,6 @@ mod tests {
         assert!(mb.roles().is_empty());
     }
 
-    /// The bash version quoted briefs with `printf %q`, which mangled tasks
-    /// containing quotes and newlines. JSON must survive them intact.
     #[test]
     fn brief_survives_shell_hostile_tasks() {
         let tmp = tempfile::tempdir().unwrap();

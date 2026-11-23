@@ -1,12 +1,3 @@
-//! The roll-up of an idea and "Ideas finish clean": `in_progress` to
-//! `integrating` to `merged`, and fleetd removes the rescued trees of a
-//! merged idea (docs/specs/fleetd/design.md, "The idea state machine",
-//! "Ideas finish clean", "Disk"; FM-28, FM-39;
-//! docs/tickets/fleetd-p6/33-rollup.md).
-//!
-//! Each test has its own temp ledger, fleet root and git repository. No
-//! test reads the clock, the load or the limits of the machine.
-
 #![cfg(unix)]
 
 use std::path::{Path, PathBuf};
@@ -49,16 +40,11 @@ use rusqlite::{params, Connection, TransactionBehavior};
 
 const CLOCK: FleetSeconds = FleetSeconds(1_000);
 
-// ─── the world ──────────────────────────────────────────────────────────
-
-/// A temp ledger at generation 1, a fleet root, and a git repository with
-/// 1 commit on `main`.
 struct World {
     _temp: tempfile::TempDir,
     top: PathBuf,
     conn: Connection,
     config: FleetConfig,
-    /// The repository, as its canonical path.
     repo: PathBuf,
     runs: u32,
 }
@@ -69,7 +55,7 @@ fn world() -> World {
         "these tests use the fleet root of their temp ledger"
     );
     let temp = tempfile::tempdir().unwrap();
-    let top = temp.path().canonicalize().unwrap();
+    let top = horch_platform::path::canonicalize(temp.path()).unwrap();
     let mut conn = Connection::open(top.join("ledger.sqlite3")).unwrap();
     conn.busy_timeout(Duration::from_secs(10)).unwrap();
     schema::migrate_to(&mut conn, schema::VERSION).unwrap();
@@ -97,8 +83,6 @@ fn world() -> World {
     }
 }
 
-/// Run git in `dir` for the test itself, with no config of the user, and
-/// give its trimmed output. A failed call fails the test.
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
         .arg("-C")
@@ -129,7 +113,6 @@ fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
-/// The context of a writer that is not fleetd.
 fn ctx(config: &FleetConfig) -> JobCtx<'_> {
     JobCtx {
         guard: None,
@@ -138,7 +121,6 @@ fn ctx(config: &FleetConfig) -> JobCtx<'_> {
     }
 }
 
-/// The sandbox profiles of a test: no check runs in these tests.
 struct NoProfiles;
 
 impl SandboxProfiles for NoProfiles {
@@ -159,8 +141,6 @@ impl World {
             .unwrap();
     }
 
-    /// A run of the repository in `status`. A run is made `active` and
-    /// then moved, so the runs of 1 test do not refuse each other.
     fn run(&mut self, status: &str) -> Run {
         self.runs += 1;
         let new = NewRun {
@@ -170,7 +150,6 @@ impl World {
             ..Default::default()
         };
         let run = runs::create(&self.conn, &self.repo, &new).unwrap();
-        // FR-12: a task needs an idea in flight of the feature of its run.
         horch_core::taskledger::schema::run_idea(
             &self.conn,
             &run.run_id,
@@ -185,8 +164,6 @@ impl World {
         run
     }
 
-    /// A task of `run`. The first task of a run gives the run its idea,
-    /// in `in_progress`, and its feature, `open`.
     fn task(&self, run: &Run, name: &str) -> String {
         let t = NewTask::work(name, &format!("{name}.md"), "opus");
         tasks::add(&self.conn, run, &t, Actor::Orchestrator)
@@ -219,7 +196,6 @@ impl World {
         );
     }
 
-    /// The feature of the idea `idea` moves to `state`.
     fn set_feature_state(&self, idea: &str, state: &str) {
         self.sql(
             "UPDATE features SET state = ?2
@@ -228,8 +204,6 @@ impl World {
         );
     }
 
-    /// The task branch `fleet/<name>` of `task`, in `landing_state`, on the
-    /// feature of the task's idea.
     fn branch(&self, name: &str, task: &str, landing_state: &str) {
         let idea = self.idea_of(task);
         self.sql(
@@ -246,7 +220,6 @@ impl World {
         );
     }
 
-    /// A row `name` of `task` in `state`, with no folder on disk.
     fn row(&self, name: &str, task: Option<&str>, state: &str) {
         let path = self.repo.join(".worktrees").join(name);
         self.insert_row(name, task, &path, None);
@@ -275,8 +248,6 @@ impl World {
         tx.commit().unwrap();
     }
 
-    /// A tree `name` of `task` made by git from `main`, with an untracked
-    /// file, and its row `orphaned`.
     fn orphan(&mut self, name: &str, task: &str) -> PathBuf {
         let path = self.repo.join(".worktrees").join(name);
         let branch = format!("fleet/{name}");
@@ -299,7 +270,6 @@ impl World {
         );
     }
 
-    /// The bytes on disk of the row `name`.
     fn set_gb(&self, name: &str, gb: u64) {
         self.conn
             .execute(
@@ -313,9 +283,6 @@ impl World {
         trees::get(&self.conn, name).unwrap().unwrap()
     }
 
-    /// The facts of part 1 of a pass: the folder of each row, each folder
-    /// of `<repo>/.worktrees/`, and the result of the `worktree_list`
-    /// executor on the repository.
     fn facts(&self) -> Facts {
         let rows = trees::in_states(&self.conn, &WorktreeState::ALL).unwrap();
         let folders = rows
@@ -358,8 +325,6 @@ impl World {
         }
     }
 
-    /// Part 2 of 1 pass with the facts of the disk now: the reconciler,
-    /// then the disk budget, in 1 transaction.
     fn pass(&mut self) -> Report {
         let facts = self.facts();
         let config = self.config.clone();
@@ -373,7 +338,6 @@ impl World {
         report
     }
 
-    /// RollUpIdea of `idea` in 1 transaction.
     fn roll_up(&mut self, idea: &str) -> bool {
         let config = self.config.clone();
         let tx = self.conn.unchecked_transaction().unwrap();
@@ -382,7 +346,6 @@ impl World {
         moved
     }
 
-    /// CloseIdea of `idea` in 1 transaction.
     fn close(&mut self, idea: &str) -> bool {
         let config = self.config.clone();
         let tx = self.conn.unchecked_transaction().unwrap();
@@ -395,7 +358,6 @@ impl World {
         jobs_store::get(&self.conn, id).unwrap().unwrap()
     }
 
-    /// Each run of `kind` of the tree `name`, oldest first.
     fn jobs_of(&self, kind: Kind, name: &str) -> Vec<i64> {
         let mut stmt = self
             .conn
@@ -407,9 +369,6 @@ impl World {
             .unwrap()
     }
 
-    /// The run `id` to its end with the executor of `horch job run`: it
-    /// starts with the process `true` through the launcher, as part 3 of
-    /// a pass starts it, and the pass then observes its end.
     fn run_job(&mut self, id: i64) -> JobRow {
         let spec = LaunchSpec {
             program: "true".into(),
@@ -432,7 +391,7 @@ impl World {
             profiles: &NoProfiles,
             sweep: None,
         };
-        let written = jobs::run_job(&ctx(&config), &mut self.conn, id, pid, &checks).unwrap();
+        let written = jobs::run_job(&ctx(&config), &self.conn, id, pid, &checks).unwrap();
         assert!(written.is_some(), "run_job wrote the result of job {id}");
         jobs::end_from_files(&ctx(&config), &mut self.conn).unwrap();
         let tx = self
@@ -460,10 +419,6 @@ fn text(job: &JobRow) -> String {
     outcome(job).map(|o| o.text).unwrap_or_default()
 }
 
-// ─── the tests ──────────────────────────────────────────────────────────
-
-/// FM-39: a cancelled task and its abandoned branch do not keep its idea
-/// in `in_progress`.
 #[test]
 fn cancelled_task_does_not_block_its_idea() {
     let mut w = world();
@@ -478,21 +433,16 @@ fn cancelled_task_does_not_block_its_idea() {
     w.set_task_status(&cancelled, "cancelled");
     w.branch("cancelled", &cancelled, "building");
 
-    // The branch of the cancelled task is not yet abandoned: its rescue
-    // comes first.
     assert!(!w.roll_up(&idea));
     assert_eq!(w.idea_state(&idea), "in_progress");
 
     w.set_landing_state("cancelled", "abandoned");
     assert!(w.roll_up(&idea));
     assert_eq!(w.idea_state(&idea), "integrating");
-    // A second call writes nothing more.
     assert!(!w.roll_up(&idea));
     assert_eq!(w.idea_state(&idea), "integrating");
 }
 
-/// `in_progress` -> `integrating`: each task that is not cancelled is
-/// done, and each task branch that is not abandoned is landed.
 #[test]
 fn idea_is_integrating_when_each_branch_is_landed_or_abandoned() {
     let mut w = world();
@@ -504,11 +454,9 @@ fn idea_is_integrating_when_each_branch_is_landed_or_abandoned() {
     w.branch("t2", &t2, "verifying");
     w.set_task_status(&t1, "done");
 
-    // t2 is not done.
     assert!(!w.roll_up(&idea));
     assert_eq!(w.idea_state(&idea), "in_progress");
 
-    // t2 is done, but its branch is not landed.
     w.set_task_status(&t2, "done");
     for state in [
         "verifying",
@@ -522,13 +470,11 @@ fn idea_is_integrating_when_each_branch_is_landed_or_abandoned() {
         assert_eq!(w.idea_state(&idea), "in_progress", "{state}");
     }
 
-    // A second branch of t1 that is abandoned does not block.
     w.branch("t1-old", &t1, "abandoned");
     w.set_landing_state("t2", "landed");
     assert!(w.roll_up(&idea));
     assert_eq!(w.idea_state(&idea), "integrating");
 
-    // An idea with no task has no fact that its work is done.
     let other = w.run("active");
     let t3 = w.task(&other, "t3");
     let empty = w.idea_of(&t3);
@@ -537,8 +483,6 @@ fn idea_is_integrating_when_each_branch_is_landed_or_abandoned() {
     assert_eq!(w.idea_state(&empty), "in_progress");
 }
 
-/// `integrating` -> `merged`: the feature is merged and each tree of the
-/// idea is `removed` or `rescued`.
 #[test]
 fn idea_is_merged_only_when_each_tree_is_removed_or_rescued() {
     let mut w = world();
@@ -554,16 +498,13 @@ fn idea_is_merged_only_when_each_tree_is_removed_or_rescued() {
     w.row("gone", Some(&t1), "removed");
     w.row("saved", Some(&t2), "rescued");
     w.row("live", Some(&t3), "landed");
-    // The tree of another idea does not keep this idea.
     let other = w.run("active");
     let t4 = w.task(&other, "t4");
     w.row("other", Some(&t4), "active");
 
-    // The feature is not merged.
     assert!(!w.close(&idea));
     assert_eq!(w.idea_state(&idea), "integrating");
 
-    // The feature is merged, but 1 tree is landed and not removed.
     w.set_feature_state(&idea, "merged");
     for state in [
         "reserved", "created", "active", "landing", "landed", "orphaned",
@@ -578,7 +519,6 @@ fn idea_is_merged_only_when_each_tree_is_removed_or_rescued() {
     assert_eq!(w.idea_state(&idea), "merged");
     assert!(!w.close(&idea));
 
-    // An idea in `in_progress` is not closed: it rolls up first.
     let t5 = w.task(&other, "t5");
     let in_flight = w.idea_of(&t5);
     w.set_feature_state(&in_flight, "merged");
@@ -587,9 +527,6 @@ fn idea_is_merged_only_when_each_tree_is_removed_or_rescued() {
     assert_eq!(w.idea_state(&in_flight), "in_progress");
 }
 
-/// "Ideas finish clean": the pass after the merge of the idea queues the
-/// removal of each rescued tree of the idea, 1 time; the removal keeps its
-/// rescue ref. `roll_up_ideas` runs both use cases on each idea.
 #[test]
 fn rescued_trees_of_a_merged_idea_are_removed_and_refs_stay() {
     let mut w = world();
@@ -598,7 +535,6 @@ fn rescued_trees_of_a_merged_idea_are_removed_and_refs_stay() {
     let idea = w.idea_of(&task);
     let path = w.orphan("kept", &task);
 
-    // The orphan gets its verified rescue.
     w.pass();
     let rescue = w.jobs_of(Kind::Rescue, "kept");
     assert_eq!(rescue.len(), 1);
@@ -609,13 +545,10 @@ fn rescued_trees_of_a_merged_idea_are_removed_and_refs_stay() {
     let refs = w.rescue_refs();
     assert!(refs.starts_with("refs/horch/rescue/"), "{refs}");
 
-    // The idea is not merged: its rescued tree stays.
     let report = w.pass();
     assert!(report.removals.is_empty(), "{report:?}");
     assert!(w.jobs_of(Kind::WorktreeRemove, "kept").is_empty());
 
-    // The work is in and the feature is merged: 1 call rolls the idea up
-    // and closes it.
     w.set_task_status(&task, "done");
     w.set_feature_state(&idea, "merged");
     let config = w.config.clone();
@@ -626,7 +559,6 @@ fn rescued_trees_of_a_merged_idea_are_removed_and_refs_stay() {
     assert_eq!(rolled.merged, std::slice::from_ref(&idea));
     assert_eq!(w.idea_state(&idea), "merged");
 
-    // The next pass queues its removal 1 time.
     let report = w.pass();
     assert_eq!(report.removals, ["kept"], "{report:?}");
     let report = w.pass();
@@ -644,16 +576,11 @@ fn rescued_trees_of_a_merged_idea_are_removed_and_refs_stay() {
     assert!(report.removals.is_empty(), "{report:?}");
 }
 
-/// FM-28: over the budget, the trees of a merged or cancelled idea are
-/// spare, whatever the status of the run; the trees of an idea in flight
-/// are not.
 #[test]
 fn disk_budget_uses_the_idea_state_not_the_run() {
     let mut w = world();
-    // A run that is done, with an idea still in flight.
     let done_run = w.run("done");
     let in_flight = w.task(&done_run, "in-flight");
-    // A run that is active, with ideas that ended.
     let active_run = w.run("active");
     let merged = w.task(&active_run, "merged");
     let cancelled_run = w.run("active");

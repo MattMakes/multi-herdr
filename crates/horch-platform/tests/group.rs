@@ -1,11 +1,8 @@
-//! The concern group: process groups, job objects and the detach of a child.
-
 use horch_platform::group;
 use std::process::{Command, Stdio};
 #[cfg(unix)]
 use std::time::{Duration, Instant};
 
-/// Poll `done` every 10 ms until it is true or 5 s pass.
 #[cfg(unix)]
 fn within_5s(mut done: impl FnMut() -> bool) -> bool {
     let until = Instant::now() + Duration::from_secs(5);
@@ -89,15 +86,44 @@ fn is_same_group_is_false_for_a_wrong_start_time() {
     assert_eq!(wrong, Ok(false));
 }
 
-/// Set in the child process of
-/// `kill_group_id_refuses_an_id_that_names_no_group_it_started`.
+#[cfg(unix)]
+#[test]
+fn is_group_leader_needs_the_leader_with_its_start_time() {
+    let mut cmd = Command::new("sh");
+    cmd.args(["-c", "read line; sleep 60 >/dev/null & echo $!"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped());
+    group::new_group(&mut cmd);
+    let mut leader = cmd.spawn().expect("start sh");
+    let pgid = leader.id();
+    let started = horch_platform::process::start_time(pgid).expect("sh runs");
+    let live = group::is_group_leader(pgid, started);
+    let wrong = group::is_group_leader(pgid, started.wrapping_add(1));
+    use std::io::{Read, Write};
+    leader.stdin.take().unwrap().write_all(b"go\n").unwrap();
+    let mut out = String::new();
+    leader
+        .stdout
+        .take()
+        .unwrap()
+        .read_to_string(&mut out)
+        .unwrap();
+    leader.wait().unwrap();
+    let member: i32 = out.trim().parse().unwrap();
+    let gone = group::is_group_leader(pgid, started);
+    let same = group::is_same_group(pgid, started);
+    // SAFETY: the test started the member; a gone pid answers -1.
+    unsafe { libc::kill(member, libc::SIGKILL) };
+    assert_eq!(live, Ok(true));
+    assert_eq!(wrong, Ok(false));
+    assert_eq!(gone, Ok(false), "a gone leader proves nothing");
+    assert_eq!(same, Ok(true), "the member keeps the group id");
+    assert_eq!(group::is_group_leader(0, started), Ok(false));
+}
+
 #[cfg(unix)]
 const REFUSE_CHILD: &str = "HORCH_PLATFORM_TEST_REFUSE_CHILD";
 
-/// 0 names the group of the caller, and an id above `i32::MAX` becomes a
-/// negative `pid_t`. `kill_group_id` refuses both and sends no signal. The
-/// check runs in a child process that leads a new group, so a wrong kill
-/// ends only that child.
 #[cfg(unix)]
 #[test]
 fn kill_group_id_refuses_an_id_that_names_no_group_it_started() {
@@ -118,7 +144,6 @@ fn kill_group_id_refuses_an_id_that_names_no_group_it_started() {
     assert!(status.success(), "the child ended with {status:?}");
 }
 
-/// A `cmd` child whose `ping` grandchild holds stdout for about 60 s.
 #[cfg(windows)]
 fn cmd_with_a_grandchild() -> Command {
     let mut cmd = Command::new("cmd");
@@ -147,8 +172,6 @@ fn contained_child_is_killed_with_its_children() {
 
     assert!(contained.terminate(), "the job is terminated");
     child.wait().expect("reap cmd");
-    // `ping` holds the pipe while it runs, so the end of the pipe proves it
-    // has ended too.
     assert!(
         receiver.recv_timeout(Duration::from_secs(10)).is_ok(),
         "ping outlived the job"
@@ -175,4 +198,81 @@ fn detach_and_kill_group_id_are_not_supported_on_windows() {
     assert!(group::detach(&mut cmd).is_err());
     assert!(group::kill_group_id(std::process::id()).is_err());
     assert!(group::is_same_group(std::process::id(), 0).is_err());
+}
+
+#[test]
+fn a_detached_child_does_not_hold_the_pipe_of_its_parent() {
+    const HELPER: &str = "HORCH_PLATFORM_DETACHED_CHILD_PID_FILE";
+    if let Some(pid_file) = std::env::var_os(HELPER) {
+        let mut cmd = long_child();
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let pid = group::spawn_detached(&mut cmd)
+            .expect("start the detached child")
+            .id();
+        std::fs::write(pid_file, pid.to_string()).expect("write the pid");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let pid_file = dir.path().join("child.pid");
+    let mut helper = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "a_detached_child_does_not_hold_the_pipe_of_its_parent",
+        ])
+        .env(HELPER, &pid_file)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("start the helper");
+    let mut pipes = (helper.stdout.take().unwrap(), helper.stderr.take().unwrap());
+    let (closed, eof) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        use std::io::Read;
+        let mut text = Vec::new();
+        let _ = pipes.0.read_to_end(&mut text);
+        let _ = pipes.1.read_to_end(&mut text);
+        let _ = closed.send(text);
+    });
+    let status = helper.wait().expect("reap the helper");
+    let output = eof.recv_timeout(std::time::Duration::from_secs(30));
+    let pid = std::fs::read_to_string(&pid_file).unwrap_or_default();
+    stop(pid.trim());
+    let output = output.expect("the pipe of the helper stayed open after its exit");
+    assert!(
+        status.success(),
+        "{status}: {}",
+        String::from_utf8_lossy(&output)
+    );
+    assert!(!pid.trim().is_empty(), "the helper wrote no pid");
+}
+
+fn long_child() -> Command {
+    #[cfg(unix)]
+    {
+        let mut cmd = Command::new("sleep");
+        cmd.arg("60");
+        cmd
+    }
+    #[cfg(windows)]
+    {
+        let mut cmd = Command::new("ping");
+        cmd.args(["-n", "60", "127.0.0.1"]);
+        cmd
+    }
+}
+
+fn stop(pid: &str) {
+    let Ok(pid) = pid.parse::<u32>() else { return };
+    #[cfg(unix)]
+    // SAFETY: plain call; a pid that has gone answers -1.
+    unsafe {
+        libc::kill(pid as libc::pid_t, libc::SIGKILL);
+    }
+    #[cfg(windows)]
+    let _ = Command::new("taskkill")
+        .args(["/F", "/PID", &pid.to_string()])
+        .output();
 }

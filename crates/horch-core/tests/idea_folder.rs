@@ -1,8 +1,3 @@
-//! The idea folder (ticket 07 of fleetd-p6): FR-1, FM-30 and SR-6 for the
-//! files of `ideas/I-NNNN/`.
-//!
-//! Unix only: the protected file reader refuses each file on Windows, where
-//! the platform gives no mode.
 #![cfg(unix)]
 
 use std::fs;
@@ -52,9 +47,7 @@ fn idea_md_is_written_once_and_never_changed() {
     let first = idea("Add retry with backoff to the sync client.\n");
 
     assert_eq!(f.write_idea(&first).unwrap(), Created::Written);
-    // A replay of the same effect after a crash is accepted.
     assert_eq!(f.write_idea(&first).unwrap(), Created::AlreadyIdentical);
-    // Another text never replaces the file.
     let changed = f.write_idea(&idea("Something else.\n")).unwrap_err();
     assert!(
         matches!(changed, FolderError::Write(FsxError::Conflict { .. })),

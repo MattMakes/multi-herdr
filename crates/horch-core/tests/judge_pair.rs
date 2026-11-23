@@ -1,16 +1,3 @@
-//! The judge pair in the verifier (docs/tickets/fleetd-p6/41-judge-pair.md):
-//! a task of a judgment kind waits in `verifying` after its structural
-//! check, and reaches `done` only after its judge task, with no change of
-//! the plan. An open CRITICAL item starts a fix round that burns no
-//! attempt, and after 2 fix rounds both tasks go to you
-//! (docs/specs/fleetd/design.md, "The judge pair", RR-3, FM-9, FM-33).
-//!
-//! Each test uses a temp git repository, a temp ledger and a temp fleet
-//! root. A pass is part 2 (the verifier, in 1 transaction) and part 3 (the
-//! structural check and the judge pair, after the commit). A `task_check`
-//! job ends through its row, as the job process ends it. A new attempt is
-//! written as push dispatch writes it. No test reads the load, the limits
-//! or the clock of this machine: the fleet clock is a fact of the test.
 #![cfg(unix)]
 
 #[path = "common/test_jobs.rs"]
@@ -28,6 +15,7 @@ use horch_core::fleetd::fleet_runtime::domain::jobs::State;
 use horch_core::fleetd::ideas::adapters::ideas_store::{self, NewIdea};
 use horch_core::fleetd::ideas::application::needs_you::{self, NeedsYouList};
 use horch_core::fleetd::integration::adapters::sqlite::{self as rows, NewFeature};
+use horch_core::fleetd::task_execution::adapters::verdict_file;
 use horch_core::fleetd::task_execution::application::judge_pair::{
     self, Settled, Step, FIX_ROUND_LIMIT,
 };
@@ -35,6 +23,7 @@ use horch_core::fleetd::task_execution::application::retry::Policy;
 use horch_core::fleetd::task_execution::application::review::Review;
 use horch_core::fleetd::task_execution::application::verifier::{self, Structural, Verifier};
 use horch_core::fleetd::task_execution::domain::judge_pair::Rank;
+use horch_core::fleetd::task_execution::domain::verification;
 use horch_core::taskledger::finish::{self, CodexSandbox, Tools};
 use horch_core::taskledger::git::Git;
 use horch_core::taskledger::model::{Actor, VerifyProfile, WorkKind};
@@ -52,7 +41,6 @@ const IDEA: &str = "I-0007";
 const FEATURE: &str = "F-0001";
 const DOC: &str = "docs/sync.md";
 const VERDICT: &str = "docs/sync.review.md";
-/// The live sub-orchestrator attempt of the feature, and its pane.
 const OWNER: &str = "I-0007/supervising/1";
 const PANE: &str = "w1:p1";
 
@@ -65,8 +53,6 @@ const CRITICAL: &str = "# Review of docs/sync.md\n\n## Verdict\n\ncritical_open\
 const HIGH: &str = "# Review of docs/sync.md\n\n## Verdict\n\npass\n\n## Findings\n\n\
 - [HIGH] The intro names 2 commands that do not exist.\n";
 
-/// A second judge: the CRITICAL item is fixed, and it raises 2 new items
-/// that are not in its scope.
 const SECOND_PASS: &str = "# Review of docs/sync.md\n\n## Verdict\n\npass\n\n## Findings\n\n\
 - [MEDIUM] Section 3 is long.\n- [LOW] A typo in the title.\n";
 
@@ -87,7 +73,6 @@ fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&o.stdout).trim().to_string()
 }
 
-/// Write `file` in `dir` and commit it.
 fn commit(dir: &Path, file: &str, body: &str) {
     let path = dir.join(file);
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -107,7 +92,6 @@ fn cause(text: &str) -> Cause<'_> {
     }
 }
 
-/// The counters of 1 task.
 #[derive(Debug, PartialEq, Eq)]
 struct Counts {
     attempts: i64,
@@ -124,11 +108,9 @@ struct World {
 }
 
 impl World {
-    /// A git repository with the run branch, 1 run with the steps of the
-    /// profile `minimal`, and 1 feature with 1 idea.
     fn new() -> World {
         let tmp = tempfile::tempdir().unwrap();
-        let top = tmp.path().canonicalize().unwrap();
+        let top = horch_platform::path::canonicalize(tmp.path()).unwrap();
         let root = top.join("repo");
         std::fs::create_dir_all(&root).unwrap();
         git(&root, &["init", "--quiet", "-b", "main"]);
@@ -201,10 +183,9 @@ impl World {
     }
 
     fn root(&self) -> PathBuf {
-        self.tmp.path().canonicalize().unwrap()
+        horch_platform::path::canonicalize(self.tmp.path()).unwrap()
     }
 
-    /// A new worker of the run, as push dispatch records it.
     fn worker(&mut self) -> String {
         let run = self.run.run_id.clone();
         self.store
@@ -225,8 +206,6 @@ impl World {
             .unwrap()
     }
 
-    /// Bind `task` to a new started worker, as push dispatch does: 1 live
-    /// attempt and the tree of the task.
     fn bind(&mut self, task: &str) -> String {
         let new = NewWorker {
             run_id: self.run.run_id.clone(),
@@ -251,8 +230,6 @@ impl World {
         id
     }
 
-    /// Add the task `title` with the `Own` list `own` and bind it to a
-    /// new worker, in a new worktree. Gives the task and its worker.
     fn claimed(&mut self, title: &str, kind: WorkKind, own: &[&str]) -> (String, String) {
         let mut t = NewTask::work(title, "t.md", "opus");
         t.land_check = Some("true".into());
@@ -278,8 +255,6 @@ impl World {
         (task, worker)
     }
 
-    /// The task moves to `verifying` with a live push attempt of `worker`,
-    /// as push dispatch and the ingest of its result leave it.
     fn verifying(&self, task: &str, worker: &str) {
         let n: i64 = self
             .conn()
@@ -304,7 +279,6 @@ impl World {
             .unwrap();
     }
 
-    /// A docs task that wrote its document, in `verifying`.
     fn judged(&mut self) -> String {
         let (task, worker) = self.claimed("judged", WorkKind::Docs, &[DOC]);
         commit(
@@ -316,8 +290,6 @@ impl World {
         task
     }
 
-    /// The judge task of `judged`: its worktree starts from the tip of the
-    /// judged branch, and it writes the verdict file `verdict`.
     fn judge(&mut self, judged: &str, verdict: &str) -> String {
         let (task, worker) = self.claimed("judge", WorkKind::Docs, &[VERDICT]);
         self.conn()
@@ -334,8 +306,6 @@ impl World {
         task
     }
 
-    /// The judge tree of `judge` sits on the tip of the judged branch, as
-    /// the judge branch move of a fix round leaves it (ticket 42).
     fn onto_judged(&self, judge: &str, judged: &str) {
         let tip = git(&self.tree(judged), &["rev-parse", "HEAD"]);
         git(&self.tree(judge), &["reset", "--quiet", "--hard", &tip]);
@@ -347,9 +317,6 @@ impl World {
             .unwrap();
     }
 
-    /// The next attempt of `task` in `verifying`, with a new worker in the
-    /// same worktree, as push dispatch starts it. `work` makes its
-    /// commits.
     fn next_attempt(&mut self, task: &str, work: impl FnOnce(&Path)) {
         let worker = self.worker();
         self.conn()
@@ -362,7 +329,6 @@ impl World {
         self.verifying(task, &worker);
     }
 
-    /// The fix attempt of `judged` changes its document.
     fn fix(&mut self, judged: &str, round: i64) {
         self.next_attempt(judged, |wt| {
             commit(
@@ -373,8 +339,6 @@ impl World {
         });
     }
 
-    /// The next attempt of the judge `judge` of `judged` writes `verdict`
-    /// on the new judged tip.
     fn judge_again(&mut self, judge: &str, judged: &str, verdict: &str) {
         self.onto_judged(judge, judged);
         let verdict = verdict.to_string();
@@ -390,9 +354,6 @@ impl World {
         )
     }
 
-    /// 1 pass: part 2, the verifier in 1 transaction; part 3, the
-    /// structural check of each judgment kind and judge kind after the
-    /// commit. The tips are the HEADs of the worktrees.
     fn pass(&mut self) -> Vec<(String, Structural)> {
         let mut tips = BTreeMap::new();
         for t in tasks::of_run(self.conn(), &self.run.run_id).unwrap() {
@@ -421,7 +382,6 @@ impl World {
         verifier::structural(&r, &mut self.store, &report.passed).unwrap()
     }
 
-    /// The job process of each queued check ends `passed`.
     fn end_checks(&self) {
         let result = r#"{"passed":true,"verdict":true,"text":"`true` in wt: exit 0"}"#;
         self.conn()
@@ -433,8 +393,6 @@ impl World {
             .unwrap();
     }
 
-    /// Pass 1 queues each check, each job passes, and pass 2 gives the
-    /// result of part 3.
     fn checked(&mut self) -> Vec<(String, Structural)> {
         self.pass();
         self.end_checks();
@@ -461,7 +419,6 @@ impl World {
             .unwrap()
     }
 
-    /// The outcome of the newest attempt of `task`.
     fn outcome(&self, task: &str) -> Option<String> {
         self.conn()
             .query_row(
@@ -476,7 +433,6 @@ impl World {
         tasks::of_run(self.conn(), &self.run.run_id).unwrap().len()
     }
 
-    /// The rowid of the event that moved `task` to `to`.
     fn moved_at(&self, task: &str, to: &str) -> i64 {
         self.conn()
             .query_row(
@@ -488,7 +444,6 @@ impl World {
             .unwrap()
     }
 
-    /// The live sub-orchestrator process of the feature, in its pane.
     fn sub_orchestrator(&self) {
         let worker = "w-idea-lead";
         self.conn()
@@ -508,7 +463,6 @@ impl World {
     }
 }
 
-/// What part 3 did with `task` in `pass`.
 fn of<'a>(pass: &'a [(String, Structural)], task: &str) -> &'a Structural {
     &pass
         .iter()
@@ -517,7 +471,6 @@ fn of<'a>(pass: &'a [(String, Structural)], task: &str) -> &'a Structural {
         .1
 }
 
-/// What the judge pair did in `pass` for the verdict of `judge`.
 fn settled<'a>(pass: &'a [(String, Structural)], judge: &str) -> &'a Settled {
     match of(pass, judge) {
         Structural::Judged(s) => s,
@@ -525,7 +478,6 @@ fn settled<'a>(pass: &'a [(String, Structural)], judge: &str) -> &'a Settled {
     }
 }
 
-/// 1 round of the judge with an open CRITICAL item.
 fn critical_round(w: &mut World, judged: &str, judge: &str, round: i64) -> Settled {
     w.fix(judged, round);
     let pass = w.checked();
@@ -540,7 +492,6 @@ fn judged_task_stays_verifying_until_its_judge_task_is_done() {
     let mut w = World::new();
     let judged = w.judged();
 
-    // The structural check passes, and the task waits for its judge.
     let pass = w.checked();
     assert_eq!(of(&pass, &judged), &Structural::WaitsForJudge);
     assert_eq!(w.status(&judged), "verifying");
@@ -550,7 +501,6 @@ fn judged_task_stays_verifying_until_its_judge_task_is_done() {
         assert_eq!(w.status(&judged), "verifying");
     }
 
-    // The judge task is in verifying, and its check did not end yet.
     let judge = w.judge(&judged, PASS);
     w.pass();
     assert_eq!(w.status(&judged), "verifying");
@@ -578,19 +528,15 @@ fn rr3_judgment_task_and_its_judge_reach_done_with_no_plan_change() {
     let s = settled(&pass, &judge);
     assert_eq!(s.judged, judged);
     assert_eq!(s.step, Step::Done);
-    // A first judge keeps its MEDIUM item: nothing is dropped.
     assert!(s.dropped.is_empty(), "{s:?}");
     assert_eq!(s.decision, None);
     assert_eq!(
         (w.status(&judge), w.status(&judged)),
         ("done".into(), "done".into())
     );
-    // The judge task moves to done first, then the judged task.
     assert!(w.moved_at(&judge, "done") < w.moved_at(&judged, "done"));
-    // No change of the plan: no task is added, and no fix round ran.
     assert_eq!(w.task_count(), tasks_before);
     assert_eq!(w.counts(&judged).fix_rounds, 0);
-    // The next pass finds both done and does nothing more.
     assert!(w.pass().is_empty());
 }
 
@@ -607,8 +553,6 @@ fn critical_item_gives_1_fix_round_not_counted_in_attempts() {
     let pass = w.checked();
 
     assert_eq!(settled(&pass, &judge).step, Step::FixRound(1));
-    // The judge attempt ends critical_open, which burns no attempt, and
-    // the judge waits in pending for the fix attempt.
     assert_eq!(w.outcome(&judge).as_deref(), Some("critical_open"));
     assert_eq!(w.status(&judge), "pending");
     assert_eq!(
@@ -618,8 +562,6 @@ fn critical_item_gives_1_fix_round_not_counted_in_attempts() {
             ..judge_before
         }
     );
-    // The judged task is ready for its fix attempt: 1 fix round, and the
-    // attempt count does not change.
     assert_eq!(w.status(&judged), "ready");
     assert_eq!(w.outcome(&judged).as_deref(), Some("critical_open"));
     assert_eq!(
@@ -632,7 +574,6 @@ fn critical_item_gives_1_fix_round_not_counted_in_attempts() {
     );
     assert_eq!(w.task_count(), tasks_before);
 
-    // The fix attempt takes no attempt of max_attempts.
     w.fix(&judged, 1);
     let c = w.counts(&judged);
     assert_eq!(
@@ -642,7 +583,6 @@ fn critical_item_gives_1_fix_round_not_counted_in_attempts() {
     let pass = w.checked();
     assert_eq!(of(&pass, &judged), &Structural::WaitsForJudge);
 
-    // The fresh judge finds the CRITICAL item fixed: both reach done.
     w.judge_again(&judge, &judged, PASS);
     let pass = w.checked();
     assert_eq!(settled(&pass, &judge).step, Step::Done);
@@ -679,7 +619,6 @@ fn third_critical_round_escalates_to_the_operator() {
         .collect();
     assert_eq!(items.len(), 1, "{items:?}");
     assert_eq!(items[0].key, judge_pair::escalated_key(&judged));
-    // Neither task leaves done: neither reached it.
     let done: i64 = w
         .conn()
         .query_row(
@@ -709,7 +648,6 @@ fn second_judge_new_medium_items_are_dropped() {
     assert_eq!(s.step, Step::Done);
     let dropped: Vec<Rank> = s.dropped.iter().map(|f| f.rank).collect();
     assert_eq!(dropped, [Rank::Medium, Rank::Low]);
-    // The verifier logs the drop in 1 note event of the judge task.
     let logged: String = w
         .conn()
         .query_row(
@@ -742,7 +680,6 @@ fn high_item_does_not_block() {
         (w.status(&judge), w.status(&judged)),
         ("done".into(), "done".into())
     );
-    // The HIGH item goes to the decisions file of the feature.
     let decision = s.decision.expect("1 entry of the decision log");
     assert_eq!(decision.feature, FEATURE);
     let root = w.root();
@@ -753,8 +690,6 @@ fn high_item_does_not_block() {
         "{log}"
     );
     assert!(log.contains(&format!("{judge}-a1:H1")), "{log}");
-    // It rings the sub-orchestrator of the feature: 1 doorbell event of
-    // its live attempt, typed after the commit.
     let ring = s.ring.expect("1 ring");
     assert_eq!((ring.attempt.as_str(), ring.pane.as_str()), (OWNER, PANE));
     let bells: i64 = w
@@ -766,4 +701,56 @@ fn high_item_does_not_block() {
         )
         .unwrap();
     assert_eq!(bells, 1);
+}
+
+#[test]
+fn planned_judge_task_with_no_check_passes_on_its_verdict() {
+    let mut w = World::new();
+    let judged = w.judged();
+    w.checked();
+    let judge = w.judge(&judged, PASS);
+    w.conn()
+        .execute(
+            "UPDATE tasks SET land_check = NULL WHERE task_id = ?1",
+            [&judge],
+        )
+        .unwrap();
+    assert_eq!(
+        finish::default_check(w.conn(), &w.run.run_id).unwrap(),
+        None
+    );
+
+    let pass = w.pass();
+
+    assert_eq!(settled(&pass, &judge).step, Step::Done);
+    assert_eq!(
+        (w.status(&judge), w.status(&judged)),
+        ("done".into(), "done".into())
+    );
+    let reasons: Vec<String> = verdict_file::recorded(w.conn(), &judge)
+        .unwrap()
+        .into_iter()
+        .map(|v| v.reason)
+        .collect();
+    assert_eq!(
+        reasons.first().map(String::as_str),
+        Some(verification::JUDGE_NO_CHECK)
+    );
+}
+
+#[test]
+fn task_with_no_check_that_is_not_a_judge_is_still_refused() {
+    let mut w = World::new();
+    let judged = w.judged();
+    w.conn()
+        .execute(
+            "UPDATE tasks SET land_check = NULL WHERE task_id = ?1",
+            [&judged],
+        )
+        .unwrap();
+
+    w.pass();
+
+    assert_ne!(w.status(&judged), "verifying");
+    assert_eq!(w.outcome(&judged).as_deref(), Some("rejected"));
 }

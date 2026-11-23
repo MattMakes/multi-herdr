@@ -1,14 +1,3 @@
-//! A push attempt records the PID and the start time of its wrapper at
-//! `launching -> live`, so the commands of its agent find their attempt,
-//! and fleetd sees the exit of the wrapper in the next pass
-//! (`ai_docs/plans/fleetd-build/tickets/54-push-attempt-records-its-wrapper-process.md`).
-//!
-//! The source of the wrapper identity is `heartbeat.json` (design
-//! `docs/specs/fleetd/design.md`, "Workspace layout and file protocol",
-//! protocol rules 2 and 7, and "The reconcile pass": "A launch names the
-//! attempt id: the attempt folder, the wrapper and its heartbeat carry
-//! it"). No test here sets a PID by hand and no stand-in wrapper runs.
-
 #![cfg(unix)]
 
 use std::path::{Path, PathBuf};
@@ -29,17 +18,10 @@ fn text(o: &Output) -> String {
     )
 }
 
-/// A harness with its own ledger file, a git repository, a fleet.toml and
-/// the herdr workspace `w1` (root pane `w1:p1`). The fake agents play
-/// `scenario`. A test fleetd with 1 pass each second serves it after the
-/// seed.
 fn fleet(name: &str, scenario: &str) -> Harness {
     fleet_with(name, scenario, None)
 }
 
-/// [`fleet`], where the exec run of the CLI first waits 5 s, so a pass
-/// records the wrapper while the agent lives, then runs the shell line
-/// `first`, then runs the fake claude.
 fn slow_fleet(name: &str, scenario: &str, first: &str) -> Harness {
     fleet_with(name, scenario, Some(first))
 }
@@ -53,7 +35,6 @@ fn fleet_with(name: &str, scenario: &str, first: Option<&str>) -> Harness {
     let quota = fixtures().join("quota/all-ok.json");
     h.set("HORCH_QUOTA_FILE", quota.to_string_lossy());
     h.set("HORCH_FAKE_SCENARIO", scenario);
-    // The load of the build host does not hold dispatch in this test.
     let root = h.fleet_root();
     std::fs::create_dir_all(&root).unwrap();
     std::fs::write(
@@ -61,8 +42,6 @@ fn fleet_with(name: &str, scenario: &str, first: Option<&str>) -> Harness {
         "health_max_load_per_cpu = 1000000.0\npass_period_s = 1\n",
     )
     .unwrap();
-    // The project declares its gates, so no hold of a missing fast gate
-    // stops the dispatch (Phase 4, Q-C).
     std::fs::write(
         h.project.join("fleet.toml"),
         "[gates]\nfast = \"true\"\nfull = \"true\"\n",
@@ -75,7 +54,6 @@ fn fleet_with(name: &str, scenario: &str, first: Option<&str>) -> Harness {
         let o = h.git_cmd(args).output().unwrap();
         assert!(o.status.success(), "git {args:?}: {}", text(&o));
     }
-    // The fake agent runs `horch result` and `horch ask` from PATH.
     std::os::unix::fs::symlink(Harness::horch_bin(), h.bin.join("horch")).unwrap();
     if let Some(first) = first {
         let fake = Harness::horch_bin().with_file_name("fake-claude");
@@ -88,29 +66,22 @@ fn fleet_with(name: &str, scenario: &str, first: Option<&str>) -> Harness {
         let path = h.write_warmed("claude-slow", script.as_bytes());
         h.set("HORCH_CLAUDE_BIN", path.to_string_lossy());
     }
-    // The workspace of the fleet has the label of the project folder, so
-    // fleetd launches an attempt with no recorded pane in it (T-890).
     let workspace = h.fleet_workspace();
     assert_eq!(workspace, "w1");
     h.set("HORCH_WORKSPACE_ID", workspace);
     h
 }
 
-/// The run `slug` with 1 queued task for opus.
 fn queue_one(h: &Harness, slug: &str) {
     let dir = h.project.join("tickets");
     std::fs::create_dir_all(&dir).unwrap();
     let ticket = dir.join("t0.md");
     std::fs::write(&ticket, "# T0\n").unwrap();
-    // A heartbeat each 1 s, so a pass sees the wrapper soon.
     let run = seed_run(h, slug, Some(1), "w1:p1");
     seed_task(h, &run, &ticket, "opus");
-    // After T-884 a launched spawn writes its session record through
-    // fleetd, so a push launch needs a fleetd that runs (T-890).
     h.serve_fleetd();
 }
 
-/// Wait for about 1 pass of the test fleetd.
 fn pass() {
     std::thread::sleep(std::time::Duration::from_secs(1));
 }
@@ -120,7 +91,6 @@ fn json_of(h: &Harness, args: &[&str]) -> Value {
     serde_json::from_slice(&o.stdout).unwrap_or_else(|e| panic!("{e}: {}", text(&o)))
 }
 
-/// The task T-1 and its attempts, as `horch ledger show --json` gives them.
 fn show(h: &Harness) -> Value {
     json_of(h, &["ledger", "show", "T-1", "--json"])
 }
@@ -132,9 +102,6 @@ fn task_status(h: &Harness) -> String {
         .to_string()
 }
 
-/// The last log record that holds key `key` of a fake claude that runs an
-/// attempt under the fleet root of `h`. The adapter conformance runs of
-/// fleetd have their own fleet root, and their records do not count.
 fn fake_key(h: &Harness, key: &str) -> Option<Value> {
     let tasks = h.fleet_root().join("tasks");
     let tasks = tasks.to_string_lossy();
@@ -145,8 +112,6 @@ fn fake_key(h: &Harness, key: &str) -> Option<Value> {
         .find_map(|c| c.get(key).cloned())
 }
 
-/// The state of the test for a failure message: the task, its attempts and
-/// the log of the fake claude.
 fn context(h: &Harness) -> String {
     format!(
         "attempt: {:?}\nshow: {}\nclaude: {:?}\ningested: {:?}\nheartbeats: {:?}",
@@ -161,7 +126,6 @@ fn context(h: &Harness) -> String {
     )
 }
 
-/// The `ingested` rows of the ledger: (path, outcome, reason).
 fn ingested(h: &Harness) -> Vec<(String, String, Option<String>)> {
     let Ok(store) = Store::open_read_only(&h.ledger_db()) else {
         return Vec::new();
@@ -175,7 +139,6 @@ fn ingested(h: &Harness) -> Vec<(String, String, Option<String>)> {
         .unwrap_or_default()
 }
 
-/// Run passes until `f` gives a value.
 fn until<T>(h: &Harness, what: &str, mut f: impl FnMut() -> Option<T>) -> T {
     wait_for_or(
         what,
@@ -187,13 +150,10 @@ fn until<T>(h: &Harness, what: &str, mut f: impl FnMut() -> Option<T>) -> T {
     )
 }
 
-/// Whether the command record `out` of the fake (`{"exit", "stderr"}`)
-/// exited 0. A failure names its stderr.
 fn assert_ok(what: &str, out: &Value) {
     assert!(out["exit"] == 0, "{what} of the agent failed: {out}");
 }
 
-/// Each file named `name` under `dir`, at any depth.
 fn files_named(dir: &Path, name: &str) -> Vec<PathBuf> {
     let mut found = Vec::new();
     let mut todo = vec![dir.to_path_buf()];
@@ -210,16 +170,13 @@ fn files_named(dir: &Path, name: &str) -> Vec<PathBuf> {
     found
 }
 
-/// The first attempt of the task, as the ledger holds it.
 #[derive(Debug)]
 struct Attempt {
     state: String,
     outcome: Option<String>,
     pid: Option<i64>,
     pid_start: Option<i64>,
-    /// The status of its worker row.
     worker: String,
-    /// The agent PID that fleetd took from a heartbeat.
     agent_pid: Option<i64>,
 }
 
@@ -248,24 +205,18 @@ fn first_attempt(h: &Harness) -> Option<Attempt> {
         .flatten()
 }
 
-/// Run passes until the first attempt is `live` with its wrapper on its
-/// row, and give that row.
 fn live_with_wrapper(h: &Harness) -> Attempt {
     until(h, "the attempt is not live with its wrapper", || {
         first_attempt(h).filter(|a| a.state == "live" && a.pid.is_some() && a.pid_start.is_some())
     })
 }
 
-/// Run passes until the first attempt is `ended`, and give that row.
 fn ended(h: &Harness) -> Attempt {
     until(h, "the attempt did not end", || {
         first_attempt(h).filter(|a| a.state == "ended")
     })
 }
 
-/// The ticket requires that an agent that was live never ends with
-/// `launch_failed`, and that its attempt ends by the exit path of the
-/// design (rung 5: `asked`, `quota` or `no_result`), not by the lease.
 fn assert_exit_path(h: &Harness, a: &Attempt) {
     let wrapper = a.pid.is_some() && a.pid_start.is_some();
     assert!(wrapper, "no wrapper: {a:?}\n{}", context(h));
@@ -277,8 +228,6 @@ fn assert_exit_path(h: &Harness, a: &Attempt) {
 fn push_attempt_agent_sends_its_result() {
     let h = fleet("p5-push-result", "exec,commit,result");
     queue_one(&h, "push-result");
-    // A pass dispatches the task by push, and a later pass launches the
-    // wrapper. The agent commits, then runs `horch result`.
     let result = until(&h, "the agent ran no horch result", || {
         fake_key(&h, "result")
     });
@@ -289,9 +238,6 @@ fn push_attempt_agent_sends_its_result() {
         "no result.json under {}",
         tasks.display()
     );
-    // fleetd ingests the result, the task goes to `verifying`, and the
-    // verifier gives the attempt its outcome. The ticket of the test has
-    // no check, so the verdict can be either.
     let a = until(&h, "the verifier did not end the attempt", || {
         first_attempt(&h).filter(|a| a.state == "ended")
     });
@@ -299,15 +245,12 @@ fn push_attempt_agent_sends_its_result() {
         matches!(a.outcome.as_deref(), Some("verified" | "rejected")),
         "{a:?}"
     );
-    // The agent ran `horch result` at once and exited: its command waited
-    // for the wrapper on the attempt row, so the agent was live.
     assert!(a.pid.is_some(), "no wrapper: {a:?}");
     assert_ne!(a.worker, "launch_failed", "{a:?}");
 }
 
 #[test]
 fn push_attempt_agent_asks_a_question() {
-    // The agent runs `horch ask`, then exits with no result.
     let h = slow_fleet(
         "p5-push-ask",
         "exec,exit_without_result",
@@ -315,8 +258,6 @@ fn push_attempt_agent_asks_a_question() {
     );
     queue_one(&h, "push-ask");
     let tasks = h.fleet_root().join("tasks");
-    // fleetd ingests the question: the attempt ends `asked`, which burns
-    // no attempt, and the task waits for the answer.
     until(&h, "the task is not blocked_on_user", || {
         (task_status(&h) == "blocked_on_user").then_some(())
     });
@@ -338,8 +279,6 @@ fn push_attempt_agent_asks_a_question() {
 fn push_attempt_agent_that_exits_with_no_result_ends_by_its_exit() {
     let h = slow_fleet("p5-push-exit", "exec,exit_without_result", ":");
     queue_one(&h, "push-exit");
-    // The fleet clock does not move past the lease of 120 s here: the
-    // pass sees the wrapper gone, and the lease plays no part.
     let a = ended(&h);
     assert_exit_path(&h, &a);
     assert_eq!(a.worker, "incomplete", "{a:?}");
@@ -350,15 +289,14 @@ fn push_attempt_agent_that_exits_with_no_result_ends_by_its_exit() {
 
 #[test]
 fn push_attempt_agent_killed_while_it_works_ends_by_its_exit() {
-    // The agent works for 600 s: its process becomes `sleep`. PATH of a
-    // pane holds only the fakes, so the script names /bin/sleep.
     let h = slow_fleet("p5-push-kill", "exec", "exec /bin/sleep 600");
     queue_one(&h, "push-kill");
-    // The ingest records the agent and its wrapper from 1 heartbeat.
-    let live = live_with_wrapper(&h);
-    let agent = live
-        .agent_pid
-        .unwrap_or_else(|| panic!("no agent PID: {live:?}"));
+    live_with_wrapper(&h);
+    let agent = until(&h, "the agent PID of the live attempt", || {
+        first_attempt(&h)
+            .filter(|a| a.state == "live")
+            .and_then(|a| a.agent_pid)
+    });
     let o = std::process::Command::new("kill")
         .args(["-KILL", &agent.to_string()])
         .output()

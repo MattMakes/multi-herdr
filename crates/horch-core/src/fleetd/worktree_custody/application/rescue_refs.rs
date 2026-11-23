@@ -1,30 +1,10 @@
-//! The use cases of the rescue refs and their classes (ticket 24).
-//!
-//! `docs/specs/fleetd/design.md`, "No work is lost" (Rescue refs have 2
-//! classes, and fleetd owns both), I10, FM-40, RR-16; MAP.md of fleetd-p4,
-//! Q16 and Q17:
-//! - [`record_branch_rescue`]: `branches.rescue_ref` names the last rescue
-//!   ref of the branch.
-//! - [`collect`]: a pass part with no git call. It decides the class of each
-//!   rescue ref from the facts of the last `worktree_list` run, opens or
-//!   ends the needs-you item of the `unique` budget, and plans the deletion
-//!   of each `superseded` ref whose feature ended `retention_days` ago.
-//! - [`delete`]: the short effect after the commit, `git update-ref -d
-//!   <ref> <old>`. The next `worktree_list` run shows it; a ref that is still
-//!   there is planned again by the next pass.
-//!
-//! - [`plan_drop`], [`record_drop`] and [`drop_ref`]: `horch rescue drop
-//!   <ref>` (ticket 43). You plan the drop of 1 ref, its event commits, and
-//!   then the ref is deleted and read back.
-//!
-//! No use case of fleetd deletes a `unique` ref: only your drop does (I10).
-//! Over the budget, fleetd deletes nothing (FM-40).
+use std::collections::BTreeMap;
 
 use anyhow::{bail, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::Connection;
 
-use crate::fleetd::fleet_runtime::adapters::sqlite::{self as door, entered_at, Fact};
+use crate::fleetd::fleet_runtime::adapters::sqlite::{self as door, last_moves_to, Fact};
 use crate::fleetd::fleet_runtime::application::jobs::{JobCtx, NewItem};
 use crate::fleetd::fleet_runtime::application::ledger::Cause;
 use crate::fleetd::fleet_runtime::domain::ledger::Entity;
@@ -37,23 +17,20 @@ use crate::fleetd::worktree_custody::domain::rescue_class::{
     self as rules, Class, Content, FeatureRefs, Owner, RefOwner, BUDGET_KEY, ENDED, NEEDS_YOU_KEY,
 };
 use crate::taskledger::model::{Actor, EventKind};
+use crate::taskledger::store::one_snapshot;
 
-/// The rescue ref facts of 1 repository, from its last passed
-/// `worktree_list` run. `refs` is `None` when the run could not list them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoFacts {
     pub repo: String,
     pub refs: Option<Vec<RefFacts>>,
 }
 
-/// The count and the bytes of 1 class.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Tally {
     pub count: u64,
     pub bytes: u64,
 }
 
-/// 1 planned deletion: `git update-ref -d <name> <tip>` in `repo`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Deletion {
     pub repo: String,
@@ -61,31 +38,21 @@ pub struct Deletion {
     pub tip: String,
 }
 
-/// What 1 call of [`collect`] found and planned.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Collection {
     pub unique: Tally,
     pub superseded: Tally,
-    /// The `unique` class is over `rescue_unique_budget_mb`.
     pub over_budget: bool,
-    /// The deletions to run after the commit.
     pub deletions: Vec<Deletion>,
 }
 
-/// What 1 deletion did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Deleted {
-    /// git deleted the ref.
     Deleted,
-    /// The ref did not exist: an earlier effect deleted it.
     Gone,
-    /// The ref names another tip, so it stays.
     Moved(String),
 }
 
-/// Record `rescue_ref` as the last rescue ref of the branch row `branch`,
-/// with 1 event, in `tx`. `false` when the ledger has no row of the branch.
-/// A row that already names `rescue_ref` does not change.
 pub fn record_branch_rescue(
     ctx: &JobCtx<'_>,
     tx: &Connection,
@@ -111,9 +78,6 @@ pub fn record_branch_rescue(
     Ok(true)
 }
 
-/// The branch and the feature of the owner `owner` of a rescue ref, from
-/// the ledger. `None` when the ledger has no row, or when more than 1
-/// branch has the folder name of a branch ref.
 pub fn owner_of(conn: &Connection, owner: &RefOwner) -> Result<Option<Owner>> {
     let branch = match owner {
         RefOwner::Branch(folder) => {
@@ -141,7 +105,6 @@ pub fn owner_of(conn: &Connection, owner: &RefOwner) -> Result<Option<Owner>> {
     Ok(Some(Owner { branch, feature }))
 }
 
-/// The class of the ref of `facts`.
 pub fn class(facts: &RefFacts) -> Class {
     rules::classify(&Content {
         in_newer_tip: facts.in_newer_tip,
@@ -149,13 +112,6 @@ pub fn class(facts: &RefFacts) -> Class {
     })
 }
 
-/// Decide the class of each rescue ref of `lists`, in `tx`, with no git
-/// call:
-/// - over `rescue_unique_budget_mb`, 1 needs-you item is open; under it,
-///   with the facts of each repository, the item ends. Nothing is deleted
-///   for the budget.
-/// - each `superseded` ref whose feature is `merged` or `abandoned` since
-///   `retention_days` before `now` gets 1 [`Deletion`].
 pub fn collect(
     ctx: &JobCtx<'_>,
     tx: &Connection,
@@ -163,6 +119,11 @@ pub fn collect(
     now: DateTime<Utc>,
 ) -> Result<Collection> {
     let mut c = Collection::default();
+    let features = lists
+        .iter()
+        .flat_map(|l| l.refs.iter().flatten())
+        .filter_map(|r| r.feature.as_deref());
+    let ended_at = features_ended_s(tx, features)?;
     for list in lists {
         for r in list.refs.iter().flatten() {
             let class = class(r);
@@ -172,10 +133,7 @@ pub fn collect(
             };
             tally.count += 1;
             tally.bytes = tally.bytes.saturating_add(r.bytes.unwrap_or(0));
-            let ended = match &r.feature {
-                Some(id) => feature_ended_s(tx, id)?,
-                None => None,
-            };
+            let ended = r.feature.as_ref().and_then(|id| ended_at.get(id).copied());
             if rules::expired(class, ended, now.timestamp(), ctx.config.retention_days) {
                 c.deletions.push(Deletion {
                     repo: list.repo.clone(),
@@ -208,23 +166,32 @@ pub fn collect(
     Ok(c)
 }
 
-/// When the feature `id` moved to `merged` or `abandoned`, in Unix seconds;
-/// `None` while it is open or ready.
-fn feature_ended_s(conn: &Connection, id: &str) -> Result<Option<i64>> {
-    match rows::feature(conn, id)? {
-        Some(f) if ENDED.contains(&f.state.as_str()) => {}
-        _ => return Ok(None),
-    }
-    let at = entered_at(conn, Entity::Feature, id, &ENDED)?;
-    Ok(at
-        .as_deref()
-        .and_then(crate::clock::parse)
-        .map(|t| t.timestamp()))
+fn features_ended_s<'a>(
+    conn: &Connection,
+    ids: impl IntoIterator<Item = &'a str>,
+) -> Result<BTreeMap<String, i64>> {
+    one_snapshot(conn, || {
+        let states = rows::feature_states(conn, ids)?;
+        let ended = || {
+            states
+                .iter()
+                .filter(|(_, s)| ENDED.contains(&s.as_str()))
+                .map(|(id, _)| id.as_str())
+        };
+        let mut at: BTreeMap<String, String> = BTreeMap::new();
+        for state in ENDED {
+            for (id, t) in last_moves_to(conn, Entity::Feature, ended(), state)? {
+                let last = at.entry(id).or_default();
+                *last = std::cmp::max(last.clone(), t);
+            }
+        }
+        Ok(at
+            .into_iter()
+            .filter_map(|(id, t)| Some((id, crate::clock::parse(&t)?.timestamp())))
+            .collect())
+    })
 }
 
-/// Delete the ref of `d` only when it still names `d.tip`: `git update-ref
-/// -d <ref> <old>`. Run it after the commit of [`collect`]. An error leaves
-/// the ref, and the next pass plans it again.
 pub fn delete(git: &dyn IntegrationGitGateway, d: &Deletion) -> Result<Deleted> {
     let repo = std::path::Path::new(&d.repo);
     Ok(match git.delete_ref(repo, &d.name, &d.tip)? {
@@ -234,8 +201,6 @@ pub fn delete(git: &dyn IntegrationGitGateway, d: &Deletion) -> Result<Deleted> 
     })
 }
 
-/// The plan of `horch rescue drop <ref>`: the ref, its tip, its class and
-/// the bytes that only it keeps.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DropPlan {
     pub deletion: Deletion,
@@ -243,9 +208,6 @@ pub struct DropPlan {
     pub bytes: Option<u64>,
 }
 
-/// Plan the drop of the rescue ref `name` of `repo` from `refs`, the facts
-/// of its rescue refs. A name outside `refs/horch/rescue/`, or a ref that
-/// `refs` does not have, is an error.
 pub fn plan_drop(repo: &str, name: &str, refs: &[RefFacts]) -> Result<DropPlan> {
     if rules::parse(name).is_none() {
         bail!("{name} is not a rescue ref: horch rescue drop deletes only a ref {REF_PREFIX}<owner>/<n>");
@@ -264,14 +226,10 @@ pub fn plan_drop(repo: &str, name: &str, refs: &[RefFacts]) -> Result<DropPlan> 
     })
 }
 
-/// The cause of the event of your drop of a ref at `tip`.
 fn drop_cause(tip: &str) -> String {
     format!("the operator drops the rescue ref at {tip}")
 }
 
-/// Record your drop of `plan` with 1 event about the ref, in `tx`, before
-/// the effect. `false`, with no write, when that event of the ref at that
-/// tip exists: an earlier drop committed it and died before its effect.
 pub fn record_drop(tx: &Connection, plan: &DropPlan) -> Result<bool> {
     let d = &plan.deletion;
     let cause = drop_cause(&d.tip);
@@ -298,9 +256,6 @@ pub fn record_drop(tx: &Connection, plan: &DropPlan) -> Result<bool> {
     Ok(true)
 }
 
-/// The effect after the commit of [`record_drop`]: [`delete`], then read
-/// the ref back. A ref at another tip stays, and is an error. So is a ref
-/// that git still reads back.
 pub fn drop_ref(git: &dyn IntegrationGitGateway, d: &Deletion) -> Result<Deleted> {
     let done = delete(git, d)?;
     if let Deleted::Moved(tip) = &done {
@@ -317,4 +272,103 @@ pub fn drop_ref(git: &dyn IntegrationGitGateway, d: &Deletion) -> Result<Deleted
         );
     }
     Ok(done)
+}
+
+#[cfg(test)]
+mod collect_reads_tests {
+    use rusqlite::params;
+
+    use super::*;
+    use crate::fleetd::fleet_runtime::adapters::sqlite::{append_event, Event};
+    use crate::fleetd::fleet_runtime::domain::config::FleetConfig;
+    use crate::fleetd::ideas::application::needs_you::NeedsYouList;
+    use crate::taskledger::store::Store;
+    use crate::taskledger::testing::count_statements;
+
+    fn feature(c: &Connection, id: &str, state: &str, at: Option<&str>) {
+        c.execute(
+            "INSERT INTO features (id, name, branch, primary_branch, state, created_at, updated_at)
+             VALUES (?1, ?1, ?1, 'main', ?2, 'now', 'now')",
+            params![id, state],
+        )
+        .unwrap();
+        let Some(at) = at else {
+            return;
+        };
+        let e = Event {
+            entity: Entity::Feature,
+            id,
+            from: Some("open"),
+            to: state,
+            cause: "test",
+            actor: Actor::Horch,
+        };
+        append_event(c, &e).unwrap();
+        c.execute(
+            "UPDATE events SET at = ?1 WHERE event_id = last_insert_rowid()",
+            [at],
+        )
+        .unwrap();
+    }
+
+    fn superseded(name: &str, feature: &str) -> RefFacts {
+        RefFacts {
+            name: name.to_string(),
+            tip: "t".to_string(),
+            branch: Some(feature.to_string()),
+            feature: Some(feature.to_string()),
+            bytes: Some(1),
+            in_newer_tip: Some(true),
+            in_landed: None,
+        }
+    }
+
+    #[test]
+    fn collect_of_3_and_300_refs_of_each_kind_runs_the_same_statements() {
+        let count = |n: usize| {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut store = Store::open(&tmp.path().join("ledger.sqlite3")).unwrap();
+            let tx = store.conn_mut().transaction().unwrap();
+            let old = Some("2020-01-01T00:00:00Z");
+            let mut refs = Vec::new();
+            let mut want = Vec::new();
+            for i in 0..n {
+                for (kind, state, at, deleted) in [
+                    ("M", "merged", old, true),
+                    ("A", "abandoned", old, true),
+                    ("O", "open", None, false),
+                    ("N", "merged", None, false),
+                ] {
+                    let id = format!("{kind}{i:04}");
+                    feature(&tx, &id, state, at);
+                    let name = format!("refs/horch/rescue/{id}/1");
+                    refs.push(superseded(&name, &id));
+                    if deleted {
+                        want.push(name);
+                    }
+                }
+                refs.push(superseded(
+                    &format!("refs/horch/rescue/X{i:04}/1"),
+                    "no-row",
+                ));
+            }
+            let lists = [RepoFacts {
+                repo: "/p".to_string(),
+                refs: Some(refs),
+            }];
+            let config = FleetConfig::default();
+            let ctx = JobCtx {
+                guard: None,
+                config: &config,
+                needs_you: &NeedsYouList,
+            };
+            let now = crate::clock::parse("2026-11-21T00:00:00Z").unwrap();
+            let (c, statements) =
+                count_statements(&tx, || collect(&ctx, &tx, &lists, now).unwrap());
+            let got: Vec<String> = c.deletions.into_iter().map(|d| d.name).collect();
+            assert_eq!(got, want);
+            statements
+        };
+        assert_eq!(count(3), count(300));
+    }
 }

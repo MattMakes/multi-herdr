@@ -1,6 +1,3 @@
-//! Harness modules: the launch values the A0 oracle does not cover, and
-//! session discovery by workdir.
-
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
@@ -12,8 +9,6 @@ fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/harness")
 }
 
-/// Compare `actual` with a fixture captured before the A4 move. Under
-/// `HORCH_BLESS=1` the fixture is written instead.
 fn check_fixture(name: &str, actual: &str) {
     let path = fixtures().join(name);
     if std::env::var("HORCH_BLESS").ok().as_deref() == Some("1") {
@@ -35,8 +30,6 @@ fn ctx(home: &Path) -> RuntimeContext {
     .unwrap()
 }
 
-/// The execpolicy rules a codex worker and a codex orchestrator get, through
-/// the codex adapter's `prepare`.
 #[cfg(not(windows))]
 #[test]
 fn harness_codex_rules_snapshot() {
@@ -78,18 +71,22 @@ fn harness_codex_rules_snapshot() {
     }
 }
 
-/// The argv a Prime worker launches with, daemon socket and session
-/// directory included, through the Prime adapter's `prepare` and
-/// `build_command`.
 #[cfg(unix)]
 #[test]
 fn harness_prime_daemon_args_snapshot() {
-    // A short path: the daemon socket path must stay within 103 bytes.
     let tmp = tempfile::Builder::new()
         .prefix("hp")
         .tempdir_in("/tmp")
+        .or_else(|_| tempfile::Builder::new().prefix("hp").tempdir())
         .unwrap();
-    let ctx = ctx(tmp.path());
+    let ctx = RuntimeContext::from_env(
+        &MapEnv::new("/")
+            .with("HOME", &tmp.path().to_string_lossy())
+            .with("HORCH_STATE_DIR", &tmp.path().join("s").to_string_lossy())
+            .with("PATH", "/nonexistent")
+            .with("HORCH_PRIME_BIN", "/fake/prime-agent"),
+    )
+    .unwrap();
     let roster = Roster::builtin().unwrap();
     let teammate = roster.require("prime").unwrap().clone();
     let adapter = HarnessKind::Prime.adapter();
@@ -135,7 +132,6 @@ fn harness_prime_daemon_args_snapshot() {
             .unwrap()
             .to_string_lossy()
             .into_owned();
-        // The scan dir name holds the real uid, which differs per machine.
         // SAFETY: getuid has no preconditions and cannot fail.
         let scan = format!("prime-agent-{}", unsafe { libc::getuid() });
         let args: Vec<String> = std::iter::once(cmd.get_program())
@@ -150,14 +146,10 @@ fn harness_prime_daemon_args_snapshot() {
             "{label}: {}\n",
             serde_json::to_string(&args).unwrap()
         ));
-        // Dropped, not finished: finishing asks a real `prime-agent` for its
-        // daemon's pid, and a test runs no real harness.
         drop(prepared);
     }
     check_fixture("prime_daemon_args.txt", &out);
 }
-
-// ─── ARC-11: discovery by canonical workdir ─────────────────────────────────
 
 const UUID_A: &str = "11111111-2222-4333-8444-555555555555";
 const UUID_B: &str = "66666666-7777-4888-8999-aaaaaaaaaaaa";
@@ -225,23 +217,24 @@ fn arc_11_opencode_discovery_by_workdir() {
     assert_eq!(ids(&b), vec!["ses_b"]);
 }
 
-/// A workdir given as the temp dir's own spelling (`/var/...` on macOS)
-/// matches a session recorded under its canonical path
-/// (`/private/var/...`). On other systems a symlinked temp dir stands in.
 #[test]
 fn arc_11_canonical_tmp_paths() {
     let tmp = tempfile::tempdir().unwrap();
     let real = tmp.path().join("real");
     std::fs::create_dir_all(&real).unwrap();
     let canonical = std::fs::canonicalize(&real).unwrap();
+    assert_eq!(
+        canonical,
+        std::fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(tmp.path().file_name().unwrap())
+            .join("real")
+    );
 
-    #[cfg(target_os = "macos")]
-    let given = {
-        assert_ne!(real, canonical, "macOS temp dirs live under /private");
+    #[cfg(unix)]
+    let given = if real != canonical {
         real.clone()
-    };
-    #[cfg(all(unix, not(target_os = "macos")))]
-    let given = {
+    } else {
         let link = tmp.path().join("link");
         std::os::unix::fs::symlink(&real, &link).unwrap();
         link
@@ -269,8 +262,6 @@ fn arc_11_canonical_tmp_paths() {
     assert!(horch_core::harness::Workdir::new(&given).matches(&canonical));
 }
 
-/// The launch flow's session shape comes from capabilities: a fresh id is
-/// passed only where horch mints it; every other fresh launch is unmanaged.
 #[test]
 fn arc_10_session_for_follows_capabilities() {
     use horch_core::execution::SessionMode;

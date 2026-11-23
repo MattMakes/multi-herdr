@@ -30,8 +30,6 @@ def say(*parts, file=None):
     print(text.encode("ascii", "replace").decode("ascii"), file=file or sys.stdout)
 
 
-# ------------------------------------------------------------------ span parser
-
 class Node:
     """Where one JSON value sits in the text. Containers keep their children in order."""
     __slots__ = ("start", "end", "kind", "children")
@@ -67,7 +65,7 @@ def _obj_item(s: str, j: int, k: int) -> tuple[Child, int]:
     j = _skip(s, j)
     ke = _string_end(s, j)
     key = json.loads(s[j:ke])
-    child, end = parse_spans(s, _skip(s, ke) + 1)  # past ':'
+    child, end = parse_spans(s, _skip(s, ke) + 1)
     return Child(key, j, child), end
 
 
@@ -270,8 +268,6 @@ def patch_text(text: str, new) -> tuple[str, str]:
     return out, "patched"
 
 
-# ------------------------------------------------------------------ operations
-
 def short(v) -> str:
     t = _dump(v)
     return t if len(t) <= 80 else t[:77] + "..."
@@ -353,7 +349,6 @@ def _op_pool(op: dict, f: str, fr: dict, log: list) -> None:
     set_keys(fr.setdefault("pools", {}), {op["pool"]: op["value"]}, f"{f}.pools", log)
 
 
-# Fragment operations by their key, checked in this order.
 _HANDLERS = [
     (("sample", "slice"), _op_sample),
     (("rule",), functools.partial(_op_item, key="rule", sec="rules", field="name")),
@@ -397,8 +392,6 @@ def load_ops(arg: str):
         raise OpError("--ops must be a JSON list of operations")
     return ops
 
-
-# ------------------------------------------------------------------ run
 
 class RunError(Exception):
     """A refusal printed to stderr as 'variant.py: ...'."""

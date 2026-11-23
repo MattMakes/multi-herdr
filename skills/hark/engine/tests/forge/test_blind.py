@@ -69,8 +69,6 @@ def built(tree):
     return out, res
 
 
-# ---------------------------------------------------------------- picks
-
 def test_BT1_allocate():
     a = blind_v2.allocate(20)
     assert sum(a.values()) == 20 and sorted(a.values()).count(2) == 6 and sorted(a.values()).count(1) == 8
@@ -94,8 +92,6 @@ def test_BT3_answer_sheet_chance_line():
     assert "15 or more right is unlikely by luck (p = 0.021)" in " ".join(sheet.split())
 
 
-# ---------------------------------------------------------------- trim and level
-
 def test_BT5_match_pair():
     real, made = _sound(1, 0.3, 600, 0.6), 0.2 * _sound(2, 0.3, 900, 0.1)
     g, gc, over = bt.match_pair(real, made, "short")
@@ -115,7 +111,7 @@ def test_BT6_cut_struck_sine():
     assert f["onset_s"] == pytest.approx(0.05, abs=0.002)
     assert f["start_s"] == pytest.approx(f["onset_s"] - 0.004, abs=1e-4)
     assert np.all(np.abs(clip[:2]) < 1e-3)
-    t40 = 0.05 + tau * np.log(100)  # power -40 dB = amplitude 1/100
+    t40 = 0.05 + tau * np.log(100)
     assert f["end_s"] == pytest.approx(t40, abs=0.05)
     assert f["fade_out_ms"] >= 5.0 and clip[-1, 0] == pytest.approx(0, abs=1e-6)
 
@@ -128,8 +124,6 @@ def test_BT7_pair_levels():
     floor = {"reach": -80.0, "head": -90.0, "floor": -45.0}
     assert bt.pair_levels(floor, quiet) == (-35.0, -35.0)
 
-
-# ---------------------------------------------------------------- build
 
 def _keys_of(obj):
     if isinstance(obj, dict):
@@ -208,8 +202,6 @@ def test_dry_run_writes_nothing(tree, capsys):
     res = blind_v2.build_blind(out, 20, 2026, dry_run=True)
     assert res["code"] == 0 and not out.exists() and capsys.readouterr().out.startswith("blind test PASS")
 
-
-# ---------------------------------------------------------------- progress verdicts
 
 def test_BT11_verdict():
     assert verdict("low", 10, 8, [9, 12], 0.3) == "better"

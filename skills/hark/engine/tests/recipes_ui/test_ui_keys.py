@@ -18,8 +18,6 @@ def corr(y: np.ndarray) -> float:
     return float(np.corrcoef(y[:, 0], y[:, 1])[0, 1])
 
 
-# -------------------------------------------------------------- keypress
-
 def test_keypress_metadata():
     assert keypress.REFSET == "typing_key"
     names = [r.rsplit("/", 1)[1] for r in keypress.REFS]
@@ -111,8 +109,6 @@ def test_keypress_bright_top():
     assert keypress.key_stats(y)["top_db"] > -8
 
 
-# ---------------------------------------------------------------- typing
-
 def test_typing_metadata():
     assert typing.REFSET == "pro_typing_key"
     assert typing.RUN.REFSET == "pro_typing_run"
@@ -122,8 +118,6 @@ def test_typing_metadata():
     assert len(typing.DEFAULTS) == 22
 
 
-# Recorded once from key_rng(7) on numpy 2 and reviewed. It pins the per-key seed across versions:
-# a changed seed formula changes every typed run that users already tuned.
 KEY_7_FIRST_UNIFORM = 0.7605958890389746
 
 

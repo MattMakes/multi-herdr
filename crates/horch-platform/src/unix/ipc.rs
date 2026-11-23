@@ -1,8 +1,3 @@
-//! The concern ipc for the code of macOS and Linux: a Unix stream socket.
-//!
-//! `connect_by` to `wait_ready` began as a copy of
-//! `horch-core/src/messaging/channel.rs`.
-
 use std::io::{self, Read, Write};
 use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -16,13 +11,6 @@ pub(crate) fn connect(path: &Path) -> io::Result<Stream> {
     UnixStream::connect(path)
 }
 
-/// `UnixStream::connect` has no timeout, and it can block while the
-/// listener's backlog is full. Connect a nonblocking socket instead, and
-/// wait for it only until `deadline`. No helper thread outlives the call.
-///
-/// Linux answers a full backlog with `EAGAIN` and leaves the socket
-/// unconnected, and `poll` cannot tell when room comes. So the connect is
-/// tried again each [`BACKLOG_RETRY`] until the deadline.
 pub(crate) fn connect_by(path: &Path, deadline: Instant) -> io::Result<Stream> {
     let address = unix_address(path)?;
     let stream = new_nonblocking_socket()?;
@@ -53,10 +41,8 @@ pub(crate) fn connect_by(path: &Path, deadline: Instant) -> io::Result<Stream> {
     Ok(stream)
 }
 
-/// The pause before a connect to a full backlog is tried again.
 const BACKLOG_RETRY: Duration = Duration::from_millis(5);
 
-/// The socket address of `path`, or an error when the path does not fit.
 fn unix_address(path: &Path) -> io::Result<libc::sockaddr_un> {
     use std::os::unix::ffi::OsStrExt;
 
@@ -76,7 +62,6 @@ fn unix_address(path: &Path) -> io::Result<libc::sockaddr_un> {
     Ok(address)
 }
 
-/// A new Unix stream socket that is close-on-exec and nonblocking.
 fn new_nonblocking_socket() -> io::Result<Stream> {
     // SAFETY: plain syscall; a negative answer is checked before use.
     let fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
@@ -93,9 +78,6 @@ fn new_nonblocking_socket() -> io::Result<Stream> {
     Ok(stream)
 }
 
-/// A blocking socket write keeps going while a slow reader frees space, past
-/// any write timeout (macOS). So the stream from [`connect_by`] is
-/// nonblocking, and `poll` waits only for the time that is left.
 pub(crate) fn write_by(stream: &mut Stream, mut bytes: &[u8], deadline: Instant) -> io::Result<()> {
     while !bytes.is_empty() {
         match stream.write(bytes) {
@@ -107,9 +89,6 @@ pub(crate) fn write_by(stream: &mut Stream, mut bytes: &[u8], deadline: Instant)
     Ok(())
 }
 
-/// One line, up to and with its newline, or what came before EOF, and at
-/// most `limit` bytes. The read takes 1 byte at a time, so the bytes after
-/// the line stay in the socket for the next call.
 pub(crate) fn read_line_by(
     stream: &mut Stream,
     deadline: Instant,
@@ -127,9 +106,6 @@ pub(crate) fn read_line_by(
     String::from_utf8(answer).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
-/// What a failed nonblocking read or write does next. `Ok(())` means try
-/// again: a `WouldBlock` waits for `events`, and an interrupted call tries
-/// again only while time is left. Any other error is final.
 fn retry_after(
     error: io::Error,
     stream: &Stream,
@@ -143,10 +119,6 @@ fn retry_after(
     }
 }
 
-/// Wait until `stream` is ready for `events`, but not past `deadline`.
-/// `Ok(())` means ready. `poll` takes whole milliseconds, so the wait
-/// rounds the time left up. A poll that ends early or is interrupted
-/// waits again for the time left.
 fn wait_ready(stream: &Stream, events: libc::c_short, deadline: Instant) -> io::Result<()> {
     let mut poll = libc::pollfd {
         fd: stream.as_raw_fd(),
@@ -170,7 +142,6 @@ fn wait_ready(stream: &Stream, events: libc::c_short, deadline: Instant) -> io::
     }
 }
 
-/// The time left until `deadline`, or a timed-out error once it passed.
 fn time_left(deadline: Instant) -> io::Result<Duration> {
     let left = deadline.saturating_duration_since(Instant::now());
     if left.is_zero() {

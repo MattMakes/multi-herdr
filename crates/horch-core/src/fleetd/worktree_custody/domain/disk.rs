@@ -1,57 +1,29 @@
-//! The disk budget of the worktrees (FM-28, OR-1). No I/O.
-//!
-//! `docs/specs/fleetd/design.md`, "Worktrees: leased, reconciled, never
-//! lost" ("Disk") and "The numbers of the design" (row "Worktree disk
-//! budget"); MAP.md of fleetd-p3, Q8 and Q20. The total is the sum of the
-//! sizes of all trees of the fleet. Above `worktree_disk_budget_gb`,
-//! [`decide`] gives the trees to remove, oldest first: only `landed` and
-//! `rescued` trees whose idea is `merged` or `cancelled` (MAP.md of
-//! fleetd-p6, ticket 33), and only a `rescued` tree with a task. It never gives an `active` tree. When the total stays above
-//! the budget after each such tree, the decision holds new dispatch.
-
-/// 1 GB of the budget, in bytes (binary).
 pub const GB: u64 = 1 << 30;
 
-/// The `fleet.toml` key of the budget.
 pub const BUDGET_KEY: &str = "worktree_disk_budget_gb";
 
-/// The key and the kind of the 1 needs-you item of the hold.
 pub const NEEDS_YOU_KEY: &str = "worktree_disk";
 pub const NEEDS_YOU_KIND: &str = "worktree_disk";
 
-/// 1 tree that is not `removed`, as the budget reads it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tree<'a> {
     pub id: &'a str,
-    /// `worktrees.state`.
     pub state: &'a str,
     pub has_task: bool,
-    /// `ideas.state` of the idea of its task; `None` when the tree has no
-    /// task or its task has no idea.
     pub idea_state: Option<&'a str>,
     pub created_at: &'a str,
-    /// `None` until the `worktree_list` job measured it.
     pub bytes: Option<u64>,
-    /// Its automatic removal failed and was not run again: it frees no
-    /// space until an operator runs it again.
     pub removal_failed: bool,
 }
 
-/// What the budget does now.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Decision {
-    /// The sum of the measured sizes of all trees.
     pub total: u64,
-    /// The budget, in bytes.
     pub budget: u64,
-    /// The trees to remove, oldest `created_at` first.
     pub remove: Vec<String>,
-    /// The total stays above the budget after each tree of `remove`.
     pub hold: bool,
 }
 
-/// Whether the budget may remove `tree` for space. A tree whose removal
-/// failed is not spare.
 pub fn spare(tree: &Tree<'_>) -> bool {
     if tree.removal_failed {
         return false;
@@ -65,9 +37,6 @@ pub fn spare(tree: &Tree<'_>) -> bool {
     finished && state
 }
 
-/// The decision for `trees` and the budget of `budget_gb` GB. Over the
-/// budget means a total above it. A tree with no measured size frees no
-/// known space, so the decision does not take it.
 pub fn decide(trees: &[Tree<'_>], budget_gb: u64) -> Decision {
     let budget = budget_gb.saturating_mul(GB);
     let total = trees
@@ -99,7 +68,6 @@ pub fn decide(trees: &[Tree<'_>], budget_gb: u64) -> Decision {
     decision
 }
 
-/// The cause of the hold: the total and the budget.
 pub fn hold_cause(d: &Decision) -> String {
     format!(
         "the worktrees use {:.1} GB, above the budget of {} GB, and no landed or rescued tree \
@@ -142,12 +110,9 @@ mod tests {
             tree("old", "rescued", "cancelled", "2026-01-01T00:00:00Z", 5),
             tree("mid", "landed", "cancelled", "2026-01-02T00:00:00Z", 5),
         ];
-        // 35 GB against 20 GB: the oldest 2 spare trees bring it to 25 GB,
-        // and the third to 20 GB.
         let d = decide(&trees, 20);
         assert_eq!(d.remove, ["old", "mid", "new"]);
         assert!(!d.hold, "{d:?}");
-        // 35 GB against 30 GB: the oldest spare tree is enough.
         assert_eq!(decide(&trees, 30).remove, ["old"]);
     }
 

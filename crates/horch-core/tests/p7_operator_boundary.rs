@@ -1,23 +1,12 @@
-//! The check "Operator boundary" of the conformance suite (fleetd-p7
-//! ticket 24; SR-8): for each adapter, 1 real launch tries the 3 operator
-//! acts from inside its sandbox, and the check passes only when each act is
-//! refused. An adapter with no sandbox on this OS gives `not supported`.
-//!
-//! The fleet root of each test is a temporary folder with a real token file
-//! (mode 0600), a real channel socket and a request folder. Each launch
-//! runs a fake agent of `crates/horch-e2e`, never a real agent CLI (MAP.md
-//! Q6). The fakes try each act in a child under the platform sandbox with
-//! the rules of their rendered config.
-//!
-//! Unix only: the test channel is a Unix socket, and on Windows no adapter
-//! has an operator boundary.
 #![cfg(unix)]
+
+#[path = "support/fakes.rs"]
+mod fakes;
 
 use std::collections::BTreeMap;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
-use std::process::Command as StdCommand;
 
 use horch_core::fleetd::worker_profiles::adapters::conformance_runner::ConformanceRunner;
 use horch_core::fleetd::worker_profiles::application::conformance::{
@@ -27,15 +16,14 @@ use horch_core::fleetd::worker_profiles::domain::conformance::{
     Check, CheckResult, ConformanceReport, Verdict, CONTEXT_LIMIT, FIRST_EVENT_LIMIT,
 };
 use horch_core::fleetd::worker_profiles::domain::operator_boundary::{Act, OperatorPaths};
+use horch_core::harness::codex::OPERATOR_BOUNDARY_SINCE;
 use horch_core::harness::HarnessKind;
 use horch_core::roster::{PermissionMode, Teammate};
 use horch_core::runtime::{MapEnv, RuntimeContext};
 use serde_json::{json, Value};
 
-/// The fakes that the tests launch.
 const FAKES: [&str; 2] = ["fake-claude", "fake-codex"];
 
-/// Each adapter of the suite (MAP.md Q5).
 const ADAPTERS: [HarnessKind; 6] = [
     HarnessKind::Claude,
     HarnessKind::Codex,
@@ -45,66 +33,8 @@ const ADAPTERS: [HarnessKind; 6] = [
     HarnessKind::Prime,
 ];
 
-/// The folder of the built fakes: `target/<profile>`, beside this test.
-fn bin_dir() -> PathBuf {
-    let exe = std::env::current_exe().unwrap();
-    let mut dir = exe.parent().unwrap().to_path_buf();
-    if dir.file_name().and_then(|n| n.to_str()) == Some("deps") {
-        dir.pop();
-    }
-    dir
-}
-
-/// The variables cargo sets for a test process. A nested build that sees
-/// them has another fingerprint, and builds each crate again.
-const CARGO_RUN_VARS: &[&str] = &[
-    "CARGO_MANIFEST_DIR",
-    "CARGO_MANIFEST_PATH",
-    "CARGO_CRATE_NAME",
-    "CARGO_BIN_NAME",
-    "CARGO_PRIMARY_PACKAGE",
-    "CARGO_TARGET_TMPDIR",
-    "CARGO_RUSTC_CURRENT_DIR",
-    "OUT_DIR",
-];
-
-/// Build the fakes 1 time in this test process, into the target folder
-/// of this test. `cargo test -p horch-core` does not build them.
 fn fake(name: &str) -> PathBuf {
-    static BUILT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
-    let dir = bin_dir();
-    BUILT.get_or_init(|| {
-        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-        let mut cmd = StdCommand::new(cargo);
-        for (key, _) in std::env::vars_os() {
-            let key = key.to_string_lossy();
-            if key.starts_with("CARGO_PKG_") || CARGO_RUN_VARS.contains(&key.as_ref()) {
-                cmd.env_remove(key.as_ref());
-            }
-        }
-        cmd.current_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
-            .args(["build", "--locked", "-p", "horch-e2e"]);
-        for bin in FAKES {
-            cmd.args(["--bin", bin]);
-        }
-        match dir.file_name().and_then(|n| n.to_str()) {
-            Some("debug") | None => {}
-            Some("release") => {
-                cmd.arg("--release");
-            }
-            Some(profile) => {
-                cmd.args(["--profile", profile]);
-            }
-        }
-        cmd.arg("--target-dir").arg(dir.parent().unwrap());
-        let out = cmd.output().unwrap();
-        assert!(
-            out.status.success(),
-            "the build of the fakes failed: {cmd:?}\n{}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-    });
-    dir.join(name)
+    fakes::fake(&FAKES, name)
 }
 
 fn executable(path: &Path, text: &str) {
@@ -112,30 +42,32 @@ fn executable(path: &Path, text: &str) {
     std::fs::set_permissions(path, PermissionsExt::from_mode(0o755)).unwrap();
 }
 
-/// The Codex of a test machine: fake-codex with the version and the
-/// features that the operator boundary of Codex reads.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Codex {
-    /// Codex 0.167.0 with the `network_proxy` feature.
+    BelowBoundaryVersion,
     WithNetworkProxy,
-    /// Codex 0.167.0 with no `network_proxy` feature.
     WithoutNetworkProxy,
 }
 
-/// A test machine in `/tmp`: a home, the horch folders, the scratch folder
-/// and a fleet root with a real token file, a real channel socket and a
-/// request folder.
+const MACHINE_ROOT: &str = if cfg!(target_os = "linux") {
+    "/var/tmp"
+} else {
+    "/tmp"
+};
+
 struct Machine {
     tmp: tempfile::TempDir,
     bins: BTreeMap<&'static str, PathBuf>,
-    /// The listener of the channel. It accepts no connection: a connect
-    /// to it completes in the backlog.
     _channel: UnixListener,
 }
 
 impl Machine {
     fn new(codex: Codex) -> Machine {
-        let tmp = tempfile::tempdir_in("/tmp").unwrap();
+        Machine::new_in(codex, MACHINE_ROOT)
+    }
+
+    fn new_in(codex: Codex, root: &str) -> Machine {
+        let tmp = tempfile::tempdir_in(root).unwrap();
         for d in [
             "home",
             "state",
@@ -146,8 +78,6 @@ impl Machine {
         ] {
             std::fs::create_dir_all(tmp.path().join(d)).unwrap();
         }
-        // Stub Linux sandbox tools, so the Claude sandbox check passes on
-        // Linux too.
         for tool in ["bwrap", "socat"] {
             executable(&tmp.path().join("bin").join(tool), "#!/bin/sh\nexit 0\n");
         }
@@ -165,14 +95,20 @@ impl Machine {
             ),
         );
         let features = match codex {
-            Codex::WithNetworkProxy => "network_proxy  experimental  true",
+            Codex::BelowBoundaryVersion | Codex::WithNetworkProxy => {
+                "network_proxy  experimental  true"
+            }
             Codex::WithoutNetworkProxy => "shell_tool  stable  true",
+        };
+        let version = match codex {
+            Codex::BelowBoundaryVersion => "0.165.0",
+            Codex::WithNetworkProxy | Codex::WithoutNetworkProxy => OPERATOR_BOUNDARY_SINCE,
         };
         let codex_bin = tmp.path().join("bin/codex");
         executable(
             &codex_bin,
             &format!(
-                "#!/bin/sh\ncase \"$1\" in\n  --version) echo 'codex-cli 0.167.0'; exit 0 ;;\n  features) echo '{features}'; exit 0 ;;\nesac\nexec '{}' \"$@\"\n",
+                "#!/bin/sh\ncase \"$1\" in\n  --version) echo 'codex-cli {version}'; exit 0 ;;\n  features) echo '{features}'; exit 0 ;;\nesac\nexec '{}' \"$@\"\n",
                 fake("fake-codex").display()
             ),
         );
@@ -196,7 +132,6 @@ impl Machine {
         self.path("fake.log")
     }
 
-    /// The context of the process that runs the suite.
     fn ctx(&self) -> RuntimeContext {
         let s = |p: PathBuf| p.to_string_lossy().into_owned();
         let mut env = MapEnv::new(self.path("home"))
@@ -216,18 +151,18 @@ impl Machine {
         RuntimeContext::from_env(&env).unwrap()
     }
 
-    /// The verdict of "Operator boundary" for `teammate`.
     fn check(&self, teammate: &Teammate) -> CheckResult {
+        self.check_in(teammate, "conformance")
+    }
+
+    fn check_in(&self, teammate: &Teammate, scenario: &str) -> CheckResult {
         let ctx = self.ctx();
         let mut runner = ConformanceRunner {
             ctx: &ctx,
             teammate,
             fleet_window: Some((CONTEXT_LIMIT, "context-windows.md".into())),
-            // The fakes read the operator paths from FLEET_ROOT, not from
-            // the prompt. Without it they probe the fleet root of the
-            // host.
             env_rule: vec![
-                ("HORCH_FAKE_SCENARIO".into(), "conformance".into()),
+                ("HORCH_FAKE_SCENARIO".into(), scenario.into()),
                 (
                     "HORCH_FAKE_LOG".into(),
                     self.log().to_string_lossy().into_owned(),
@@ -243,8 +178,6 @@ impl Machine {
         run_check(&mut runner, Check::OperatorBoundary)
     }
 
-    /// No fake saw a violation, such as the forbidden name in its
-    /// environment (SR-7).
     fn assert_no_violation(&self) {
         let text = std::fs::read_to_string(self.log()).unwrap_or_default();
         assert!(!text.is_empty(), "no fake ran");
@@ -258,8 +191,6 @@ impl Machine {
         }
     }
 
-    /// The launch left no throwaway folder and no request file, and the
-    /// token is still the operator's.
     fn assert_clean(&self) {
         let left: Vec<_> = std::fs::read_dir(self.path("scratch"))
             .unwrap()
@@ -278,8 +209,6 @@ impl Machine {
         );
     }
 
-    /// A Claude profile whose last `--settings` gives these sandbox rules,
-    /// so the rendered config of the launch is `filesystem`.
     fn claude_with_rules(&self, filesystem: Value) -> Teammate {
         let file = self.path("home/override-settings.json");
         let settings = json!({"sandbox": {"enabled": true, "filesystem": filesystem}});
@@ -290,8 +219,6 @@ impl Machine {
     }
 }
 
-/// The reference profile of an adapter: a sandboxed worker in exec mode
-/// where the adapter has exec mode.
 fn profile(agent: HarnessKind) -> Teammate {
     let name = format!("conformance-{}", agent.as_str());
     let model = match agent {
@@ -317,7 +244,6 @@ fn profile(agent: HarnessKind) -> Teammate {
     ) {
         return t;
     }
-    // `mode: exec`, as a teammate file writes it.
     let mut v = serde_json::to_value(&t).unwrap();
     v["mode"] = json!("exec");
     serde_json::from_value(v).unwrap()
@@ -330,11 +256,14 @@ fn assert_verdict(r: &CheckResult, verdict: Verdict) {
     assert!(!r.evidence.is_empty(), "{r:?}");
 }
 
-/// The check fails, and its evidence names `act` as the only allowed act.
 #[track_caller]
 fn assert_only_allowed(r: &CheckResult, act: Act) {
     assert_verdict(r, Verdict::Fail);
-    assert!(r.evidence.starts_with(&format!("allowed: {act};")), "{r:?}");
+    assert!(
+        r.evidence
+            .starts_with(&format!("allowed: {act}, orphan: {act};")),
+        "{r:?}"
+    );
     for other in Act::ALL.into_iter().filter(|a| *a != act) {
         let refused = r.evidence.split_once("refused: ").map(|(_, r)| r);
         assert!(
@@ -372,6 +301,44 @@ fn conformance_operator_boundary_check_runs_for_each_adapter() {
 }
 
 #[test]
+fn operator_boundary_passes_when_the_double_fork_orphan_is_refused_each_act() {
+    let m = Machine::new(Codex::WithNetworkProxy);
+    for agent in [HarnessKind::Claude, HarnessKind::Codex] {
+        let r = m.check(&profile(agent));
+        assert_verdict(&r, Verdict::Pass);
+        for act in Act::ALL {
+            assert!(
+                r.evidence.contains(&format!("orphan: {act}")),
+                "{agent:?}: {r:?}"
+            );
+        }
+    }
+    m.assert_no_violation();
+    m.assert_clean();
+}
+
+#[test]
+fn operator_boundary_fails_when_the_double_fork_orphan_escapes_the_sandbox() {
+    let m = Machine::new(Codex::WithNetworkProxy);
+    let r = m.check_in(&profile(HarnessKind::Claude), "conformance,orphan_escapes");
+    let orphan: Vec<String> = Act::ALL.iter().map(|a| format!("orphan: {a}")).collect();
+    assert_verdict(&r, Verdict::Fail);
+    assert!(
+        r.evidence
+            .starts_with(&format!("allowed: {};", orphan.join(", "))),
+        "{r:?}"
+    );
+    for act in Act::ALL {
+        let refused = r.evidence.split_once("refused: ").map(|(_, r)| r);
+        assert!(
+            refused.is_some_and(|r| r.starts_with(&act.to_string()) || r.contains(&format!(", {act}"))),
+            "the agent act {act} is not refused: {r:?}"
+        );
+    }
+    m.assert_clean();
+}
+
+#[test]
 fn operator_boundary_fails_when_the_rules_allow_the_token_read() {
     let m = Machine::new(Codex::WithNetworkProxy);
     let p = m.operator_paths();
@@ -401,9 +368,34 @@ fn operator_boundary_fails_when_the_rules_allow_a_request_write() {
     m.assert_clean();
 }
 
+#[track_caller]
+fn assert_not_visible(r: &CheckResult, fleet_root: &Path) {
+    assert_verdict(r, Verdict::Fail);
+    let want = format!(
+        "not visible: the sandbox does not see the real {}",
+        fleet_root.display()
+    );
+    assert!(r.evidence.starts_with(&want), "{r:?}");
+}
+
+#[test]
+fn operator_boundary_fails_when_the_sandbox_does_not_see_the_real_fleet_root() {
+    let m = Machine::new(Codex::WithNetworkProxy);
+    let root = m.path("ledger/fleet");
+    let t = m.claude_with_rules(json!({"denyRead": [root], "allowWrite": []}));
+    assert_not_visible(&m.check(&t), &root);
+    m.assert_clean();
+
+    if cfg!(target_os = "linux") {
+        let old = Machine::new_in(Codex::WithNetworkProxy, "/tmp");
+        let r = old.check(&profile(HarnessKind::Claude));
+        assert_not_visible(&r, &old.path("ledger/fleet"));
+        old.assert_clean();
+    }
+}
+
 #[test]
 fn operator_boundary_fails_when_the_fleet_root_has_no_token() {
-    // A refusal of a read of a file that is not there proves nothing.
     let m = Machine::new(Codex::WithNetworkProxy);
     std::fs::remove_file(m.operator_paths().token).unwrap();
     let r = m.check(&profile(HarnessKind::Claude));
@@ -413,19 +405,31 @@ fn operator_boundary_fails_when_the_fleet_root_has_no_token() {
 }
 
 #[test]
+fn operator_boundary_fails_when_the_request_folder_is_not_writable() {
+    let m = Machine::new(Codex::WithNetworkProxy);
+    let requests = m.operator_paths().requests;
+    std::fs::set_permissions(&requests, PermissionsExt::from_mode(0o500)).unwrap();
+    let r = m.check(&profile(HarnessKind::Claude));
+    std::fs::set_permissions(&requests, PermissionsExt::from_mode(0o700)).unwrap();
+    assert_verdict(&r, Verdict::Fail);
+    assert!(
+        r.evidence.contains(&Act::WriteRequests.to_string()),
+        "{r:?}"
+    );
+    assert!(r.evidence.contains("proves nothing"), "{r:?}");
+    m.assert_clean();
+}
+
+#[test]
 fn operator_boundary_not_supported_is_not_pass() {
     let m = Machine::new(Codex::WithoutNetworkProxy);
     let agy = m.check(&profile(HarnessKind::Antigravity));
     assert_verdict(&agy, Verdict::NotSupported);
     assert!(agy.evidence.contains("agy has no rule"), "{agy:?}");
-    // A Codex that drops the network_proxy feature cannot deny the connect
-    // to the channel.
     let codex = m.check(&profile(HarnessKind::Codex));
     assert_verdict(&codex, Verdict::NotSupported);
     assert!(codex.evidence.contains("network_proxy"), "{codex:?}");
 
-    // `conformance.json` writes the word `not supported`, and the run has
-    // no failed check for it.
     let subject = SuiteSubject {
         cli: "antigravity".into(),
         version: "1.0.0".into(),
@@ -443,4 +447,71 @@ fn operator_boundary_not_supported_is_not_pass() {
     let v: Value = serde_json::from_str(&text).unwrap();
     assert_eq!(v["checks"][0]["verdict"], "not supported", "{text}");
     assert_eq!(read_conformance_json(&text).unwrap(), report);
+}
+
+fn logged_boundary(m: &Machine) -> Vec<Value> {
+    std::fs::read_to_string(m.log())
+        .unwrap_or_default()
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .filter(|call| call["fake"] == "codex")
+        .collect()
+}
+
+#[test]
+fn codex_operator_boundary_conformance_refuses_unproven_version_and_probes_sandbox_acts() {
+    let codex = profile(HarnessKind::Codex);
+
+    let old = Machine::new(Codex::BelowBoundaryVersion);
+    let r = old.check(&codex);
+    assert_verdict(&r, Verdict::NotSupported);
+    assert!(
+        r.evidence
+            .contains(&format!("older than {OPERATOR_BOUNDARY_SINCE}")),
+        "{r:?}"
+    );
+    assert!(
+        logged_boundary(&old).is_empty(),
+        "an unproven Codex version was launched"
+    );
+
+    let no_proxy = Machine::new(Codex::WithoutNetworkProxy);
+    let r = no_proxy.check(&codex);
+    assert_verdict(&r, Verdict::NotSupported);
+    assert!(r.evidence.contains("network_proxy"), "{r:?}");
+    assert!(
+        logged_boundary(&no_proxy).is_empty(),
+        "a Codex with no network_proxy was launched"
+    );
+
+    let proven = Machine::new(Codex::WithNetworkProxy);
+    let r = proven.check(&codex);
+    assert_verdict(&r, Verdict::Pass);
+    let calls = logged_boundary(&proven);
+    assert_eq!(
+        calls.len(),
+        1,
+        "1 launch of the real sandbox probe: {calls:?}"
+    );
+    let argv = calls[0]["argv"].to_string();
+    assert!(argv.contains("features.network_proxy=true"), "{argv}");
+    let probe = &calls[0]["conformance"]["operator_boundary"];
+    assert_eq!(probe["sandbox"], "on", "{probe}");
+    let refused = |v: &Value| v.as_str().is_some_and(|s| s.starts_with("refused:"));
+    for act in ["read_token", "connect_channel", "write_requests"] {
+        assert!(refused(&probe[act]), "{act} is not refused: {probe}");
+        assert!(
+            refused(&probe["orphan"][act]),
+            "the orphan {act} is not refused: {probe}"
+        );
+    }
+    assert_eq!(probe["write_inside"], "allowed", "{probe}");
+    assert!(refused(&probe["write_outside"]), "{probe}");
+    proven.assert_no_violation();
+    proven.assert_clean();
+
+    let mut open = codex.clone();
+    open.args = vec!["--sandbox".into(), "danger-full-access".into()];
+    let r = proven.check(&open);
+    assert_verdict(&r, Verdict::Fail);
 }

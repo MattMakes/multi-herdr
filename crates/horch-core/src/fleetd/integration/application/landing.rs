@@ -1,20 +1,3 @@
-//! The use cases of the landing state machine (ticket 25).
-//!
-//! `docs/specs/fleetd/design.md`, "Landing a task branch on its feature
-//! branch" (the state table; F9), "A cancelled task does not block its
-//! idea", "What a release does to a run in flight" (row Phase 4):
-//! - [`bind_branch`]: the bind of the first attempt of a task writes the
-//!   row of its task branch in `building`, before the branch exists.
-//! - [`follow`]: the pass part. Each task branch that is not terminal
-//!   follows its task through [`enter`], at most `budget` rows for each
-//!   pass. A branch past the time limit of its state opens 1 needs-you item,
-//!   and the item ends when the branch is no longer past it.
-//! - A cancelled task's branch: [`follow`] gives the [`Effect`] of its
-//!   rescue ref, [`run`] writes the ref after the commit, and [`observe`]
-//!   records it and moves the branch to `abandoned`. Each step reads the
-//!   rows again, so a crash at any point repeats the effect, and the
-//!   create-only rescue ref is written 1 time.
-
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -39,26 +22,20 @@ use crate::fleetd::worktree_custody::adapters::rescue_refs_git::write_branch_res
 use crate::taskledger::model::{Actor, TaskStatus};
 use crate::taskledger::{runs, tasks, util};
 
-/// The kind of the needs-you item of a task branch past its time limit.
 pub const OVERDUE_KIND: &str = "landing_overdue";
 
-/// The pass cursor of [`follow`].
+pub const FOLLOW_FAILED_KIND: &str = "landing_follow_failed";
+
 pub const CURSOR: &str = RowKind::Branches.as_str();
 
-/// The key of the needs-you item of the branch `branch` past its limit.
 pub fn overdue_key(branch: &str) -> String {
     format!("{OVERDUE_KIND}:{branch}")
 }
 
-/// The rescue ref of a branch tip, written after the commit.
 pub trait BranchRescues {
-    /// Write the rescue ref of the tip of `branch` in `repo` and give its
-    /// name, or `None` when git has no such branch. A second call for the
-    /// same tip gives the same ref.
     fn rescue(&self, repo: &Path, branch: &str) -> Result<Option<String>>;
 }
 
-/// [`BranchRescues`] through the git of fleetd: no hook, in the sandbox.
 pub struct GitBranchRescues<'a> {
     pub git: &'a CliWorktreeGit,
 }
@@ -77,30 +54,23 @@ impl BranchRescues for GitBranchRescues<'_> {
     }
 }
 
-/// What [`follow`] reads with.
 pub struct Landing<'a> {
     pub jobs: &'a JobCtx<'a>,
 }
 
-/// An effect that runs after the commit of the pass.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effect {
-    /// Write the rescue ref of the cancelled task's branch `branch` in the
-    /// repository `repo`.
     Rescue { branch: String, repo: PathBuf },
 }
 
-/// What an [`Effect`] did, for [`observe`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Done {
-    /// The rescue ref of `branch`, or `None` when git had no such branch.
     Rescued {
         branch: String,
         rescue_ref: Option<String>,
     },
 }
 
-/// The time limits of the landing states in `config`.
 pub fn limits(config: &FleetConfig) -> Limits {
     let jobs = &config.job_limit_s;
     Limits {
@@ -113,7 +83,6 @@ pub fn limits(config: &FleetConfig) -> Limits {
     }
 }
 
-/// The landing state of the word `word`.
 pub fn state_named(word: &str) -> Result<LandingState> {
     LandingState::parse(word).with_context(|| format!("{word:?} is not a landing state"))
 }
@@ -125,11 +94,6 @@ fn by_fleetd(text: &str) -> Cause<'_> {
     }
 }
 
-/// Write the row of the task branch `branch` of `task_id` in `building`,
-/// in `tx`, when the bind of an attempt names it and it has no row. The
-/// feature is the feature whose branch is the run branch of the task (MAP.md
-/// of fleetd-p4, Q5). `false` when the row exists, or when the run has no
-/// feature: then the task keeps today's land path.
 pub fn bind_branch(
     ctx: &JobCtx<'_>,
     tx: &Connection,
@@ -152,7 +116,6 @@ pub fn bind_branch(
         feature_id: &feature_id,
         task_id: Some(task_id),
         owner: rules::owner(LandingState::Building),
-        // `building` has the limits of its task, so this is its entry time.
         due_at: clock.0,
     };
     let text = format!("the bind of {} names its task branch", task.short());
@@ -160,7 +123,6 @@ pub fn bind_branch(
     Ok(true)
 }
 
-/// The `open` or `ready` feature whose branch is `branch`.
 fn live_feature_of(conn: &Connection, branch: &str) -> Result<Option<String>> {
     Ok(conn
         .query_row(
@@ -172,9 +134,6 @@ fn live_feature_of(conn: &Connection, branch: &str) -> Result<Option<String>> {
         .optional()?)
 }
 
-/// Move the task branch `branch` to `to` through `transition()`, in `tx`,
-/// and write the owner and the due time of `to` at the fleet clock `clock`.
-/// A refused move is a [`DoorError::Refused`], recorded by the door.
 pub fn enter(
     ctx: &JobCtx<'_>,
     tx: &Connection,
@@ -219,11 +178,6 @@ pub fn enter(
     Ok(moved)
 }
 
-/// The pass part of the landing, in the transaction `tx` of part 2 at the
-/// fleet clock `clock`: at most `budget` task branches that are not
-/// terminal, in the turn order of the cursor [`CURSOR`]. Each branch
-/// follows its task; each branch past its limit has 1 open needs-you item.
-/// Gives the effects to run after the commit.
 pub fn follow(
     l: &Landing<'_>,
     tx: &Transaction<'_>,
@@ -240,14 +194,65 @@ pub fn follow(
         .take(budget)
     {
         cursor.step(name, &now);
-        effects.extend(follow_one(l, tx, clock, name)?);
+        tx.execute_batch("SAVEPOINT landing_branch")?;
+        match follow_one(l, tx, clock, name) {
+            Ok(effect) => {
+                tx.execute_batch("RELEASE landing_branch")?;
+                l.jobs
+                    .needs_you
+                    .resolve_item(tx, &follow_failed_key(name))?;
+                effects.extend(effect);
+            }
+            Err(e) => {
+                tx.execute_batch("ROLLBACK TO landing_branch; RELEASE landing_branch")?;
+                open_follow_failed(l.jobs, tx, name, &e)?;
+            }
+        }
     }
     cursors_store::save(tx, CURSOR, &cursor)?;
     end_items(l.jobs, tx, clock)?;
+    end_follow_failed(l.jobs, tx, &names)?;
     Ok(effects)
 }
 
-/// The task branches that are not terminal, by name.
+fn follow_failed_key(branch: &str) -> String {
+    format!("{FOLLOW_FAILED_KIND}:{branch}")
+}
+
+fn open_follow_failed(
+    ctx: &JobCtx<'_>,
+    tx: &Connection,
+    branch: &str,
+    e: &anyhow::Error,
+) -> Result<()> {
+    let text = format!(
+        "fleetd cannot follow the task branch {branch}: {e:#}. fleetd tries again on each \
+         pass. Run `horch branch abandon {branch}` to end the branch."
+    );
+    ctx.needs_you.open_item(
+        tx,
+        &NewItem {
+            key: &follow_failed_key(branch),
+            kind: FOLLOW_FAILED_KIND,
+            entity: Entity::TaskBranch,
+            entity_id: branch,
+            text: &text,
+        },
+    )
+}
+
+fn end_follow_failed(ctx: &JobCtx<'_>, tx: &Connection, open: &[String]) -> Result<()> {
+    for key in needs_you::open_keys(tx, FOLLOW_FAILED_KIND)? {
+        let Some(branch) = key.strip_prefix(&format!("{FOLLOW_FAILED_KIND}:")) else {
+            continue;
+        };
+        if !open.iter().any(|n| n == branch) {
+            ctx.needs_you.resolve_item(tx, &key)?;
+        }
+    }
+    Ok(())
+}
+
 fn open_branches(conn: &Connection) -> Result<Vec<String>> {
     let mut stmt = conn.prepare(
         "SELECT name FROM branches WHERE task_id IS NOT NULL
@@ -276,7 +281,6 @@ fn follow_one(
             for to in moves {
                 match enter(l.jobs, tx, name, to, clock, &why) {
                     Ok(_) => {}
-                    // The door recorded the refusal and its needs-you item.
                     Err(e) if matches!(e.downcast_ref(), Some(DoorError::Refused { .. })) => break,
                     Err(e) => return Err(e),
                 }
@@ -295,7 +299,6 @@ fn follow_one(
     Ok(None)
 }
 
-/// The landing fact of the task status word `status`.
 fn task_fact(status: &str) -> TaskFact {
     let is = |s: TaskStatus| status == s.as_str();
     if is(TaskStatus::Verifying) {
@@ -320,14 +323,11 @@ fn task_fact(status: &str) -> TaskFact {
     }
 }
 
-/// Whether `row` is past the limit of its state at `clock`.
 fn is_overdue(ctx: &JobCtx<'_>, row: &BranchRow, clock: FleetSeconds) -> bool {
     let state = row.landing_state.as_deref().and_then(LandingState::parse);
     state.is_some_and(|s| rules::overdue(s, row.due_at, clock.0, &limits(ctx.config)))
 }
 
-/// Open the needs-you item of `row` when it is past its limit. An open
-/// item with the same text does not change.
 fn open_if_overdue(
     ctx: &JobCtx<'_>,
     tx: &Connection,
@@ -355,8 +355,6 @@ fn open_if_overdue(
     )
 }
 
-/// End each open item of [`OVERDUE_KIND`] whose branch is no longer past
-/// its limit: it moved on, it is terminal, or its row is gone.
 fn end_items(ctx: &JobCtx<'_>, tx: &Connection, clock: FleetSeconds) -> Result<()> {
     for key in needs_you::open_keys(tx, OVERDUE_KIND)? {
         let Some(branch) = key.strip_prefix(&format!("{OVERDUE_KIND}:")) else {
@@ -370,7 +368,6 @@ fn end_items(ctx: &JobCtx<'_>, tx: &Connection, clock: FleetSeconds) -> Result<(
     Ok(())
 }
 
-/// Run `effect` after the commit of its pass.
 pub fn run(effect: &Effect, rescues: &dyn BranchRescues) -> Result<Done> {
     match effect {
         Effect::Rescue { branch, repo } => Ok(Done::Rescued {
@@ -380,9 +377,6 @@ pub fn run(effect: &Effect, rescues: &dyn BranchRescues) -> Result<Done> {
     }
 }
 
-/// Record what an effect did, in `tx`. A rescued branch whose task is still
-/// cancelled names its rescue ref and moves to `abandoned`. A branch that
-/// moved on meanwhile does not change.
 pub fn observe(ctx: &JobCtx<'_>, tx: &Connection, clock: FleetSeconds, done: &Done) -> Result<()> {
     let Done::Rescued { branch, rescue_ref } = done;
     let Some(row) = rows::branch(tx, branch)? else {

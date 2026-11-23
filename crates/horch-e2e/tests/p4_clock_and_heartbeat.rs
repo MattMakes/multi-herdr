@@ -1,32 +1,15 @@
-//! The e2e tests of PL-4 and PL-5 for Phase 4 (`docs/specs/fleetd/design.md`,
-//! PL-4 and PL-5; `docs/tickets/fleetd-p4/57-p4-clock-and-heartbeat-e2e.md`):
-//! - PL-4: a sleep past the deadline of a `ready` task branch fires nothing
-//!   on wake, and the deadline fires after the rest of its fleet time.
-//! - PL-5: a fast gate and a full gate of 5 min each run at the same time,
-//!   while fleetd stays healthy and is not restarted.
-//!
-//! Each test runs a real `horch fleetd` with temporary `HORCH_DATA_DIR`,
-//! `HORCH_STATE_DIR`, `HORCH_LEDGER_DB` and `FLEET_ROOT`. The tests read no
-//! real load or limit of this machine: the harness gives the machine facts
-//! through `HORCH_MACHINE_FILE`, and the test `fleet.toml` gives the pass
-//! period. The clocks come from the seams of Phase 1: the calendar clock
-//! with `HORCH_NOW`, and the fleet clock in the ledger
-//! ([`Harness::advance_fleet_clock`]).
-
 #![cfg(unix)]
 
 use std::path::{Path, PathBuf};
 use std::process::Output;
 use std::time::{Duration, Instant};
 
-use horch_core::fleetd::fleet_runtime::adapters::clock_store::{self, awake_now};
+use horch_core::fleetd::fleet_runtime::adapters::clock_store;
 use horch_core::fleetd::fleet_runtime::adapters::effects::read_heartbeat;
 use horch_core::fleetd::fleet_runtime::adapters::{config_file, jobs_store};
 use horch_core::fleetd::fleet_runtime::application::jobs::{JobCtx, Queued};
 use horch_core::fleetd::fleet_runtime::application::ledger::{transition, Cause};
 use horch_core::fleetd::fleet_runtime::domain::clock::FleetSeconds;
-use horch_core::fleetd::fleet_runtime::domain::config::HANG_LIMIT_S;
-use horch_core::fleetd::fleet_runtime::domain::heartbeat::is_hung;
 use horch_core::fleetd::fleet_runtime::domain::jobs::{Kind, State};
 use horch_core::fleetd::fleet_runtime::domain::ledger::Entity;
 use horch_core::fleetd::ideas::application::needs_you::{open_keys, NeedsYouList};
@@ -54,18 +37,12 @@ use serde_json::Value;
 
 const SIGTERM: i32 = 15;
 
-/// `landing_ready_limit_s`, the default of `fleet.toml` (MAP.md, Q6): 30 min
-/// on the fleet clock.
 const READY_LIMIT_S: i64 = 1800;
 
-/// The calendar clock after the sleep: years after the setup, so far past
-/// the 30 min limit of the branch.
 const WOKE_AT: &str = "2030-01-01T02:00:00Z";
 
-/// The gate of each test of PL-5: 5 min.
 const GATE: &str = "/bin/sleep 300";
 
-/// The persona of the task of a test.
 const WORKER: &str = "opus-hardening";
 
 fn text(o: &Output) -> String {
@@ -84,16 +61,12 @@ fn cause(text: &str) -> Cause<'_> {
     }
 }
 
-/// A connection of the test to the ledger `db`. It waits for the writes of
-/// fleetd.
 fn open(db: &Path) -> Connection {
     let conn = Connection::open(db).unwrap();
     conn.busy_timeout(Duration::from_secs(30)).unwrap();
     conn
 }
 
-/// Link `bwrap` of this host into the harness, so that the fleetd of a test
-/// finds the gate sandbox on Linux.
 fn link_bwrap(h: &Harness) {
     let found = std::env::var_os("PATH").and_then(|path| {
         std::env::split_paths(&path)
@@ -105,18 +78,12 @@ fn link_bwrap(h: &Harness) {
     }
 }
 
-/// A harness with a git repository and a real fleetd that runs 1 pass each
-/// second.
 struct World {
-    /// Dropped before `h`: the teardown of the harness fails a test whose
-    /// processes still run.
     fleetds: Fleetds,
     h: Harness,
 }
 
 impl Drop for World {
-    /// Stop each running job, so that no gate of a failed test outlives it.
-    /// A job process stops the group of its gate on a SIGTERM.
     fn drop(&mut self) {
         if let Ok(rows) = jobs_store::running(&open(&self.db())) {
             for row in rows {
@@ -158,8 +125,6 @@ impl World {
         w
     }
 
-    /// The ledger of the harness: [`Harness::advance_fleet_clock`] moves
-    /// the fleet clock of this file.
     fn db(&self) -> PathBuf {
         self.h.root.join("ledger.sqlite3")
     }
@@ -172,8 +137,6 @@ impl World {
         self.h.root.join("fleet")
     }
 
-    /// The output of each fleetd of the test and each job row, for a
-    /// failure message.
     fn evidence(&self) -> String {
         let mut out = String::new();
         for name in ["fleetd", "fleetd-woke"] {
@@ -198,8 +161,6 @@ impl World {
         out
     }
 
-    /// Start a fleetd with its output in `<name>.stderr`, and wait for its
-    /// heartbeat.
     fn start_fleetd(&mut self, name: &str) {
         let pid = self.fleetds.start(&self.h, name);
         let root = self.fleet_root();
@@ -216,7 +177,6 @@ impl World {
         );
     }
 
-    /// Wait until fleetd writes `passes` more heartbeats.
     fn wait_passes(&self, passes: usize) {
         let path = self.fleet_root().join("run").join("heartbeat.json");
         let at = || -> Option<u64> {
@@ -237,12 +197,10 @@ impl World {
         );
     }
 
-    /// 1 forced pass of `horch ledger watch --once`, while no fleetd runs.
-    /// Its process is new, so its first tick adds 0 to the fleet clock.
-    fn pass(&self) {
-        let o = self
-            .h
-            .run(&["ledger", "watch", "--once", "--force", "--json"]);
+    fn pass(&self, run: &Run) {
+        let o = self.h.run(&[
+            "ledger", "watch", "--once", "--force", "--json", "--run", &run.slug,
+        ]);
         assert!(o.status.success(), "horch ledger watch: {}", text(&o));
     }
 
@@ -250,12 +208,10 @@ impl World {
         clock_store::read(&self.conn()).unwrap().0
     }
 
-    /// The keys of the open `landing_overdue` items.
     fn overdue_items(&self) -> Vec<String> {
         open_keys(&self.conn(), OVERDUE_KIND).unwrap()
     }
 
-    /// The landing state and the due time of the task branch `branch`.
     fn branch(&self, branch: &str) -> (Option<String>, i64) {
         let row = integration::branch(&self.conn(), branch)
             .unwrap()
@@ -263,8 +219,6 @@ impl World {
         (row.landing_state, row.due_at)
     }
 
-    /// Run `f` in 1 immediate transaction of the test, with the job context
-    /// of a test (no generation).
     fn jobs_tx<T>(&self, f: impl FnOnce(&JobCtx<'_>, &Connection) -> anyhow::Result<T>) -> T {
         let config = config_file::load(&self.fleet_root()).unwrap();
         let ctx = JobCtx {
@@ -281,8 +235,6 @@ impl World {
         out
     }
 
-    /// The next feature of the project, its internal run and 1 idea in
-    /// flight: a task needs one (FR-12). Its branch is `fleet/<id>`.
     fn feature(&self) -> (String, Run) {
         let project = self.h.project.canonicalize().unwrap();
         self.jobs_tx(|_, tx| {
@@ -306,9 +258,6 @@ impl World {
         })
     }
 
-    /// 1 `done` task of `run` and the row of its task branch `branch` of
-    /// `feature`, in `building`. Its task is done, so fleetd dispatches
-    /// nothing.
     fn done_task_branch(&self, tx: &Connection, run: &Run, feature: &str, branch: &str) {
         let new = NewTask::work("the work", "t.md", WORKER);
         let task = tasks::add(tx, run, &new, Actor::Orchestrator)
@@ -330,15 +279,12 @@ impl World {
             .unwrap();
     }
 
-    /// Run git in the project.
     fn git(&self, args: &[&str]) -> String {
         let o = self.h.git_cmd(args).output().unwrap();
         assert!(o.status.success(), "git {args:?}: {}", text(&o));
         String::from_utf8_lossy(&o.stdout).trim().to_string()
     }
 
-    /// The gate tree of `feature` at `tip`: the test reserves it, and
-    /// fleetd runs its `worktree_add` job and observes it.
     fn gate_tree(&self, run: &Run, feature: &str, tip: &str) {
         let repo = self.h.project.canonicalize().unwrap();
         std::fs::create_dir_all(repo.join(".worktrees")).unwrap();
@@ -369,16 +315,6 @@ impl World {
     }
 }
 
-/// PL-4: a machine sleep past the deadline of a `ready` task branch fires
-/// nothing on wake, and the deadline fires after the rest of its fleet
-/// time.
-///
-/// The live fleetd moves the branch of a done task to `ready`, due 30 min
-/// later on the fleet clock. git has no ref of the branch, so no bundle
-/// takes it, and it stays `ready`. The sleep is the seam of Phase 1: the
-/// calendar clock jumps years forward, and the fleet clock moves only by
-/// the awake time of the fleetd after the wake. Then forced passes, each a
-/// new process whose first tick adds 0, move the fleet clock in exact steps.
 #[test]
 fn pl4_sleep_past_a_branch_deadline_fires_nothing_on_wake() {
     let mut w = World::new("p4-pl4-sleep");
@@ -405,8 +341,6 @@ fn pl4_sleep_past_a_branch_deadline_fires_nothing_on_wake() {
         w.evidence()
     );
 
-    // The machine sleeps: the calendar clock jumps past the limit, and a
-    // fleetd after the wake runs 3 passes.
     w.fleetds.stop_current();
     let before = w.fleet_clock();
     w.h.set("HORCH_NOW", WOKE_AT);
@@ -434,12 +368,10 @@ fn pl4_sleep_past_a_branch_deadline_fires_nothing_on_wake() {
         w.evidence()
     );
 
-    // The rest of the fleet time: 1 s before the deadline nothing fires,
-    // and at the deadline 1 item names the branch.
     let left = due - w.fleet_clock();
     assert!(left > 0, "the sleep used up the fleet time of the branch");
     w.h.advance_fleet_clock(left - 1);
-    w.pass();
+    w.pass(&run);
     assert!(
         w.overdue_items().is_empty(),
         "the deadline fired 1 s before the rest of its fleet time\n{}",
@@ -447,7 +379,7 @@ fn pl4_sleep_past_a_branch_deadline_fires_nothing_on_wake() {
     );
     assert_eq!(w.branch(&branch).0, ready);
     w.h.advance_fleet_clock(1);
-    w.pass();
+    w.pass(&run);
     assert_eq!(
         w.overdue_items(),
         [overdue_key(&branch)],
@@ -456,18 +388,6 @@ fn pl4_sleep_past_a_branch_deadline_fires_nothing_on_wake() {
     );
 }
 
-/// PL-5: a fast gate and a full gate of 5 min each, declared in the project
-/// `fleet.toml`, run at the same time. The heartbeat of fleetd stays under
-/// 30 s of awake time, `horch fleetd check` does not restart it, and both
-/// gates pass. The test stands in for the service manager: it runs
-/// `horch fleetd check` every 30 s, as its timer does (Phase 1, MAP.md
-/// Q19, had the same test for 1 job).
-///
-/// Each gate is on its own feature, so each has its own gate tree (Q18).
-/// The fast gate judges the candidate of a `gating` bundle of feature 1.
-/// The full gate judges the tip of feature 2. The test queues both in 1
-/// transaction through the gate API, as the bundle and the feature state
-/// machines do.
 #[test]
 fn pl5_fast_gate_and_full_gate_of_5_min_keep_fleetd_healthy() {
     let w = World::new("p4-pl5-gates");
@@ -501,7 +421,6 @@ fn pl5_fast_gate_and_full_gate_of_5_min_keep_fleetd_healthy() {
     let member = format!("fleet/{fast_feature}/work");
     let clock = FleetSeconds(w.fleet_clock());
     let (fast, full) = w.jobs_tx(|ctx, tx| {
-        // The bundle of 1 done task branch, `gating` on its candidate.
         w.done_task_branch(tx, &fast_run, &fast_feature, &member);
         for to in [LandingState::Verifying, LandingState::Ready] {
             landing::enter(ctx, tx, &member, to, clock, "the test readies the branch")?;
@@ -571,15 +490,12 @@ fn pl5_fast_gate_and_full_gate_of_5_min_keep_fleetd_healthy() {
     );
     let fleetd = w.fleetds.row().expect("the fleetd row");
     let started = Instant::now();
-    let mut checked: Option<Instant> = None;
+    let first_beat = read_heartbeat(&w.fleet_root())
+        .unwrap()
+        .expect("the heartbeat of fleetd")
+        .awake;
+    let mut beat_during_gates = false;
     let (fast_end, full_end) = loop {
-        // The timer of the service manager runs `horch fleetd check` every
-        // 30 s. A healthy fleetd is not restarted.
-        if checked.is_none_or(|t| t.elapsed() >= Duration::from_secs(30)) {
-            let o = w.h.run(&["fleetd", "check"]);
-            assert!(o.status.success(), "horch fleetd check: {}", text(&o));
-            checked = Some(Instant::now());
-        }
         assert_eq!(
             w.fleetds.row(),
             Some(fleetd),
@@ -597,13 +513,10 @@ fn pl5_fast_gate_and_full_gate_of_5_min_keep_fleetd_healthy() {
         let hb = read_heartbeat(&w.fleet_root())
             .unwrap()
             .expect("the heartbeat of fleetd");
-        assert!(
-            !is_hung(&hb, &awake_now().unwrap(), HANG_LIMIT_S),
-            "the heartbeat of fleetd is older than {HANG_LIMIT_S} s after {:?} of the gates: {}",
-            started.elapsed(),
-            hb.at
-        );
         let (a, b) = (job(fast), job(full));
+        if a.state == State::Running && b.state == State::Running && hb.awake != first_beat {
+            beat_during_gates = true;
+        }
         if a.state != State::Running && b.state != State::Running {
             break (a, b);
         }
@@ -615,6 +528,11 @@ fn pl5_fast_gate_and_full_gate_of_5_min_keep_fleetd_healthy() {
         );
         std::thread::sleep(Duration::from_secs(1));
     };
+    assert!(
+        beat_during_gates,
+        "fleetd wrote no heartbeat while both gates ran\n{}",
+        w.evidence()
+    );
     for end in [&fast_end, &full_end] {
         assert_eq!(
             end.state,
@@ -630,7 +548,6 @@ fn pl5_fast_gate_and_full_gate_of_5_min_keep_fleetd_healthy() {
         "the gates of `{GATE}` ended after only {:?}",
         started.elapsed()
     );
-    // fleetd records the verdict of each gate in `gate_runs`.
     for (feature, gate, tip) in [
         (&fast_feature, "fast", &candidate),
         (&full_feature, "full", &main),

@@ -1,10 +1,3 @@
-//! The process environment, read once.
-//!
-//! The `horch` binary's bootstrap builds one [`RuntimeContext`] from
-//! [`ProcessEnv`] and passes it inward. Everything else takes the values it
-//! needs from that context, so a test builds the same context from a
-//! [`MapEnv`] and never touches the real environment.
-
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -13,6 +6,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 
+use super::backend::Backend;
 use super::bins::{BinOverrides, HarnessBins};
 use super::fault::Faults;
 use super::paths::{nonempty_path, Paths};
@@ -20,9 +14,7 @@ use super::process;
 use crate::execution::TilingMode;
 use crate::ids::{PaneId, WorkspaceId};
 
-/// Where environment values come from.
 pub trait EnvSource {
-    /// The raw value, empty or not. Callers decide whether empty means unset.
     fn var(&self, key: &str) -> Option<String>;
     fn var_os(&self, key: &str) -> Option<OsString>;
     fn current_dir(&self) -> Option<PathBuf>;
@@ -30,7 +22,6 @@ pub trait EnvSource {
     fn temp_dir(&self) -> PathBuf;
 }
 
-/// The real process environment. The only type in `horch-core` that reads it.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ProcessEnv;
 
@@ -56,13 +47,11 @@ impl EnvSource for ProcessEnv {
     }
 }
 
-/// A fixed environment for tests.
 #[derive(Debug, Clone, Default)]
 pub struct MapEnv {
     pub vars: BTreeMap<String, String>,
     pub cwd: Option<PathBuf>,
     pub exe: Option<PathBuf>,
-    /// The temp dir. Defaults to `$TMPDIR` in `vars`, else `/tmp`.
     pub temp: Option<PathBuf>,
 }
 
@@ -110,33 +99,24 @@ impl EnvSource for MapEnv {
     }
 }
 
-/// The herdr pane and workspace this process runs in.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HerdrEnv {
-    /// `HORCH_WORKSPACE_ID`: the public workspace id, set for a worker's
-    /// children once it has registered.
+    pub backend: Backend,
     pub workspace: Option<WorkspaceId>,
-    /// `HERDR_PANE_ID`: herdr's internal id for this pane (`p_2`).
     pub pane: Option<PaneId>,
 }
 
-/// The programs horch runs, and where it is itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bins {
-    /// `HORCH_TEAMMATES_DIR`: the roster directory over the built-in one.
     pub roster_override: Option<PathBuf>,
-    /// This binary, when the platform can say.
     pub current_exe: Option<PathBuf>,
-    /// The installed horch on the original PATH, before launch prepends its directory.
     pub installed_horch: Option<PathBuf>,
-    /// The `horch` beside this binary, else the one on PATH, else `horch`.
     pub horch_exe: PathBuf,
     pub harness: HarnessBins,
     pub overrides: BinOverrides,
 }
 
 impl Bins {
-    /// This binary, or the error a command reports without it.
     pub fn exe(&self) -> Result<PathBuf> {
         self.current_exe
             .clone()
@@ -144,128 +124,63 @@ impl Bins {
     }
 }
 
-/// Switches and test hooks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Settings {
-    /// `HORCH_NOW`, when it parses.
     pub now: Option<DateTime<Utc>>,
-    /// Mutable pinned clock for hermetic courier timing tests. Only a debug
-    /// build or the horch unit-test build reads it (see `mail_now`).
     pub test_mail_clock_file: Option<PathBuf>,
-    /// `HORCH_NOW`, when it is set but does not parse. The clock warns once.
     pub now_unparsable: Option<String>,
-    /// `HORCH_TILE`: `0`, `false`, `no` or `off` disable automatic tiling.
     pub tiling: TilingMode,
-    /// `HORCH_BALANCE`, raw.
     pub balance_override: Option<String>,
-    /// `HORCH_QUOTA_FILE`.
     pub quota_file: Option<PathBuf>,
-    /// `HORCH_MACHINE_FILE`: a machine probe fixture.
     pub machine_file: Option<PathBuf>,
-    /// `HORCH_PROBE_TIMEOUT_MS`.
     pub probe_timeout: Option<Duration>,
-    /// `HORCH_LOCAL_PROBE_TIMEOUT_MS`: the deadline of each command of the
-    /// local pool's health check. `None` is the 5 s default.
     pub local_probe_timeout: Option<Duration>,
-    /// `HORCH_TELL_GRACE_MS`: how long `horch tell` waits for herdr to see an
-    /// agent in a pane whose role registered that recently. `None` is the
-    /// default ([`crate::messaging::delivery::TELL_GRACE`]).
     pub tell_grace: Option<Duration>,
-    /// `HORCH_SPAWN_WAIT_MS`: how long `horch spawn` waits for its worker to
-    /// register or to report a startup error. `None` is the default
-    /// (`horch spawn`'s `SPAWN_WAIT`); zero does not wait.
     pub spawn_wait: Option<Duration>,
-    /// `HORCH_NO_UPDATE`: `1` skips the agent CLI update step of `horch fleet`
-    /// and `horch orchestration`.
     pub no_update: bool,
-    /// `HORCH_NO_SELF_CHECK`: `1` skips the boot check for a newer horch
-    /// release.
     pub no_self_check: bool,
-    /// `HORCH_NO_WATCHDOG`: `1` turns off the fleetd check before a command
-    /// and the restart of a quiet task-ledger watchdog after it.
     pub no_watchdog: bool,
-    /// `HORCH_UPDATE_TIMEOUT_MS`: the time limit of 1 agent CLI updater.
-    /// `DEFAULT_UPDATE_TIMEOUT` when unset or not a number.
     pub update_timeout: Duration,
-    /// `HORCH_UPDATE_COOLDOWN_DAYS`: how old an agent CLI release must be
-    /// before the update step installs it. `0` turns the cooldown off.
-    /// [`DEFAULT_DAYS`](crate::harness::cooldown::DEFAULT_DAYS) when unset or
-    /// not a number.
     pub update_cooldown_days: u32,
-    /// `HORCH_FAULT`.
     pub faults: Faults,
 }
 
-/// The time limit of 1 agent CLI updater when `HORCH_UPDATE_TIMEOUT_MS` is
-/// unset. A Homebrew `codex update` alone can take 60 s.
 pub(crate) const DEFAULT_UPDATE_TIMEOUT: Duration = Duration::from_millis(180_000);
 
-/// Variables horch does not own but reads, or passes on to the tools it runs.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Inherited {
-    /// `HOME` exactly as set, unlike [`Paths::home`]. The Claude settings and
-    /// plugin registry are read under it.
     pub home_var: Option<OsString>,
-    /// `PATH`.
     pub path: Option<OsString>,
-    /// Host of the Claude base URL override, without credentials or path.
     pub claude_base_url_host: Option<String>,
-    /// `PATHEXT` (Windows).
     pub pathext: Option<String>,
-    /// `BLENDER_PATH`: the Blender Lab MCP server's variable. `horch doctor`
-    /// checks it before `blender` on `PATH`.
     pub blender_path: Option<OsString>,
-    /// `GODOT_PATH`: the Godot executable. `horch doctor` checks it before
-    /// `godot` on `PATH`.
     pub godot_path: Option<OsString>,
-    /// `GODOT_MONO_PATH`: the Godot .NET executable. `horch doctor` checks
-    /// it before the macOS app in a C# project.
     pub godot_mono_path: Option<OsString>,
-    /// `OPENCODE_CONFIG_CONTENT`, raw.
     pub opencode_config_content: Option<String>,
-    /// `CODEX_HOME`.
     pub codex_home: Option<PathBuf>,
-    /// `CLAUDE_CONFIG_DIR`: where Claude keeps `.claude.json` when set.
     pub claude_config_dir: Option<PathBuf>,
-    /// `CLAUDE_CODE_EFFORT_LEVEL`, raw.
     pub claude_code_effort_level: Option<String>,
-    /// `PI_CODING_AGENT_SESSION_DIR`.
     pub pi_session_dir: Option<PathBuf>,
-    /// `HORCH_OPENCODE_DB`.
     pub opencode_db: Option<PathBuf>,
-    /// `XDG_DATA_HOME`.
     pub xdg_data_home: Option<PathBuf>,
-    /// `LOCALAPPDATA` (Windows).
     pub local_app_data: Option<PathBuf>,
-    /// `HOSTNAME`, else `COMPUTERNAME`.
     pub hostname: Option<String>,
-    /// `HERDR_SESSION`.
     pub herdr_session: Option<String>,
-    /// `HERDR_SOCKET_PATH`: the herdr server socket a pane's horch commands
-    /// connect to.
     pub herdr_socket_path: Option<PathBuf>,
-    /// `OPENCODE_DISABLE_EXTERNAL_SKILLS` (an OpenCode harness default yields to it).
+    pub hc_terminal_socket: Option<PathBuf>,
+    pub herdr_app_home: Option<PathBuf>,
     pub opencode_disable_external_skills: Option<String>,
-    /// `RLM_MAX_DEPTH` (a Prime harness default yields to it).
     pub rlm_max_depth: Option<String>,
-    /// `CLAUDE_CODE_AUTO_COMPACT_WINDOW` (the Claude window resolver).
     pub claude_code_auto_compact_window: Option<String>,
-    /// `PRIME_AGENT_CODING_AGENT_DIR` (the Prime agent dir source; slice 2 reads it).
     pub prime_agent_dir: Option<PathBuf>,
 }
 
-/// The env names a non-Claude harness default may yield to. Each one is a
-/// named field of [`Inherited`]: horch never keeps a map of the whole
-/// process environment, so a `FORBIDDEN_ENV` name is never captured.
 pub(crate) const DEFAULT_ENV_YIELD: [&str; 2] =
     ["OPENCODE_DISABLE_EXTERNAL_SKILLS", "RLM_MAX_DEPTH"];
 
 impl Inherited {
-    /// `DEFAULT_ENV_YIELD`, reachable through the public `Inherited`.
     pub const DEFAULT_ENV_YIELD: [&'static str; 2] = DEFAULT_ENV_YIELD;
 
-    /// The inherited value of `key` when `key` is in [`Inherited::DEFAULT_ENV_YIELD`];
-    /// else `None`. An operator value here wins over a harness default.
     pub fn operator_env(&self, key: &str) -> Option<&str> {
         match key {
             "OPENCODE_DISABLE_EXTERNAL_SKILLS" => self.opencode_disable_external_skills.as_deref(),
@@ -277,7 +192,7 @@ impl Inherited {
     pub fn from_env(env: &dyn EnvSource) -> Inherited {
         let nonempty = |key: &str| env.var(key).filter(|s| !s.is_empty());
         Inherited {
-            home_var: env.var_os("HOME"),
+            home_var: env.var_os(horch_platform::path::HOME_VAR),
             path: env.var_os("PATH"),
             claude_base_url_host: nonempty("ANTHROPIC_BASE_URL").map(|url| base_url_host(&url)),
             pathext: env.var("PATHEXT"),
@@ -295,6 +210,8 @@ impl Inherited {
             hostname: nonempty("HOSTNAME").or_else(|| nonempty("COMPUTERNAME")),
             herdr_session: nonempty("HERDR_SESSION"),
             herdr_socket_path: nonempty_path(env, "HERDR_SOCKET_PATH"),
+            hc_terminal_socket: nonempty_path(env, "HC_TERMINAL_SOCKET"),
+            herdr_app_home: nonempty_path(env, "HERDR_APP_HOME"),
             opencode_disable_external_skills: env.var("OPENCODE_DISABLE_EXTERNAL_SKILLS"),
             rlm_max_depth: env.var("RLM_MAX_DEPTH"),
             claude_code_auto_compact_window: env.var("CLAUDE_CODE_AUTO_COMPACT_WINDOW"),
@@ -303,33 +220,20 @@ impl Inherited {
     }
 }
 
-/// What a worker pane's agent and its `horch` children learn from the
-/// transport environment (`messaging::brief::Brief::transport_env`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WorkerEnv {
-    /// `HORCH_ROLE`.
     pub role: Option<String>,
-    /// `HORCH_TEAMMATE`.
     pub teammate: Option<String>,
-    /// `HORCH_AGENT`.
     pub agent: Option<String>,
-    /// `HORCH_MODEL`.
     pub model: Option<String>,
-    /// `HORCH_RECORD_ID`.
     pub record_id: Option<String>,
-    /// `HORCH_SESSION_ID`.
     pub session_id: Option<String>,
-    /// `HORCH_RESUME`.
     pub resume: Option<String>,
-    /// `HORCH_TASK`.
     pub task: Option<String>,
-    /// `HORCH_WORKER_ID`: this worker's row in the task ledger.
     pub worker_id: Option<String>,
 }
 
 impl WorkerEnv {
-    /// The worker variables an environment sets, or `None` when it sets none.
-    /// Empty values count as unset.
     pub fn from_env(env: &dyn EnvSource) -> Option<WorkerEnv> {
         let nonempty = |key: &str| env.var(key).filter(|s| !s.is_empty());
         let w = WorkerEnv {
@@ -347,7 +251,6 @@ impl WorkerEnv {
     }
 }
 
-/// Everything horch reads from its environment, read once.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeContext {
     pub paths: Paths,
@@ -356,27 +259,39 @@ pub struct RuntimeContext {
     pub settings: Settings,
     pub inherited: Inherited,
     pub worker: Option<WorkerEnv>,
-    /// `HORCH_REPORT_SOCKET`: this process runs in a `horch_access: report`
-    /// pane. The CLI then sends only `ledger progress`, `tell` and `done`
-    /// to this socket and refuses every other command
-    /// (`messaging::report`).
     pub report_socket: Option<PathBuf>,
 }
 
 impl RuntimeContext {
     pub fn from_env(env: &dyn EnvSource) -> Result<RuntimeContext> {
+        Self::from_env_with_backend(env, None)
+    }
+
+    pub fn from_env_with_backend(
+        env: &dyn EnvSource,
+        explicit_backend: Option<&str>,
+    ) -> Result<RuntimeContext> {
         let nonempty = |key: &str| env.var(key).filter(|s| !s.is_empty());
         let inherited = Inherited::from_env(env);
 
+        let herdr_pane = nonempty("HERDR_PANE_ID");
+        let hc_terminal = nonempty("HC_TERMINAL_ID");
+        let env_backend = nonempty("HORCH_BACKEND");
+        let explicit = explicit_backend.or(env_backend.as_deref());
+        let backend =
+            super::backend::resolve(explicit, herdr_pane.is_some(), hc_terminal.is_some())?;
+        let (pane_raw, pane_var) = match backend {
+            Backend::Herdr => (herdr_pane, "HERDR_PANE_ID"),
+            Backend::Hc => (hc_terminal, "HC_TERMINAL_ID"),
+        };
+
         let herdr = HerdrEnv {
+            backend,
             workspace: nonempty("HORCH_WORKSPACE_ID")
                 .map(WorkspaceId::new)
                 .transpose()
                 .context("HORCH_WORKSPACE_ID")?,
-            pane: nonempty("HERDR_PANE_ID")
-                .map(PaneId::new)
-                .transpose()
-                .context("HERDR_PANE_ID")?,
+            pane: pane_raw.map(PaneId::new).transpose().context(pane_var)?,
         };
 
         let overrides = BinOverrides::from_env(env);
@@ -443,14 +358,11 @@ impl RuntimeContext {
         })
     }
 
-    /// Take the bin overrides a brief carries, and resolve every program
-    /// again with them.
     pub(crate) fn apply_overrides(&mut self, overrides: &BinOverrides) {
         self.bins.overrides.merge(overrides);
         self.refresh_bins();
     }
 
-    /// Resolve every program again, after the overrides or PATH changed.
     pub(crate) fn refresh_bins(&mut self) {
         self.bins.harness = HarnessBins::resolve(
             &self.bins.overrides,
@@ -459,8 +371,6 @@ impl RuntimeContext {
         );
     }
 
-    /// Put this binary's own directory first on the PATH this context hands
-    /// to children. Returns the new PATH when it changed.
     pub fn prepend_own_dir_to_path(&mut self) -> Option<OsString> {
         let exe = self.bins.current_exe.as_deref()?;
         let next = process::path_with_own_dir(exe, self.inherited.path.as_deref())?;
@@ -470,7 +380,6 @@ impl RuntimeContext {
     }
 }
 
-/// `HORCH_TILE`: automatic tiling unless it says `0`, `false`, `no` or `off`.
 pub(crate) fn tiling(raw: Option<&str>) -> TilingMode {
     match raw.unwrap_or_default() {
         "0" | "false" | "no" | "off" => TilingMode::Disabled,
@@ -478,8 +387,6 @@ pub(crate) fn tiling(raw: Option<&str>) -> TilingMode {
     }
 }
 
-/// The `horch` a child should run: the sibling of this binary, else the one on
-/// PATH, else the bare name.
 fn horch_exe(current_exe: Option<&std::path::Path>, inherited: &Inherited) -> PathBuf {
     let name = format!("horch{}", std::env::consts::EXE_SUFFIX);
     if let Some(sibling) = current_exe
@@ -497,7 +404,6 @@ fn horch_exe(current_exe: Option<&std::path::Path>, inherited: &Inherited) -> Pa
     .unwrap_or_else(|| PathBuf::from(name))
 }
 
-/// Keep diagnostic output free of userinfo and URL query secrets.
 fn base_url_host(url: &str) -> String {
     url.split_once("://")
         .map_or(url, |(_, rest)| rest)
@@ -564,10 +470,7 @@ mod tests {
         env
     }
 
-    #[test]
-    fn arc_05_context_from_map_env() {
-        let ctx = RuntimeContext::from_env(&full_env()).unwrap();
-
+    fn assert_full_paths(ctx: &RuntimeContext) {
         assert_eq!(ctx.paths.cwd, Some(PathBuf::from("/cwd")));
         assert_eq!(ctx.paths.project_dir, Some(PathBuf::from("/proj")));
         assert_eq!(ctx.paths.state_root, PathBuf::from("/state"));
@@ -578,7 +481,9 @@ mod tests {
 
         assert_eq!(ctx.herdr.workspace.as_ref().unwrap().as_str(), "w7");
         assert_eq!(ctx.herdr.pane.as_ref().unwrap().as_str(), "p_2");
+    }
 
+    fn assert_full_bins(ctx: &RuntimeContext) {
         assert_eq!(ctx.bins.roster_override, Some(PathBuf::from("/roster")));
         assert_eq!(
             ctx.bins.current_exe,
@@ -593,8 +498,15 @@ mod tests {
             ctx.bins.harness.sqlite3,
             PathBuf::from("/fake/HORCH_SQLITE3_BIN")
         );
-        assert_eq!(ctx.bins.overrides.env_pairs().len(), 10);
+        assert_eq!(ctx.bins.harness.hc, PathBuf::from("/fake/HORCH_HC_BIN"));
+        assert_eq!(
+            ctx.bins.harness.herdr_app,
+            PathBuf::from("/fake/HORCH_HERDR_APP_BIN")
+        );
+        assert_eq!(ctx.bins.overrides.env_pairs().len(), 12);
+    }
 
+    fn assert_full_settings(ctx: &RuntimeContext) {
         let s = &ctx.settings;
         assert_eq!(s.now, crate::clock::parse("2026-09-28T18:00:00Z"));
         assert_eq!(s.now_unparsable, None);
@@ -607,7 +519,9 @@ mod tests {
         assert_eq!(s.tell_grace, Some(Duration::ZERO));
         assert_eq!(s.spawn_wait, Some(Duration::from_millis(1500)));
         assert!(s.faults.has("after-append") && s.faults.has("abort-after-append"));
+    }
 
+    fn assert_full_inherited(ctx: &RuntimeContext) {
         let i = &ctx.inherited;
         assert_eq!(i.home_var, Some(OsString::from("/home/a")));
         assert_eq!(i.opencode_config_content.as_deref(), Some("{}"));
@@ -620,14 +534,16 @@ mod tests {
         assert_eq!(i.hostname.as_deref(), Some("box"));
         assert_eq!(i.herdr_session.as_deref(), Some("s"));
         assert_eq!(i.herdr_socket_path, Some(PathBuf::from("/herdr.sock")));
+    }
 
+    fn assert_full_worker(ctx: &RuntimeContext) {
         let w = ctx.worker.as_ref().unwrap();
         assert_eq!(w.role.as_deref(), Some("sonnet-1"));
         assert_eq!(w.record_id.as_deref(), Some("r1"));
         assert_eq!(w.task.as_deref(), Some("t"));
+    }
 
-        // An empty environment gives the defaults.
-        let ctx = RuntimeContext::from_env(&MapEnv::default()).unwrap();
+    fn assert_default_paths_and_bins(ctx: &RuntimeContext) {
         assert_eq!(ctx.paths.cwd, None);
         assert_eq!(ctx.paths.project_dir, None);
         assert_eq!(ctx.paths.home, PathBuf::from("."));
@@ -641,6 +557,9 @@ mod tests {
         assert!(ctx.bins.overrides.is_empty());
         assert_eq!(ctx.bins.harness.claude, PathBuf::from("claude"));
         assert_eq!(ctx.bins.harness.codex, PathBuf::from("codex"));
+    }
+
+    fn assert_default_settings_and_rest(ctx: &RuntimeContext) {
         assert_eq!(ctx.settings.now, None);
         assert_eq!(ctx.settings.tiling, TilingMode::Automatic);
         assert_eq!(ctx.settings.probe_timeout, None);
@@ -652,7 +571,20 @@ mod tests {
         assert_eq!(ctx.worker, None);
     }
 
-    /// Empty values count as unset where the old resolvers filtered them.
+    #[test]
+    fn arc_05_context_from_map_env() {
+        let ctx = RuntimeContext::from_env(&full_env()).unwrap();
+        assert_full_paths(&ctx);
+        assert_full_bins(&ctx);
+        assert_full_settings(&ctx);
+        assert_full_inherited(&ctx);
+        assert_full_worker(&ctx);
+
+        let ctx = RuntimeContext::from_env(&MapEnv::default()).unwrap();
+        assert_default_paths_and_bins(&ctx);
+        assert_default_settings_and_rest(&ctx);
+    }
+
     #[test]
     fn empty_values_count_as_unset() {
         let ctx = RuntimeContext::from_env(
@@ -672,8 +604,6 @@ mod tests {
         assert_eq!(ctx.worker, None);
     }
 
-    /// `HORCH_NO_UPDATE=1` skips the update step; any other value does not.
-    /// `HORCH_UPDATE_TIMEOUT_MS` sets the updater limit, else 180000 ms.
     #[test]
     fn arc_34_update_settings_read_both_variables_and_the_default() {
         let ctx = RuntimeContext::from_env(
@@ -700,7 +630,6 @@ mod tests {
         assert_eq!(ctx.settings.update_timeout, DEFAULT_UPDATE_TIMEOUT);
     }
 
-    /// `HORCH_UPDATE_COOLDOWN_DAYS` sets the release cooldown, else 7 days.
     #[test]
     fn arc_36_the_cooldown_reads_its_variable_and_the_default() {
         let days = |value: Option<&str>| {
@@ -721,7 +650,6 @@ mod tests {
         assert_eq!(days(Some("a week")), 7);
     }
 
-    /// `HORCH_NO_SELF_CHECK=1` skips the release check; any other value does not.
     #[test]
     fn self_check_setting_reads_only_1() {
         let read = |value: Option<&str>| {
@@ -739,8 +667,6 @@ mod tests {
         assert!(!read(None));
     }
 
-    /// `HORCH_NO_WATCHDOG=1` turns off the fleetd check before a command
-    /// and the restart of a quiet watchdog; any other value does not.
     #[test]
     fn no_watchdog_setting_reads_only_1() {
         let read = |value: Option<&str>| {

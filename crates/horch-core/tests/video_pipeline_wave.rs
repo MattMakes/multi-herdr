@@ -1,12 +1,3 @@
-//! The video pipeline wave: the 7 `video-*` teammates, the 10 `video-*`
-//! skills with their script entrypoints, the orchestrator recipe and the
-//! checker self-tests.
-//!
-//! The roster tests read the teammates through the public roster API. The
-//! self-test runs the bundled checkers with `python3`, and they skip when
-//! `python3` or `ffmpeg` is not on `PATH`. The end-to-end check is
-//! `scripts/live/video.sh`.
-
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -14,7 +5,6 @@ use std::process::Command;
 use horch_core::roster::{Phase, Roster, Teammate};
 use horch_core::skills::{SkillCatalog, BUNDLED_SKILL_EXECUTABLES, BUNDLED_SKILL_FILES};
 
-/// One seat: name, phase, model, effort, skills.
 type Seat = (
     &'static str,
     Phase,
@@ -93,7 +83,6 @@ const VIDEO_SKILLS: [&str; 10] = [
     "video-qa",
 ];
 
-/// The script entrypoints the pipeline calls, each with an execute bit.
 const ENTRYPOINTS: [&str; 10] = [
     "video-produce/scripts/lint_notes.py",
     "video-produce/scripts/validate_batch.py",
@@ -107,7 +96,6 @@ const ENTRYPOINTS: [&str; 10] = [
     "video-qa/scripts/qa_video.py",
 ];
 
-/// The checkers whose `--self-test` needs only python3 and ffmpeg.
 const PYTHON_SELF_TESTS: [&str; 9] = [
     "skills/video-produce/scripts/lint_notes.py",
     "skills/video-produce/scripts/validate_batch.py",
@@ -120,8 +108,6 @@ const PYTHON_SELF_TESTS: [&str; 9] = [
     "skills/video-qa/scripts/qa_video.py",
 ];
 
-/// The hand-off files `video-direction` writes. A lowercase name works on
-/// macOS and breaks on Linux.
 const HANDOFF_NAMES: [&str; 3] = ["brief", "direction", "storyboard"];
 
 fn repo() -> PathBuf {
@@ -147,8 +133,6 @@ fn on_path(tool: &str) -> bool {
         .is_ok_and(|o| o.status.success())
 }
 
-/// Every `skills/video-*` and `teammates/video-*` file that is text, by
-/// repository-relative path and content.
 fn video_text_files() -> Vec<(String, String)> {
     let mut files = Vec::new();
     for (path, bytes) in BUNDLED_SKILL_FILES {
@@ -173,8 +157,6 @@ fn video_text_files() -> Vec<(String, String)> {
     files
 }
 
-/// True when `text` holds `<stem>.md` as a whole file name: not part of a
-/// longer name, and not in uppercase.
 fn names_file_lowercase(text: &str, stem: &str) -> bool {
     let needle = format!("{stem}.md");
     text.match_indices(&needle).any(|(at, _)| {
@@ -200,10 +182,7 @@ fn vpw_01_seven_video_seats_have_the_pinned_shape() {
         assert_eq!(t.model.as_deref(), Some(model), "{name} model");
         assert_eq!(t.effort.as_deref(), Some(effort), "{name} effort");
         assert_eq!(t.skills, skills, "{name} skills");
-        // Chrome, ffmpeg and macOS `say` are not live-checked in the Codex
-        // sandbox, so no seat may fall back to Codex.
         assert!(t.fallbacks.is_empty(), "{name} fallbacks");
-        // The video seats are offered in every project.
         assert!(t.offer_when.is_empty(), "{name} offer_when");
         assert!(t.requires.is_empty(), "{name} requires");
         assert!(
@@ -267,8 +246,6 @@ fn vpw_02_the_script_entrypoints_are_bundled_executable() {
 
 #[test]
 fn vpw_02_a_seat_bundle_holds_every_skill_its_skills_call() {
-    // A SKILL.md that runs `<skill-dir>/../<other>/...` needs <other> in the
-    // same seat's `skills:`, because the bundle holds only the seat's skills.
     let roster = roster();
     for (name, .., skills) in SEATS {
         let t = seat(&roster, name);
@@ -296,7 +273,6 @@ fn vpw_02_a_seat_bundle_holds_every_skill_its_skills_call() {
 fn vpw_03_the_recipe_is_reachable_from_the_orchestrate_skill() {
     let recipe = repo().join("docs/recipes/video-pipeline.md");
     let text = std::fs::read_to_string(&recipe).expect("docs/recipes/video-pipeline.md exists");
-    // The recipe ships inside the orchestrate skill; the docs file points to it.
     assert!(
         text.contains("skills/orchestrate/references/video-pipeline.md"),
         "docs/recipes/video-pipeline.md must link the shipped recipe"
@@ -342,7 +318,6 @@ fn vpw_05_scenes_use_the_seek_name_and_sec_fields() {
             !text.contains("__renderAt"),
             "{path} uses __renderAt; the name is __seekToFrame"
         );
-        // Field names carry `_sec`: `duration_sec`, `start_sec`, `beats_sec`.
         for field in ["duration_s", "start_s", "end_s", "beats_s", "t_s"] {
             let bad = format!("{field}\"");
             let bare = format!("{field}:");
@@ -375,9 +350,6 @@ fn vpw_06_the_lowercase_name_matcher_is_exact() {
     assert!(!names_file_lowercase("a_brief.md", "brief"));
 }
 
-/// The GSAP script files `text` names, such as `gsap.min.js` or
-/// `vendor/gsap.js`: every path-like word that holds `gsap` and ends in
-/// `.js` or `.mjs`.
 fn gsap_files_named(text: &str) -> Vec<&str> {
     text.split(|c: char| !(c.is_ascii_alphanumeric() || "./-_".contains(c)))
         .map(|word| word.trim_end_matches('.'))
@@ -388,8 +360,6 @@ fn gsap_files_named(text: &str) -> Vec<&str> {
         .collect()
 }
 
-/// A scene loads its timeline from a file the skill ships. No file under
-/// `skills/video-*/` names a GSAP file that its own skill does not bundle.
 #[test]
 fn vpw_07_no_video_skill_requires_an_unshipped_gsap_file() {
     for (path, bytes) in BUNDLED_SKILL_FILES {
@@ -426,9 +396,6 @@ fn vpw_07_the_gsap_file_matcher_finds_script_names() {
     assert!(gsap_files_named("the motion-gsap skill").is_empty());
 }
 
-/// What each skill file must name to keep the format split: the file, and
-/// the field it reads the format from (`None` for a reference that only
-/// names both formats). See "Regression lock" in `docs/specs/video-formats.md`.
 const FORMAT_LOCK: [(&str, Option<&str>); 9] = [
     ("skills/video-produce/SKILL.md", Some("Format:")),
     ("skills/video-produce/references/promo-brief.md", None),

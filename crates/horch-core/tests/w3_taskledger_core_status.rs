@@ -1,5 +1,3 @@
-//! `horch ledger status`: the board `report` builds and `render` prints (#82).
-
 use std::path::Path;
 
 use horch_core::fleetd::task_execution::domain::task::Recorded;
@@ -26,7 +24,6 @@ fn ledger() -> (tempfile::TempDir, Store, Run) {
                     ..Default::default()
                 },
             )?;
-            // FR-12: a task needs an idea in flight of the feature of its run.
             horch_core::taskledger::schema::run_idea(
                 tx,
                 &run.run_id,
@@ -46,13 +43,9 @@ fn add(store: &mut Store, run: &Run, title: &str) -> tasks::Task {
         .unwrap()
 }
 
-/// 1 task of each status, 1 working worker whose last sign of life is old,
-/// and 1 open worktree.
 fn busy_board() -> (tempfile::TempDir, Store, Run) {
     let (dir, mut store, run) = ledger();
     let first = add(&mut store, &run, "alpha");
-    // fleetd binds T-1 to a live worker (FR-5). It works in the shared
-    // checkout: the worktree row of the board is added below.
     store
         .conn()
         .execute(
@@ -136,7 +129,24 @@ fn report_counts_every_status_and_flags_the_unwatched_worker() {
 #[test]
 fn render_prints_each_section() {
     let (_d, store, run) = busy_board();
-    let text = status::render(&status::report(store.conn(), &run).unwrap());
+    let report = status::report(store.conn(), &run).unwrap();
+    assert_eq!(report.leases.len(), 1);
+    let lease = &report.leases[0];
+    assert_eq!(
+        (
+            lease.task.as_str(),
+            lease.worker.as_str(),
+            lease.renew_basis.as_str()
+        ),
+        ("T-1", "dev-x", "claim")
+    );
+    assert_eq!(lease.expires_in_s, None);
+    assert_eq!(lease.last_signal_at, None);
+    let lease_line = format!(
+        "Lease of T-1: attempt {} of dev-x, renewed at {} by claim, no fleet clock; no signal yet.\n",
+        lease.attempt, lease.renewed_at
+    );
+    let text = status::render(&report);
     assert_eq!(
         text,
         "Run r1 (active). Branch: fleet/r1 -> main. PR: none.\n\
@@ -146,8 +156,9 @@ fn render_prints_each_section() {
          T-4   done      dev                -                    delta\n\
          T-5   cancelled dev                -                    eps\n\
          Live workers:\n\
-         \x20 dev-x                working   T-1   checkin - ago, progress - ago  UNWATCHED\n\
-         Worktrees:\n\
+         \x20 dev-x                working   T-1   checkin - ago, progress - ago  UNWATCHED\n".to_string()
+            + &lease_line
+            + "Worktrees:\n\
          \x20 T-1   open           /repo/.worktrees/a (base main)\n\
          Worktree disk: 0 B in 1 worktree; 1 not measured.\n\
          Feature F-0001 (r1) open: not pushed.\n\
@@ -164,6 +175,7 @@ fn an_empty_run_renders_no_tasks_and_is_complete() {
         text,
         "Run r1 (active). Branch: fleet/r1 -> main. PR: none.\n\
          No tasks.\n\
+         Feature F-0001 (r1) open: not pushed.\n\
          0 tasks: 0 done, 0 running, 0 landing, 0 queued, 0 cancelled. Complete.\n"
     );
 }
@@ -220,7 +232,6 @@ fn the_watchdog_version_and_binary_show_after_its_checkin() {
         len: 10,
         mtime_ns: 5,
     };
-    // Before the first checkin there is no watchdog line.
     let before = status::report_for(store.conn(), &run, Some(&mine)).unwrap();
     assert_eq!(before.watchdog, None);
     assert!(!status::render(&before).contains("Watchdog"));

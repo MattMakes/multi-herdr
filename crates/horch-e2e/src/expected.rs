@@ -1,33 +1,17 @@
-//! The list of expected failures (design amendment A22).
-//!
-//! Phase 0 adds red tests. Each red test stays red until a later phase makes
-//! it green. A red test is on the list with that phase. A listed test runs its
-//! body through [`check`], which inverts the result: the test passes when the
-//! body fails for the listed reason, and fails when the body passes.
-//!
-//! `expected-failures/<stem>.txt` holds the entries of `tests/<stem>.rs`.
-//! 1 line is `<test name> | <phase> | <reason>`. The format and the rules are
-//! in `expected-failures/README.md`.
-
 use std::any::Any;
 use std::collections::HashSet;
 use std::panic::{catch_unwind, UnwindSafe};
 use std::path::{Path, PathBuf};
 
-/// The phases that can make a test green.
 const PHASES: [&str; 8] = ["P", "1", "2", "3", "4", "5", "6", "7"];
 
-/// 1 line of a list file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
     pub test: String,
     pub phase: String,
-    /// A text that the panic message of the test must contain.
     pub reason: String,
 }
 
-/// Read the entries of 1 list file. Blank lines and lines that start with
-/// `#` are comments. The reason is the rest of the line after the 2nd `|`.
 pub fn parse(text: &str) -> Result<Vec<Entry>, String> {
     let mut entries = Vec::new();
     let mut seen = HashSet::new();
@@ -68,15 +52,10 @@ pub fn parse(text: &str) -> Result<Vec<Entry>, String> {
     Ok(entries)
 }
 
-/// The folder of the list files of this crate.
 fn lists_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("expected-failures")
 }
 
-/// Run the body of the test `test` of the test file `test_file`. Pass
-/// `file!()` and the name of the test function. An unlisted test runs as a
-/// normal test. A listed test passes only when its body panics with a message
-/// that contains the listed reason.
 pub fn check(test_file: &str, test: &str, body: impl FnOnce() + UnwindSafe) {
     check_in(&lists_dir(), test_file, test, body);
 }
@@ -114,7 +93,6 @@ fn check_in(lists: &Path, test_file: &str, test: &str, body: impl FnOnce() + Unw
     }
 }
 
-/// The text of a panic payload.
 fn message(payload: &(dyn Any + Send)) -> String {
     if let Some(s) = payload.downcast_ref::<&str>() {
         (*s).to_string()
@@ -125,8 +103,6 @@ fn message(payload: &(dyn Any + Send)) -> String {
     }
 }
 
-/// Every fault of the list files in `lists` against the test files in
-/// `tests`, 1 line for each fault. An empty result means the list is sound.
 pub fn audit(lists: &Path, tests: &Path) -> Vec<String> {
     let mut faults = Vec::new();
     let Ok(dir) = std::fs::read_dir(lists) else {
@@ -186,8 +162,6 @@ pub fn audit(lists: &Path, tests: &Path) -> Vec<String> {
     faults
 }
 
-/// `source` with each comment replaced by spaces. Newlines stay, so the
-/// lines keep their numbers. String and char literals stay as they are.
 fn strip_comments(source: &str) -> String {
     let chars: Vec<char> = source.chars().collect();
     let mut out = String::with_capacity(source.len());
@@ -227,8 +201,6 @@ fn strip_comments(source: &str) -> String {
     out
 }
 
-/// The index after the string or char literal that starts at `i`, or `None`
-/// when no literal starts there. A `'` that starts a lifetime is no literal.
 fn literal_end(chars: &[char], i: usize) -> Option<usize> {
     match chars[i] {
         '"' => {
@@ -247,9 +219,6 @@ fn literal_end(chars: &[char], i: usize) -> Option<usize> {
     }
 }
 
-/// The body of the function `fn <test>(` in `code` that has `#[test]` in the
-/// attributes above it, from its `{` to its matching `}`. `code` has no
-/// comments (see [`strip_comments`]).
 fn test_body<'a>(code: &'a str, test: &str) -> Option<&'a str> {
     let needle = format!("fn {test}(");
     let lines: Vec<&str> = code.lines().collect();
@@ -269,8 +238,6 @@ fn test_body<'a>(code: &'a str, test: &str) -> Option<&'a str> {
     None
 }
 
-/// The text from the first `{` at or after byte `from` to its matching `}`.
-/// Braces in string and char literals do not count.
 fn braced(code: &str, from: usize) -> Option<&str> {
     let start = from + code[from..].find('{')?;
     let chars: Vec<(usize, char)> = code[start..].char_indices().collect();
@@ -400,7 +367,6 @@ mod tests {
             })
         });
         assert_eq!(text.as_deref(), Some("real bug"));
-        // A test file with no list file runs its tests as normal tests.
         let text = panic_text(|| {
             check_in(dir.path(), "tests/none.rs", "my_test", || {
                 panic!("real bug")
@@ -443,7 +409,6 @@ fn my_test() {
         assert_eq!(faults.len(), 1, "{faults:?}");
         assert!(faults[0].contains("gone_test"), "{faults:?}");
 
-        // A function with that name that is not a #[test] is no test.
         let text = format!("{GOOD}\nfn gone_test() {{}}\n");
         let (_root, lists, tests) = tree(list, Some(&text));
         let faults = audit(&lists, &tests);
@@ -469,7 +434,6 @@ fn my_test() {
         assert!(faults[0].contains("my_test"), "{faults:?}");
         assert!(faults[0].contains("check(file!()"), "{faults:?}");
 
-        // A wrapper call in a comment or in another test does not count.
         let commented = "#[test]\nfn my_test() {\n    // check(file!(), \"my_test\", || {});\n    /* check(file!(), \"my_test\", || {}); */\n    let _ = \"}\";\n}\n";
         let other = "#[test]\nfn my_test() {\n    let _ = '}';\n}\n\n#[test]\nfn other() {\n    horch_e2e::expected::check(file!(), \"my_test\", || {});\n}\n";
         for text in [commented, other] {

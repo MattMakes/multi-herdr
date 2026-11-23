@@ -1,15 +1,3 @@
-//! The verifier: a task in `verifying` gets its check as a `task_check`
-//! job, `verdict-<n>.json` is written, and only the verifier makes the
-//! value that moves a task to `done` (docs/specs/fleetd/design.md,
-//! "Architecture and roles": Verifier; "The task state machine":
-//! `verifying`; "The kinds of job": `task_check`; RR-3, Phase 4 part; FM-9,
-//! part test; docs/tickets/fleetd-p4/19-verifier.md).
-//!
-//! Each test uses a temp ledger and a temp fleet root. The tip of a task
-//! branch is a fact that the test gives, as part 1 of a pass gives it. A
-//! check job ends through its row, as the job process ends it. No test
-//! reads the load, the limits or the clock of this machine.
-
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -34,9 +22,7 @@ use horch_core::taskledger::workers::{self, NewWorker};
 use horch_core::taskledger::{schema, util};
 use rusqlite::{params, Connection, TransactionBehavior};
 
-/// The tip of the task branch in each test.
 const TIP: &str = "1111111111111111111111111111111111111111";
-/// A newer tip: the worker made new commits.
 const NEW_TIP: &str = "2222222222222222222222222222222222222222";
 
 struct World {
@@ -48,13 +34,11 @@ struct World {
     tips: BTreeMap<String, String>,
 }
 
-/// A temp ledger of the current schema, a fleet root and 1 run with no
-/// default check.
 fn world() -> World {
     let dir = tempfile::tempdir().unwrap();
     let mut conn = Connection::open(dir.path().join("ledger.sqlite3")).unwrap();
     schema::migrate_to(&mut conn, schema::VERSION).unwrap();
-    let top = dir.path().canonicalize().unwrap();
+    let top = horch_platform::path::canonicalize(dir.path()).unwrap();
     let fleet_root = top.join("fleet");
     let project = top.join("repo");
     std::fs::create_dir_all(&fleet_root).unwrap();
@@ -68,7 +52,6 @@ fn world() -> World {
         },
     )
     .unwrap();
-    // FR-12: a task needs an idea in flight of the feature of its run.
     horch_core::taskledger::schema::run_idea(
         &conn,
         &run.run_id,
@@ -86,15 +69,11 @@ fn world() -> World {
     }
 }
 
-/// The policy of rung 6 of each task: the design defaults.
 fn policy(_: &Task) -> Policy {
     Policy::default()
 }
 
 impl World {
-    /// A task in `verifying` of the shared checkout, with the check
-    /// `check`, the kind `kind` and `**Check:** none` when `check_none`.
-    /// Its 1 attempt is a push attempt, and its branch tip is [`TIP`].
     fn verifying(&mut self, check: Option<&str>, kind: WorkKind, check_none: bool) -> String {
         let n = tasks::of_run(&self.conn, &self.run.run_id).unwrap().len();
         let title = format!("t{n}");
@@ -112,8 +91,6 @@ impl World {
         task
     }
 
-    /// A new attempt of `task` that began by `via`, with its own worker.
-    /// The task is `verifying`: its worker wrote a valid `result.json`.
     fn attempt(&self, task: &str, via: &str) -> String {
         let worker = workers::insert(
             &self.conn,
@@ -152,7 +129,6 @@ impl World {
         attempt
     }
 
-    /// 1 verifier part of a pass, in its own committed transaction.
     fn verify(&mut self) -> Report {
         let tx = self
             .conn
@@ -163,12 +139,10 @@ impl World {
         report
     }
 
-    /// Part 3 of a pass: the verdict files of the committed verdicts.
     fn write_files(&mut self) -> Vec<PathBuf> {
         verifier::write_verdicts(&mut self.conn, &self.fleet_root).unwrap()
     }
 
-    /// The `task_check` rows of `task`, oldest first.
     fn check_jobs(&self, task: &str) -> Vec<jobs_store::JobRow> {
         let mut stmt = self
             .conn
@@ -184,8 +158,6 @@ impl World {
             .collect()
     }
 
-    /// The job process of the `queued` run of `task` ends `passed` or
-    /// `failed`, with a verdict of its check.
     fn end_check(&self, task: &str, passed: bool) {
         let row = self
             .check_jobs(task)
@@ -212,8 +184,6 @@ impl World {
     }
 }
 
-/// 1 verifier part of a pass in `tx`, which the caller ends, with the
-/// config `config` and the tips `tips`.
 fn run_verifier(config: &FleetConfig, tips: &BTreeMap<String, String>, tx: &Connection) -> Report {
     let ctx = JobCtx {
         guard: None,
@@ -229,7 +199,6 @@ fn run_verifier(config: &FleetConfig, tips: &BTreeMap<String, String>, tx: &Conn
     verifier::verify(&v, tx).unwrap()
 }
 
-/// The names of the verdict files of a task folder, sorted.
 fn verdict_files(dir: &Path) -> Vec<String> {
     let Ok(read) = std::fs::read_dir(dir) else {
         return Vec::new();
@@ -242,7 +211,6 @@ fn verdict_files(dir: &Path) -> Vec<String> {
     names
 }
 
-/// The input key of the check `check` at `tip`.
 fn key(tip: &str, check: &str) -> String {
     format!("{tip}:{}", check_hash(Some(check)))
 }
@@ -261,7 +229,6 @@ fn verifying_task_queues_1_task_check_job() {
     assert_eq!(rows[0].input_key, key(TIP, "cargo test"));
     assert_eq!(rows[0].state, State::Queued);
 
-    // A second pass finds the run queued and adds no row.
     let again = w.verify();
     assert_eq!(again.queued, vec![task.clone()]);
     assert_eq!(w.check_jobs(&task).len(), 1);
@@ -280,13 +247,10 @@ fn task_check_runs_as_a_job_and_the_pass_does_not_wait() {
         "the pass waited"
     );
     assert_eq!(report.queued, vec![task.clone()]);
-    // The check is a job row that part 3 starts after the commit, with the
-    // time limit of today's check (F4).
     let due = jobs::due_to_start(&w.conn, FleetSeconds(100)).unwrap();
     assert_eq!(due.len(), 1);
     assert_eq!(due[0].subject, task);
     assert_eq!(due[0].time_limit_s, finish::land::CHECK_TIMEOUT.as_secs());
-    // No verdict before the job ends.
     assert!(verdict_file::recorded(&w.conn, &task).unwrap().is_empty());
     assert_eq!(w.status(&task), "verifying");
 }
@@ -312,7 +276,6 @@ fn passed_check_of_a_code_kind_starts_the_review_steps() {
     assert_eq!(of(&code).next, Next::Review);
     assert_eq!(of(&docs).next, Next::Structural);
     assert_eq!(of(&code).verified.tip(), TIP);
-    // The check alone does not move a task to done.
     assert_eq!(w.status(&code), "verifying");
 
     let recorded = verdict_file::recorded(&w.conn, &code).unwrap();
@@ -325,8 +288,6 @@ fn passed_check_of_a_code_kind_starts_the_review_steps() {
     let text = std::fs::read_to_string(w.verdict_dir(&code).join("verdict-1.json")).unwrap();
     assert!(text.contains("\"decision\":\"passed\""), "{text}");
 
-    // The value alone does not move a code kind to done: its review steps
-    // pass first (ticket 20, tests/verifier_review.rs).
     let verified = report
         .passed
         .into_iter()
@@ -359,7 +320,6 @@ fn failed_check_ends_the_attempt_rejected_and_burns_1_attempt() {
         )
         .unwrap();
     assert_eq!((state.as_str(), outcome.as_str()), ("ended", "rejected"));
-    // Rung 6: 1 attempt of the limit is used, and the task waits in ready.
     let t = tasks::get(&w.conn, &task).unwrap();
     assert_eq!(t.status, "ready");
     assert_eq!(t.attempts - t.attempt_floor, 1);
@@ -367,7 +327,6 @@ fn failed_check_ends_the_attempt_rejected_and_burns_1_attempt() {
     assert_eq!(recorded.len(), 1);
     assert_eq!(recorded[0].decision, Decision::Failed);
 
-    // A later pass does not reject it again.
     let again = w.verify();
     assert!(again.rejected.is_empty());
     assert_eq!(verdict_file::recorded(&w.conn, &task).unwrap().len(), 1);
@@ -380,12 +339,9 @@ fn same_tip_and_check_reuse_the_passed_verdict() {
     w.verify();
     w.end_check(&task, true);
     assert_eq!(w.verify().passed.len(), 1);
-    // The same attempt in the next pass: no new verdict and no new job.
     assert_eq!(w.verify().passed.len(), 1);
     assert_eq!(verdict_file::recorded(&w.conn, &task).unwrap().len(), 1);
 
-    // A new attempt ends with the same tip and the same check: the passed
-    // run is used again, and no new run is queued.
     w.conn
         .execute(
             "UPDATE attempts SET state = 'ended' WHERE task_id = ?1",
@@ -411,7 +367,6 @@ fn new_commits_make_the_verdict_stale() {
     w.end_check(&task, true);
     let old = w.verify().passed.into_iter().next().unwrap().verified;
 
-    // The worker made new commits: the verdict of the old tip stands no more.
     w.tips.insert(task.clone(), NEW_TIP.into());
     let report = w.verify();
     assert!(report.passed.is_empty(), "{report:?}");
@@ -420,7 +375,6 @@ fn new_commits_make_the_verdict_stale() {
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[1].input_key, key(NEW_TIP, "cargo test"));
 
-    // The old value moves nothing.
     let tx = w.conn.transaction().unwrap();
     assert!(!verifier::done(&tx, None, old, NEW_TIP).unwrap());
     tx.commit().unwrap();
@@ -474,8 +428,6 @@ fn claim_attempt_is_not_verified_by_fleetd() {
     assert_eq!(w.status(&task), "verifying");
 }
 
-/// A fault before the commit of the verdict row: the next pass decides
-/// again, records 1 verdict, burns 1 attempt and writes 1 file.
 #[test]
 fn crash_before_the_commit_of_the_verdict_row_decides_again_1_time() {
     let mut w = world();
@@ -492,7 +444,6 @@ fn crash_before_the_commit_of_the_verdict_row_decides_again_1_time() {
             run_verifier(&w.config, &w.tips, &tx).rejected,
             vec![task.clone()]
         );
-        // The fault: the transaction rolls back.
     }
     assert_eq!(w.status(&task), "verifying");
     assert!(verdict_file::recorded(&w.conn, &task).unwrap().is_empty());
@@ -508,8 +459,6 @@ fn crash_before_the_commit_of_the_verdict_row_decides_again_1_time() {
     assert_eq!(verdict_files(&w.verdict_dir(&task)), ["verdict-1.json"]);
 }
 
-/// A fault after the commit of the verdict row and before its file: the
-/// next pass writes the file 1 time, and a later pass changes nothing.
 #[test]
 fn crash_after_the_commit_and_before_the_file_writes_it_1_time() {
     let mut w = world();
@@ -517,7 +466,6 @@ fn crash_after_the_commit_and_before_the_file_writes_it_1_time() {
     w.verify();
     w.end_check(&task, true);
     assert_eq!(w.verify().passed.len(), 1);
-    // The fault: part 3 did not run.
     assert!(verdict_files(&w.verdict_dir(&task)).is_empty());
 
     w.verify();

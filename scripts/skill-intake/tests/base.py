@@ -14,8 +14,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-# Importing intakelib must never write __pycache__ into the skill folder:
-# the build bundles every file under skills/.
 sys.dont_write_bytecode = True
 
 REPO = Path(__file__).resolve().parents[3]
@@ -33,7 +31,6 @@ class IntakeTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory(prefix="intake-test-")
         self.addCleanup(self._tmp.cleanup)
-        # resolve(): on macOS /var is a symlink to /private/var.
         self.tmp = Path(self._tmp.name).resolve()
         self.home = self.tmp / "home"
         self.state = self.tmp / "state"
@@ -41,8 +38,6 @@ class IntakeTestCase(unittest.TestCase):
         self.state.mkdir()
         saved = dict(os.environ)
         self.addCleanup(self._restore_env, saved)
-        # No test passes an API key to anything (repo rule): drop them all.
-        # A test run in a horch pane must not see the pane's fleet variables.
         for key in list(os.environ):
             if key.startswith("SKILL_INTAKE_") or key.endswith("_API_KEY") or key in FLEET_ENV:
                 del os.environ[key]

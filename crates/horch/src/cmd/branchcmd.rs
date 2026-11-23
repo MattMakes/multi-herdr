@@ -1,18 +1,3 @@
-//! `horch branch abandon <branch>`: the operator ends a task branch that
-//! its resolver or fix attempts did not repair
-//! (`docs/specs/fleetd/design.md`, "Landing a task branch on its feature
-//! branch", I10; ticket 35 of `docs/tickets/fleetd-p4/`).
-//!
-//! The command writes a rescue ref of the branch tip and reads it back,
-//! then sends 1 `branch_abandon` request: fleetd checks the ref in git and
-//! moves the branch to `abandoned` in 1 transaction. The task stays as it
-//! is. A `landed` branch is refused. An abandon that dies after the rescue
-//! is completed by the next abandon, with the same ref. `horch task cancel`
-//! abandons the task branch of the task that it cancels in the same way.
-//!
-//! fleetd decides who may send the request (SR-8): the command reads no
-//! role.
-
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -41,7 +26,6 @@ pub enum BranchCommand {
     },
 }
 
-/// `horch branch`.
 pub fn run(ctx: &RuntimeContext, command: BranchCommand) -> Result<ExitCode> {
     match command {
         BranchCommand::Abandon { branch } => {
@@ -56,8 +40,6 @@ pub fn run(ctx: &RuntimeContext, command: BranchCommand) -> Result<ExitCode> {
     }
 }
 
-/// The payload of the abandon of the task branch `branch`: its rescue ref,
-/// written and read back first (I10), and the tip that it holds.
 fn rescued(ctx: &RuntimeContext, store: &Store, branch: &str) -> Result<Value> {
     let repo = commands::repo_of(store.conn(), branch)?;
     let git = rescue_git(ctx, &repo, branch)?;
@@ -66,7 +48,6 @@ fn rescued(ctx: &RuntimeContext, store: &Store, branch: &str) -> Result<Value> {
     rescue_payload(ctx, &repo, r)
 }
 
-/// The git of a rescue ref of a branch of `repo`, in the sandbox.
 pub(super) fn rescue_git(ctx: &RuntimeContext, repo: &Path, what: &str) -> Result<CliWorktreeGit> {
     let git = CliWorktreeGit::new(&ctx.bins.harness.git, &ctx.paths.fleet_root)
         .reading(&[repo.to_path_buf()])
@@ -77,8 +58,6 @@ pub(super) fn rescue_git(ctx: &RuntimeContext, repo: &Path, what: &str) -> Resul
     Ok(git)
 }
 
-/// 1 branch of a `branch_abandon` or `feature_abandon` payload: the
-/// branch, its rescue ref, and the tip that the ref names.
 pub(super) fn rescue_payload(ctx: &RuntimeContext, repo: &Path, r: Rescued) -> Result<Value> {
     let tip = match &r.rescue_ref {
         Some(name) => {
@@ -95,7 +74,6 @@ pub(super) fn rescue_payload(ctx: &RuntimeContext, repo: &Path, r: Rescued) -> R
     Ok(json!({ "branch": r.branch, "rescue_ref": r.rescue_ref, "tip": tip }))
 }
 
-/// The ledger, opened read-only. fleetd creates it at its start.
 fn read_only(ctx: &RuntimeContext) -> Result<Store> {
     taskledger::open_existing_read_only(ctx)?.with_context(|| {
         format!(
@@ -105,7 +83,6 @@ fn read_only(ctx: &RuntimeContext) -> Result<Store> {
     })
 }
 
-/// The result of a `branch_abandon` request.
 #[derive(Deserialize)]
 struct Abandoned {
     branch: String,
@@ -113,7 +90,6 @@ struct Abandoned {
     already: bool,
 }
 
-/// The last line of an abandon.
 fn line(done: &Abandoned) -> String {
     let kept = match &done.rescue_ref {
         Some(name) => format!("its rescue ref {name} keeps its tip"),
@@ -126,11 +102,6 @@ fn line(done: &Abandoned) -> String {
     }
 }
 
-/// Abandon each task branch of the cancelled task `task` that is not
-/// `landed` or `abandoned`, after the commit of its cancel: 1
-/// `branch_abandon` request each. A failure does not undo the cancel: the
-/// landing part of the pass rescues and abandons the branch of a cancelled
-/// task.
 pub(super) fn abandon_branches_of(ctx: &RuntimeContext, store: &Store, task: &Task) {
     let names = match commands::open_branches_of_task(store.conn(), &task.task_id) {
         Ok(names) => names,

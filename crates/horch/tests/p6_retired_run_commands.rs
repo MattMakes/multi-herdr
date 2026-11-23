@@ -1,15 +1,3 @@
-//! The run and plan request kinds are retired (ticket 47 of fleetd-p6;
-//! REQUIRED item 2, FR-12). Each old command exits 1, writes nothing and
-//! prints the line of the table "Old flow and new" of
-//! `docs/tickets/fleetd-p6/MAP.md`. fleetd refuses a request file of a
-//! retired kind with the reason `retired kind: <new command>`. A workspace
-//! has several features at the same time, and no code path makes a task
-//! without an idea.
-//!
-//! Each test uses only temporary folders: the development `horch` gets its
-//! own home, data, state, ledger and fleet root, and the watchdog is off.
-//! The tests are unix only: the request folder checks are unix checks.
-
 #![cfg(unix)]
 
 use std::fs::{self, OpenOptions, Permissions};
@@ -36,22 +24,15 @@ use rusqlite::{params, Connection};
 use serde_json::json;
 use tempfile::TempDir;
 
-/// The new command of `horch ledger run new`.
 const IDEA_ADD: &str = r#"Add an idea: horch idea add "<idea>""#;
-/// The new command of `horch ledger run close`.
 const RUN_CLOSE: &str = "Merge the pull request of the feature: fleetd sees the merge. To drop a feature: horch feature abandon <feature>";
-/// The new command of `horch ledger run gate`.
 const RUN_GATE: &str = "fleetd runs the full gate of a feature when its task branches are landed";
-/// The new command of `horch ledger add` and `horch ledger task`.
 const DIRECT: &str =
     "Add a ticket that you wrote: horch idea add --direct <ticket file> [--to <feature>]";
-/// The new command of `horch ledger add-map`.
 const ADD_MAP: &str = r#"Add an idea: horch idea add "<idea>". For 1 ticket that you wrote: horch idea add --direct <ticket file>. To check a map: horch ledger add-map --dry-run <file>"#;
-/// The new command of `horch ledger plan-workers`.
 const PLAN_WORKERS: &str =
     "fleetd dispatches each ready task: horch ideas and horch ledger status show each hold";
 
-/// Each retired kind and its new command.
 const RETIRED_KINDS: [(&str, &str); 7] = [
     ("run_new", IDEA_ADD),
     ("run_close", RUN_CLOSE),
@@ -72,8 +53,6 @@ struct Out {
     err: String,
 }
 
-/// A project folder with a ticket and a map, and the folders of `horch`.
-/// No ledger exists: a retired command must not make one.
 struct World {
     dir: TempDir,
 }
@@ -90,7 +69,7 @@ impl World {
     }
 
     fn root(&self) -> PathBuf {
-        self.dir.path().canonicalize().unwrap()
+        horch_platform::path::canonicalize(self.dir.path()).unwrap()
     }
 
     fn project(&self) -> PathBuf {
@@ -105,7 +84,6 @@ impl World {
         self.root().join("fleet")
     }
 
-    /// The development `horch` with only the temporary folders.
     fn horch(&self, args: &[&str]) -> Out {
         let root = self.root();
         let out = Command::new(env!("CARGO_BIN_EXE_horch"))
@@ -132,8 +110,6 @@ impl World {
         }
     }
 
-    /// `args` exits 1, prints `<command> is retired. <instead>`, and
-    /// writes no ledger and no request file.
     fn assert_retired(&self, args: &[&str], command: &str, instead: &str) {
         let o = self.horch(args);
         let line = format!("{command} is retired. {instead}");
@@ -163,7 +139,6 @@ fn run_new_is_retired_and_names_idea_add() {
         "horch ledger run new",
         IDEA_ADD,
     );
-    // The line comes also with no argument: no parse error hides it.
     w.assert_retired(&["ledger", "run", "new"], "horch ledger run new", IDEA_ADD);
 }
 
@@ -234,8 +209,6 @@ fn plan_workers_is_retired_and_names_the_dispatch_of_fleetd() {
     );
 }
 
-/// A request file of an old client, written before the update: fleetd
-/// rejects it with the new command, runs no handler, and archives nothing.
 #[test]
 fn retired_kind_request_file_is_refused_with_the_new_command() {
     let temp = tempfile::tempdir().unwrap();
@@ -305,8 +278,6 @@ fn retired_kind_request_file_is_refused_with_the_new_command() {
     assert_eq!(rows, 0, "a retired kind gets no requests row");
 }
 
-/// R1 is gone: 1 workspace has several features at the same time, beside
-/// a non-solo run of today's flow (MAP.md of fleetd-p6, Q5).
 #[test]
 fn two_features_in_1_workspace_are_allowed() {
     let temp = tempfile::tempdir().unwrap();
@@ -333,8 +304,6 @@ fn two_features_in_1_workspace_are_allowed() {
     assert_eq!(active.len(), 4, "each run stays active: {active:?}");
 }
 
-/// The production code of the workspace: each `.rs` file of a `src/`
-/// folder, up to its first `#[cfg(test)]` line.
 fn production_sources() -> Vec<(String, String)> {
     let crates = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let mut files = Vec::new();
@@ -350,7 +319,7 @@ fn production_sources() -> Vec<(String, String)> {
             let text = fs::read_to_string(&path).unwrap();
             let prod: Vec<&str> = text
                 .lines()
-                .take_while(|l| l.trim() != "#[cfg(test)]")
+                .take_while(|l| !matches!(l.trim(), "#[cfg(test)]" | "#[cfg(all(test, unix))]"))
                 .collect();
             let rel = path.strip_prefix(crates).unwrap().display().to_string();
             (rel, prod.join("\n"))
@@ -369,21 +338,12 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// FR-12: an insert into `tasks` is only in the files that give each task
-/// an idea, and no code path writes an idea for a task that has none.
 #[test]
 fn no_code_path_creates_a_task_without_an_idea() {
-    // Each file that may insert a task, and why its task has an idea.
     const ALLOWED: [&str; 4] = [
-        // AddPlannedTasks: the plan commit, the replan and the resolver of
-        // a stack (ticket 37) give the idea of the plan.
         "horch-core/src/fleetd/task_execution/application/planned_tasks.rs",
-        // tasks::add: the idea of the parent task, else the youngest idea in
-        // flight of the feature of the run, else it refuses (FR-12).
         "horch-core/src/taskledger/tasks.rs",
-        // An imported task keeps its history (origin `import`).
         "horch-core/src/taskledger/import.rs",
-        // The migrations copy the rows that exist.
         "horch-core/src/taskledger/schema.rs",
     ];
     let sources = production_sources();
@@ -391,6 +351,7 @@ fn no_code_path_creates_a_task_without_an_idea() {
         sources.iter().any(|(f, _)| f.ends_with("planned_tasks.rs")),
         "the scan reads the production code"
     );
+    const E2E_TEST_FIXTURE: &str = "horch-e2e/src/ledger_seed.rs";
     let mut inserts = Vec::new();
     let mut ideas = Vec::new();
     for (file, text) in &sources {
@@ -398,8 +359,10 @@ fn no_code_path_creates_a_task_without_an_idea() {
         if flat.contains("INSERT INTO tasks (") || flat.contains("INSERT INTO tasks(") {
             inserts.push(file.clone());
         }
-        // The release backfill writes the idea of a run: only schema.rs.
-        if flat.contains("run_idea(") && !file.ends_with("taskledger/schema.rs") {
+        if flat.contains("run_idea(")
+            && !file.ends_with("taskledger/schema.rs")
+            && file != E2E_TEST_FIXTURE
+        {
             ideas.push(file.clone());
         }
     }
@@ -417,7 +380,6 @@ fn no_code_path_creates_a_task_without_an_idea() {
     );
 }
 
-/// A ledger with the internal run of 1 feature `F-0001` and its row.
 struct Ledger {
     _temp: TempDir,
     store: Store,
@@ -485,7 +447,6 @@ fn tasks_add_takes_the_idea_of_its_parent() {
         .add(&NewTask::work("Parent", "tickets/01-a.md", "dev"))
         .unwrap();
     assert_eq!(l.idea_of(&parent), "I-0001");
-    // A younger idea in flight does not take the review of the parent.
     l.idea("I-0002", "in_progress", "2026-02-01T00:00:00Z");
     let mut review = NewTask::work("Review", "tickets/01-a.md", "dev");
     review.parent_task_id = Some(parent);

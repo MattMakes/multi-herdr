@@ -1,11 +1,3 @@
-//! `horch docs sync` (fleetd-p7 ticket 22): steps 1 and 2 of 1 sync as an
-//! operator command that needs no fleetd.
-//!
-//! No test uses the network: `HORCH_TEST_DOCS_FIXTURE` makes the fetch port read
-//! each URL from a local folder, and the `also_git` repository of Codex is a
-//! local repository in that folder. The version commands are scripts in a
-//! temp folder, not real agent CLIs. Each run uses temp folders for the
-//! ledger, the data and the state of horch.
 #![cfg(unix)]
 
 use std::os::unix::fs::PermissionsExt;
@@ -14,8 +6,6 @@ use std::process::{Command, Output};
 
 use agent_docs_sync::{sources, Kind, Source, CHANGES_FILE, MANIFEST_FILE};
 
-/// The folder of a URL in the fixture: its host and path, and
-/// `index.html` for a path that ends with `/`.
 fn fixture_path(fixture: &Path, url: &str) -> PathBuf {
     let rest = url.split_once("://").map_or(url, |(_, r)| r);
     let mut path = fixture.join(rest);
@@ -42,7 +32,6 @@ fn git(dir: &Path, args: &[&str]) {
     assert!(out.status.success(), "git {args:?}: {out:?}");
 }
 
-/// The herdr pages: the sitemap fixture of agent-docs-sync.
 fn herdr_fixture(fixture: &Path, source: &Source) {
     let pages =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../agent-docs-sync/tests/fixtures/herdr");
@@ -58,7 +47,6 @@ fn herdr_fixture(fixture: &Path, source: &Source) {
     );
 }
 
-/// An `llms.txt` that links each included page, and each page.
 fn llms_fixture(fixture: &Path, source: &Source) {
     let base = source.url.trim_end_matches("llms.txt");
     let suffix = source.md_suffix.as_deref().unwrap_or("");
@@ -74,7 +62,6 @@ fn llms_fixture(fixture: &Path, source: &Source) {
     put(&fixture_path(fixture, &source.url), &index);
 }
 
-/// A local repository with a `docs/` folder, at the fixture path of `url`.
 fn git_fixture(fixture: &Path, url: &str) {
     let repo = fixture_path(fixture, url);
     put(&repo.join("docs/guide.md"), "# Guide\n");
@@ -83,7 +70,6 @@ fn git_fixture(fixture: &Path, url: &str) {
     git(&repo, &["commit", "-q", "-m", "docs"]);
 }
 
-/// The pages of each source of `docs-sources.toml` under `fixture`.
 fn fixture(fixture: &Path) {
     for source in sources().unwrap() {
         match source.kind {
@@ -96,12 +82,10 @@ fn fixture(fixture: &Path) {
     }
 }
 
-/// The version text of the fake `cli`.
 fn version_of(cli: &str) -> String {
     format!("{cli}-9.8.7")
 }
 
-/// A fake binary of each source that prints its version text.
 fn fake_bins(dir: &Path, clis: &[&str]) -> PathBuf {
     let bin = dir.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
@@ -149,7 +133,7 @@ fn assert_ok(out: &Output) {
 #[test]
 fn docs_sync_writes_each_cli_into_the_fleet_root() {
     let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().canonicalize().unwrap();
+    let root = horch_platform::path::canonicalize(tmp.path()).unwrap();
     fixture(&root.join("fixture"));
     let all = sources().unwrap();
     let clis: Vec<&str> = all
@@ -198,9 +182,8 @@ fn docs_sync_writes_each_cli_into_the_fleet_root() {
 #[test]
 fn docs_sync_cli_herdr_out_refreshes_a_folder() {
     let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().canonicalize().unwrap();
+    let root = horch_platform::path::canonicalize(tmp.path()).unwrap();
     fixture(&root.join("fixture"));
-    // Only herdr has a binary: a sync of another CLI would fail.
     let bin = fake_bins(&root, &["herdr"]);
     let dir = root
         .join("project/herdr-docs/herdr")
@@ -237,7 +220,7 @@ fn docs_sync_cli_herdr_out_refreshes_a_folder() {
 #[test]
 fn docs_sync_of_an_unknown_cli_is_an_error() {
     let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().canonicalize().unwrap();
+    let root = horch_platform::path::canonicalize(tmp.path()).unwrap();
     let bin = fake_bins(&root, &[]);
 
     let out = horch(&root, &bin, &["docs", "sync", "--cli", "nope"]);

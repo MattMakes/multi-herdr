@@ -195,7 +195,7 @@ each team.
 | team | offered when the project has | skills | rules every member follows |
 |---|---|---|---|
 | Unreal Engine (11 `ue-*`) | `*.uproject` | 31 copied `ue-*` skills, plus 2 house skills, `ue-build-verify` and `ue-editor-scripting` | read `.agents/ue-project-context.md` first; never write asset bytes; check the engine headers; 1 build at a time; a `DONE:` that names target, configuration and filter; the Git LFS lock rules |
-| Godot (19 `godot-*`) | `project.godot` | 80 `godot-*` skills: renamed copied skills, combined skills with own-text references, and own skills such as `godot-build-verify` and `godot-scene-files`; a `*.csproj` adds the 2 C# skills to each builder | read `.agents/godot-project-context.md` first; never touch `.godot/` or `.import`, commit `.uid` sidecars; check APIs with `godot --doctool`; headless only, 1 import at a time; a `DONE:` that names the Godot version, the parse check and the tests; addon skills only at the pinned addon version |
+| Godot (19 `godot-*`) | `project.godot` | 81 `godot-*` skills: renamed copied skills, combined skills with own-text references, and own skills such as `godot-build-verify` and `godot-scene-files`; `godot-library`, a reference library of advanced techniques whose shelves each seat names at the top of its briefing; a `*.csproj` adds the 2 C# skills to each builder | read `.agents/godot-project-context.md` first; never touch `.godot/` or `.import`, commit `.uid` sidecars; check APIs with `godot --doctool`; headless only, 1 import at a time; a `DONE:` that names the Godot version, the parse check and the tests; addon skills only at the pinned addon version |
 | Swift and Apple (7) | `*.xcodeproj`, `*.xcworkspace` or `Package.swift` | 28 Swift and Apple skills | check the toolchain first; the builders carry `mobilebuildmcp` |
 | Design (6 new, 2 changed) | no gate: always offered | 8 design skills | brand inputs override the palettes and font pairings in the skills |
 | Blender (`blender-artist`) | `*.blend` or `*.uproject` | `blender-ue-pipeline`, `blender-modeling`, `blender-rigging`, `blender-baking` | Blender Lab MCP server; hands FBX exports to the Unreal team |
@@ -237,7 +237,12 @@ to no phase.
 | `backend-developer` | `api-contracts` (validation, error model, idempotency, evolution) and `data-migrations` (expand/contract, online DDL, backfills); names `codebase-design` |
 | `opus-architect` | `codebase-design`; `improve-codebase-architecture`: deepening candidates in an HTML report under `ai_docs/reports/` (it has Write and no Edit, so it writes the report and edits no code) |
 | `fable-creative`, `astra-creative`, `opus-creative` | `creative-council`: diverge (1 design per seat, alone, under `ai_docs/designs/<slug>/`) or combine (`combined.md`, each part with its source letters) |
+| `game-design-juicer` | `game-juice`: audits each core action (input, hit-stop, deformation, direction, sound), balances by tier and frequency, writes a ranked idea report under `ai_docs/juice/` |
+| `game-design-incremental-specialist` | `incremental-game-design`: designs the math of an incremental or idle game from an idea (interview, system catalog, solver, proof sheet, simulation of several player types, pacing workbook) or reads it out of a Godot project and proposes the smallest change; the verdict is "ready", "ready (simulated)" or "not ready" with the fix; on request it installs a tuning bench (a panel with controls and meters that a simulation of the real game code fills) in a Godot game; names `game-juice`, `godot-economy-system` and `godot-gameplay-loops`; a Godot project adds `godot-balance-model-data`, `godot-upgrade-tree-design` and `godot-bot-balance-loop` |
+| `addictive-game-design-reviewer` | `addictive-game-design-review`: reads a built incremental or idle game (a game directory or its src folders), maps the loop, builds the timeline of a new player, runs 18 checks from research on reward and progression, and writes a ranked finding report under `ai_docs/game-review/` (rebalance, redo, add, remove, automate, reveal), each finding with a file, a line and a test; names `incremental-game-design` and `game-juice` |
+| `root-cause-auditor` | `patch-around-audit`: finds sites where code was patched around a stale comment, test or core flaw; judges each (live invariant, stale comment, patched-around core, superseded intent); writes a report under `ai_docs/reviews/` with the decisions it needs first; fixes 1 site per commit when the task says so. Also `debug` and `tdd` for the fix |
 | `frontend-developer`, `opus-domain`, `opus`, `codex-sol`, `codex-reviewer` | name `codebase-design` under `available_skills` |
+| `qa-engineer`, `frontend-developer` | name `ui-prop-tester` under `available_skills`: seeded random walks over a web page (Chromium) or a terminal program (pseudo-terminal) with temporal properties checked after every step; each failure has a trace to read, replay and shrink. The skill's launcher finds or builds the `ui-prop-tester` binary (`crates/ui-prop-tester`) |
 
 ### Blender and the Unreal team
 
@@ -350,6 +355,12 @@ Claude with no fallback, needs `blender` (`requires: [blender]`) and sets
 - The orchestrator then runs 6 waves. The recipe is in the `orchestrate` skill,
   in `references/video-pipeline.md`: the teammate, inputs, outputs, gate
   command and pass rule of each wave.
+- For devblog videos of a game, the orchestrator loads `make-videos` first.
+  It groups the git history into 4 to 8 milestone episodes, shows the operator
+  the plan table, has the scripts written under `devblog/`, and starts a
+  production only after the operator approves the scripts. 1 cut (social main,
+  social vertical or Steam) is 1 production. It also updates a series that
+  exists.
 - The plan gate (`check_timeline.py`), the audio gate (`check_audio.py`) and
   the render gate (`qa_video.py`) are scripts with numeric rules. 8 of the 10
   skills ship scripts, so `skills_catalog.rs` lists them in
@@ -393,6 +404,10 @@ installs only what passes 2 gates.
   `plain`), the controller runs each role as a fresh subagent with the same
   brief file. No OS sandbox applies to the subagents unless the session has
   one, and the report says so.
+
+### Clean-room intake: comment-pruning
+
+`comment-remover` carries the clean-room skill `comment-pruning`. The skill was imported with `skill-intake` (see [skills/README.md](../skills/README.md)).
 
 ## `horch agent-list`: which harnesses can this machine run
 

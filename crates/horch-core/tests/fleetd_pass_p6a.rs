@@ -1,17 +1,3 @@
-//! The wiring of Phase 6 into the pass of fleetd, part 1: the release duty,
-//! the request effects and the notes of the idea folders, the answers, the
-//! question flow, the dispatcher with the plan commit, the replans, the
-//! roll-up, the sub-orchestrators, the waits and the needs-you mirror
-//! (docs/tickets/fleetd-p6/51-pass-ideas.md).
-//!
-//! `docs/specs/fleetd/design.md`, "Supervision, liveness and
-//! reconciliation" (The reconcile pass, Order inside 1 pass) and "Ledger"
-//! (Three rules); RR-4, RR-7 and PL-5 for the idea duties.
-//!
-//! Each test uses a temp ledger at generation 1, a temp fleet root and a
-//! temp project. The time of a budget comes from a test clock, the
-//! calendar time from the idea ports, never from the host. No test starts
-//! an agent CLI: a launch runs `/bin/sh`, which writes 1 line and sleeps.
 #![cfg(unix)]
 
 use std::cell::{Cell, RefCell};
@@ -56,20 +42,13 @@ use horch_core::taskledger::workers::{self, NewWorker};
 use horch_core::taskledger::{schema, util};
 use rusqlite::{params, Connection};
 
-/// The env var that names the world folder of a child pass.
 const CHILD: &str = "HORCH_P6A_CHILD";
 
-/// The first feature, its idea from the release backfill, and the pane of
-/// its sub-orchestrator.
 const FEATURE: &str = "F-0001";
-/// The idea that `horch idea add` adds to [`FEATURE`].
 const ADDED: &str = "I-0003";
-/// The second feature, and its idea that waits for your approval.
 const FEATURE_2: &str = "F-0002";
 const WAITING: &str = "I-0004";
 const PANE: &str = "w1:p7";
-
-// ─── the world ──────────────────────────────────────────────────────────
 
 struct World {
     _temp: Option<tempfile::TempDir>,
@@ -92,8 +71,6 @@ fn cause(text: &str) -> Cause<'_> {
     }
 }
 
-/// A temp ledger at generation 1, a fleet root, and 2 runs with their
-/// features and ideas from the release backfill.
 fn world() -> World {
     let temp = tempfile::tempdir().unwrap();
     let dir = temp.path().to_path_buf();
@@ -131,7 +108,6 @@ fn world() -> World {
     }
 }
 
-/// The world of a child pass, in the folder `dir` of its parent.
 fn child_world(dir: &Path) -> World {
     let conn = open(&dir.join("ledger.sqlite3"));
     let id: String = conn
@@ -179,7 +155,6 @@ impl World {
         }
     }
 
-    /// `horch idea add` of an idea in `feature`, as its handler writes it.
     fn add_idea(&self, feature: &str) -> String {
         let tx = self.conn.unchecked_transaction().unwrap();
         let added = add_idea(
@@ -218,8 +193,6 @@ impl World {
             .unwrap()
     }
 
-    /// A task of the first run with 1 open question of its feature whose
-    /// time limit is `due_at` on the fleet clock. Gives the question id.
     fn question(&self, name: &str, due_at: i64) -> String {
         self.question_of(name, due_at, FEATURE)
     }
@@ -241,8 +214,6 @@ impl World {
         q.id
     }
 
-    /// The live sub-orchestrator of `idea` in its `phase`, in the pane
-    /// [`PANE`]. Gives its attempt id.
     fn live_sub_orchestrator(&self, idea: &str, phase: &str) -> String {
         let new = NewWorker {
             run_id: self.run.run_id.clone(),
@@ -269,8 +240,20 @@ impl World {
         id
     }
 
-    /// An applied `idea_amend` request of `idea` whose result names the
-    /// amendment `n` with `text`.
+    fn ask_note(&self, idea: &str, attempt: &str, question: &str) {
+        let notes = self.root().join("ideas").join(idea).join("notes");
+        fs::create_dir_all(&notes).unwrap();
+        for dir in [notes.parent().unwrap(), notes.as_path()] {
+            fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let note = serde_json::json!({
+            "idea": idea, "attempt": attempt, "kind": "ask", "text": question,
+        });
+        let path = notes.join("1.json");
+        fs::write(&path, note.to_string()).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
     fn amend_request(&self, idea: &str, n: u32, text: &str) {
         let result = serde_json::json!({
             "idea": idea,
@@ -286,8 +269,6 @@ impl World {
             .unwrap();
     }
 
-    /// The events of the ledger, in order: (event id, entity, entity id,
-    /// kind, cause).
     fn events(&self) -> Vec<(i64, String, String, String, String)> {
         let mut stmt = self
             .conn
@@ -302,7 +283,6 @@ impl World {
         .unwrap()
     }
 
-    /// The id of the first event after `after` that `want` matches.
     fn first_event(
         &self,
         after: i64,
@@ -334,13 +314,8 @@ fn lines(path: &Path) -> Vec<String> {
         .collect()
 }
 
-// ─── the fakes ──────────────────────────────────────────────────────────
-
-/// The outside of a pass: no herdr snapshot, a launch that writes its
-/// attempt id to `launched`, and a doorbell that writes its pane to `rung`.
 struct Fake {
     dir: PathBuf,
-    /// The herdr status of each worker.
     status: BTreeMap<String, String>,
 }
 
@@ -414,7 +389,6 @@ impl Outside for Fake {
     }
 }
 
-/// A git with refs in memory.
 #[derive(Default)]
 struct Git {
     refs: RefCell<BTreeMap<String, String>>,
@@ -446,7 +420,6 @@ impl IntegrationGitGateway for Git {
         Ok(RefMove::Moved)
     }
 
-    /// Each feature tip contains the primary tip in this test.
     fn contains(&self, _: &Path, _: &str, _: &str) -> Result<bool> {
         Ok(true)
     }
@@ -484,9 +457,6 @@ impl IntegrationGitGateway for Git {
     }
 }
 
-/// The idea ports of a test: no roster, no gates, no primary tips, a
-/// Wednesday at 10:00 inside the working hours, and a count of the
-/// notifications.
 #[derive(Default)]
 struct Ideas {
     git: Git,
@@ -522,7 +492,6 @@ impl IdeaPorts for Ideas {
     }
 }
 
-/// A test clock: each read moves it by `step`. The cell counts the reads.
 fn test_clock<'a>(step: Duration) -> (Box<dyn FnMut() -> Instant + 'a>, Rc<Cell<u32>>) {
     let start = Instant::now();
     let reads = Rc::new(Cell::new(0u32));
@@ -551,8 +520,6 @@ fn run(p: &mut Pass<'_>, conn: &mut Connection) -> PassReport {
         .unwrap_or_else(|e| panic!("the pass failed: {e}"))
 }
 
-/// Wait until `f` gives `n` lines, at most 10 s: a launched process writes
-/// its line after the pass.
 fn wait_lines(f: impl Fn() -> Vec<String>, n: usize) -> Vec<String> {
     for _ in 0..200 {
         let got = f();
@@ -564,12 +531,6 @@ fn wait_lines(f: impl Fn() -> Vec<String>, n: usize) -> Vec<String> {
     f()
 }
 
-// ─── the tests ──────────────────────────────────────────────────────────
-
-/// 1 pass runs each idea duty in the order of ticket 51: the release, the
-/// question flow, the dispatcher, the sub-orchestrators, the waits, then
-/// the needs-you mirror, which writes the file of each item that the
-/// duties before it opened in the same pass.
 #[test]
 fn pass_runs_the_idea_duties_in_order() {
     let mut w = world();
@@ -627,8 +588,6 @@ fn pass_runs_the_idea_duties_in_order() {
     assert_eq!(wait_lines(|| w.launched(), 1).len(), 1);
 }
 
-/// The child of a crash test: 1 pass on the world of its parent with the
-/// fault of `HORCH_FAULT`.
 #[test]
 fn child_pass() {
     let Ok(dir) = std::env::var(CHILD) else {
@@ -652,11 +611,6 @@ fn crash(w: &World, fault: &str) {
     assert_eq!(status.code(), Some(ABORT_EXIT_CODE), "the fault {fault}");
 }
 
-/// A crash after the last commit of the idea duties and before their
-/// effects: the next pass launches the new sub-orchestrator 1 time and
-/// types the ring of the question flow 1 time, and a later pass does
-/// neither again. The effects of a committed idea request are written 1
-/// time, and the next pass does not write them again.
 #[test]
 fn crash_after_a_commit_completes_each_idea_effect_once() {
     let mut w = world();
@@ -705,16 +659,10 @@ fn crash_after_a_commit_completes_each_idea_effect_once() {
     assert_eq!(files(), 1, "the amendment is written 1 time");
 }
 
-/// A request whose effects fleetd cannot write gets 1 needs-you item, and
-/// the effects of the later requests are written: 1 bad row never stops
-/// the pass (design.md, "Ledger", Three rules, rule 1; ticket 58 of
-/// fleetd-build, F3).
 #[test]
 fn a_request_effect_that_cannot_be_written_does_not_block_the_next_one() {
     let mut w = world();
     let idea = w.add_idea(FEATURE);
-    // 2 requests with 1 number: the file of the second conflicts with the
-    // file of the first.
     w.amend_request(&idea, 1, "first");
     w.amend_request(&idea, 1, "second");
     w.amend_request(&idea, 2, "third");
@@ -743,16 +691,13 @@ fn a_request_effect_that_cannot_be_written_does_not_block_the_next_one() {
     assert_eq!(items[0].1, idea);
 }
 
-/// The pass starts a sub-orchestrator and ends: it does not wait for the
-/// process, which still runs after the pass. A live sub-orchestrator that
-/// herdr shows at its prompt waits on you, and the pass records that wait
-/// and ends: it does not wait for your answer either.
 #[test]
 fn pass_never_waits_for_a_sub_orchestrator() {
     let mut w = world();
     let asking = w.add_idea(FEATURE);
     w.move_idea(&asking, "clarifying");
     let sub = w.live_sub_orchestrator(&asking, "clarifying");
+    w.ask_note(&asking, &sub, "Do retries apply to uploads?");
     let captured = w.add_idea(FEATURE_2);
     let mut fake = Fake::new(&w);
     let worker: String = w
@@ -801,9 +746,6 @@ fn pass_never_waits_for_a_sub_orchestrator() {
     assert!(alive, "the process of {attempt} runs after the pass");
 }
 
-/// 10000 idea folders: the scan of their notes stops at the scan budget on
-/// the test clock, the pass writes its heartbeat within 30 s of that
-/// clock, and the next pass continues the scan at its cursor.
 #[test]
 fn ten_thousand_idea_folders_keep_the_heartbeat_under_30_s() {
     let mut w = world();

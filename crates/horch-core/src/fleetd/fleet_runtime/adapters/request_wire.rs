@@ -1,10 +1,3 @@
-//! The wire form of the request contract: the JSON line of a request and of
-//! its reply, and `payload_sha256`. A request file holds the same JSON
-//! object as a request line. The rules of the kind, the `request_id` and
-//! the size are in `domain/requests.rs`.
-//!
-//! Requirements: RR-8, SR-8, FM-15. Ticket 08 of fleetd-p5.
-
 use std::fmt;
 
 use serde::Deserialize;
@@ -13,18 +6,14 @@ use sha2::{Digest, Sha256};
 
 use crate::fleetd::fleet_runtime::domain::requests::{check_size, Kind, RequestError, RequestId};
 
-/// 1 request: `{"request_id", "kind", "payload", "token"}`. The payload
-/// never changes for 1 `request_id`.
 #[derive(Clone, PartialEq)]
 pub struct Request {
     pub request_id: RequestId,
     pub kind: Kind,
     pub payload: Map<String, Value>,
-    /// The operator token, or `None` when the line has no `token`.
     pub token: Option<String>,
 }
 
-/// The token is a secret: `Debug` never prints it.
 impl fmt::Debug for Request {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Request")
@@ -47,7 +36,6 @@ struct WireRequest {
 }
 
 impl Request {
-    /// The request as 1 JSON line, with its `\n`.
     pub fn to_line(&self) -> String {
         let mut wire = Map::new();
         wire.insert("request_id".into(), self.request_id.as_str().into());
@@ -59,14 +47,11 @@ impl Request {
         format!("{}\n", Value::Object(wire))
     }
 
-    /// The sha256 of the payload of this request.
     pub fn payload_sha256(&self) -> String {
         payload_sha256(&self.payload)
     }
 }
 
-/// Parses 1 request line or request file of `line`. It refuses a line over
-/// `max_bytes` before it parses it.
 pub fn parse_request(line: &[u8], max_bytes: u64) -> Result<Request, RequestError> {
     check_size(line.len(), max_bytes)?;
     let wire: WireRequest =
@@ -79,8 +64,6 @@ pub fn parse_request(line: &[u8], max_bytes: u64) -> Result<Request, RequestErro
     })
 }
 
-/// The lower-case hex sha256 of `payload` with the keys of each object
-/// sorted, so that 2 equal payloads always have 1 hash.
 pub fn payload_sha256(payload: &Map<String, Value>) -> String {
     let mut text = String::new();
     write_sorted_object(payload, &mut text);
@@ -90,8 +73,6 @@ pub fn payload_sha256(payload: &Map<String, Value>) -> String {
         .collect()
 }
 
-/// Writes `object` as compact JSON to `out`, with its keys sorted. The sort
-/// does not depend on the key order of `Map`.
 fn write_sorted_object(object: &Map<String, Value>, out: &mut String) {
     let mut entries: Vec<(&String, &Value)> = object.iter().collect();
     entries.sort_by(|a, b| a.0.cmp(b.0));
@@ -124,15 +105,12 @@ fn write_sorted(value: &Value, out: &mut String) {
     }
 }
 
-/// What fleetd did with a request.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Outcome {
     Applied(Value),
     Refused(String),
 }
 
-/// 1 reply: `{"request_id", "state": "applied", "result"}` or
-/// `{"request_id", "state": "refused", "reason"}`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Reply {
     pub request_id: RequestId,
@@ -140,7 +118,6 @@ pub struct Reply {
 }
 
 impl Reply {
-    /// The reply as 1 JSON line, with its `\n`.
     pub fn to_line(&self) -> String {
         let mut wire = Map::new();
         wire.insert("request_id".into(), self.request_id.as_str().into());
@@ -158,8 +135,6 @@ impl Reply {
     }
 }
 
-/// Parses 1 reply line of `line`. It refuses a line over `max_bytes`
-/// before it parses it.
 pub fn parse_reply(line: &[u8], max_bytes: u64) -> Result<Reply, RequestError> {
     check_size(line.len(), max_bytes)?;
     let mut wire: Map<String, Value> =
@@ -220,7 +195,6 @@ mod tests {
             .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)));
         let other = object(json!({"a": {"x": "s", "y": [{"p": 3, "q": 2}, 1]}, "b": 1}));
         assert_ne!(hash, payload_sha256(&other), "array order counts");
-        // The canonical text is `{}`: sha256 of the 2 bytes `{}`.
         assert_eq!(
             payload_sha256(&Map::new()),
             "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"

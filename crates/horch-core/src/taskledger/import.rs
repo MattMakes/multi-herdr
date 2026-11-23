@@ -1,16 +1,3 @@
-//! Importing the old JSON ledgers (section 11, #43), and the list of work
-//! that never landed (`horch ledger unfinished`).
-//!
-//! Stage 1 copies every old record unchanged into `import_raw`. Stage 2
-//! maps each unmapped raw row to typed rows with `origin = 'import'`, where
-//! required fields are not enforced. A row that cannot be mapped keeps its
-//! raw copy with `map_error`. The source files are never changed, and a
-//! second import skips what it already has.
-//!
-//! Stage 1 also copies each session ledger record into `session_records`
-//! (TRF-45), where the session readers and writers find it. A record that
-//! table has already keeps its row: a later write there is newer.
-
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -32,17 +19,14 @@ use crate::fleetd::worktree_custody::adapters::sqlite::{self as trees, WorktreeS
 use crate::runtime::bins::{git_bin, BinOverrides};
 use crate::runtime::context::ProcessEnv;
 
-/// A worktree over this many bytes is a `disk_heavy` finding.
 pub const HEAVY_BYTES: u64 = 1 << 30;
 
-/// What 1 import did (or would do, with `dry_run`).
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct ImportReport {
     pub dry_run: bool,
     pub files: Vec<String>,
     pub raw_added: i64,
     pub raw_skipped: i64,
-    /// Session records copied into `session_records` (TRF-45).
     pub sessions: i64,
     pub workers: i64,
     pub tasks: i64,
@@ -51,8 +35,6 @@ pub struct ImportReport {
     pub findings: BTreeMap<String, i64>,
 }
 
-/// The old files under the state root: session ledgers, worktree claim
-/// registries, pending mail.
 pub fn sources(state_root: &Path) -> Vec<(SourceKind, PathBuf)> {
     let mut out = Vec::new();
     let json_in = |dir: &Path| -> Vec<PathBuf> {
@@ -68,7 +50,6 @@ pub fn sources(state_root: &Path) -> Vec<(SourceKind, PathBuf)> {
         v
     };
     for p in json_in(state_root) {
-        // A session ledger is an array of records with a record_id.
         let is_ledger = std::fs::read(&p)
             .ok()
             .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
@@ -101,7 +82,6 @@ fn str_of<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
         .filter(|s| !s.is_empty())
 }
 
-/// The key a record is stored under, when it has one.
 fn record_key(kind: SourceKind, path: &Path, r: &Value) -> Option<String> {
     match kind {
         SourceKind::SessionLedger => str_of(r, "record_id").map(str::to_string),
@@ -112,7 +92,6 @@ fn record_key(kind: SourceKind, path: &Path, r: &Value) -> Option<String> {
     }
 }
 
-/// The records of the old file `path`, whose sha256 must be `sha256`.
 fn read_records(path: &Path, sha256: &str) -> Result<Vec<Value>> {
     let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
     if sha256_hex(&bytes) != sha256 {
@@ -124,7 +103,6 @@ fn read_records(path: &Path, sha256: &str) -> Result<Vec<Value>> {
     parse_records(path, &bytes)
 }
 
-/// The records of the text `bytes` of an old file: an array, or 1 record.
 fn parse_records(path: &Path, bytes: &[u8]) -> Result<Vec<Value>> {
     let v: Value =
         serde_json::from_slice(bytes).with_context(|| format!("parsing {}", path.display()))?;
@@ -134,7 +112,6 @@ fn parse_records(path: &Path, bytes: &[u8]) -> Result<Vec<Value>> {
     })
 }
 
-/// Stage 1: copy each record `records` of `path` into `import_raw`.
 fn stage1(
     conn: &Connection,
     kind: SourceKind,
@@ -163,10 +140,6 @@ fn stage1(
     Ok(())
 }
 
-/// Copy 1 session ledger record of the JSON ledger `path` into
-/// `session_records`, once: a record id the table has is skipped. The
-/// slug is the file's stem; the project is the record's, else the slug.
-/// Returns the rows added.
 fn copy_session(conn: &Connection, path: &Path, record_id: &str, r: &Value) -> Result<i64> {
     let slug = path
         .file_stem()
@@ -222,8 +195,6 @@ fn finding(
     Ok(())
 }
 
-/// The synthetic, finished run that holds a project's imported records of
-/// 1 workspace.
 fn import_run(
     conn: &Connection,
     project: &Path,
@@ -251,7 +222,6 @@ fn import_run(
     Ok((project_id, id))
 }
 
-/// What a session-ledger record says, read once.
 struct Session<'a> {
     done_text: Option<String>,
     w_status: &'static str,
@@ -266,7 +236,6 @@ struct Session<'a> {
     finished: Option<String>,
 }
 
-/// The text of the last history event named `ev`.
 fn last_event_text(history: &[Value], ev: &str) -> Option<String> {
     history
         .iter()
@@ -276,7 +245,6 @@ fn last_event_text(history: &[Value], ev: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// (worker status, task status, ended without `horch done`) of a record.
 fn session_statuses(
     typed: Option<&str>,
     legacy: &str,
@@ -333,7 +301,6 @@ impl<'a> Session<'a> {
     }
 }
 
-/// Map 1 session-ledger record.
 fn map_session(
     conn: &Connection,
     raw_id: i64,
@@ -360,7 +327,6 @@ fn map_session(
     Ok(format!("workers:{worker_id}"))
 }
 
-/// The rows a session record became.
 struct Mapped<'a> {
     project: &'a str,
     run: &'a str,
@@ -368,7 +334,6 @@ struct Mapped<'a> {
     worker: &'a str,
 }
 
-/// Insert the task of a session record; give back its id.
 fn insert_task(
     conn: &Connection,
     r: &Value,
@@ -405,7 +370,6 @@ fn insert_task(
     Ok(task_id)
 }
 
-/// Insert the worker of a session record; give back its id.
 fn insert_worker(
     conn: &Connection,
     r: &Value,
@@ -445,8 +409,6 @@ fn insert_worker(
     Ok(worker_id)
 }
 
-/// The findings of a session record: it ended without `horch done`, or it
-/// reported done with work that did not land.
 fn session_findings(
     conn: &Connection,
     report: &mut ImportReport,
@@ -490,10 +452,8 @@ fn session_findings(
     Ok(())
 }
 
-/// (worker id, task id, run id, worker status) of an imported record.
 type MappedRecord = (String, String, String, Option<String>);
 
-/// The task and worker an imported record became, by its legacy record id.
 fn mapped_record(conn: &Connection, record_id: &str) -> Result<Option<MappedRecord>> {
     optional(conn.query_row(
         "SELECT w.worker_id, w.task_id, w.run_id, w.status FROM workers w WHERE w.legacy_record_id = ?1",
@@ -502,10 +462,8 @@ fn mapped_record(conn: &Connection, record_id: &str) -> Result<Option<MappedReco
     ))
 }
 
-/// The repository a claim's worktree belongs to.
 fn claim_repo(git: &Git, dir: &Path) -> Option<PathBuf> {
     git.main_root(dir).or_else(|| {
-        // The worktree is gone: its repo is the folder above .worktrees.
         dir.ancestors()
             .find(|a| a.file_name().is_some_and(|n| n == ".worktrees"))
             .and_then(|w| w.parent())
@@ -513,7 +471,6 @@ fn claim_repo(git: &Git, dir: &Path) -> Option<PathBuf> {
     })
 }
 
-/// The status a claim's worktree has in the ledger.
 fn claim_status(state: &str, exists: bool) -> &'static str {
     match (state, exists) {
         ("landed", false) => "cleaned",
@@ -524,7 +481,6 @@ fn claim_status(state: &str, exists: bool) -> &'static str {
     }
 }
 
-/// (commits not on the base, uncommitted files) of a claim's worktree.
 fn claim_measures(
     git: &Git,
     repo: &Path,
@@ -547,7 +503,6 @@ fn claim_measures(
     (ahead, dirty)
 }
 
-/// What a claim's worktree and its disk say, for the findings.
 struct ClaimFacts<'a> {
     status: &'static str,
     ahead: usize,
@@ -556,13 +511,10 @@ struct ClaimFacts<'a> {
     project_id: String,
     run_id: Option<String>,
     ids: (Option<&'a str>, Option<&'a str>, Option<&'a str>),
-    /// The record's worker reported done.
     record_done: bool,
-    /// The one-line description every finding of the claim carries.
     text: String,
 }
 
-/// The kinds of finding a claim raises, in order.
 fn claim_kinds(f: &ClaimFacts<'_>) -> Vec<FindingKind> {
     let mut kinds = Vec::new();
     if matches!(f.status, "open" | "unlanded" | "abandoned") && f.ahead > 0 {
@@ -580,7 +532,6 @@ fn claim_kinds(f: &ClaimFacts<'_>) -> Vec<FindingKind> {
     kinds
 }
 
-/// The findings of a claim: unlanded commits, dirty files, a heavy folder.
 fn claim_findings(conn: &Connection, report: &mut ImportReport, f: &ClaimFacts<'_>) -> Result<()> {
     for kind in claim_kinds(f) {
         finding(
@@ -596,11 +547,6 @@ fn claim_findings(conn: &Connection, report: &mut ImportReport, f: &ClaimFacts<'
     Ok(())
 }
 
-/// Insert the worktree row of a claim. Only the path of a live row is
-/// unique (a `removed` row stays as history), so a claim seen twice keeps
-/// its first live row. The state is the one of the release backfill
-/// (`docs/tickets/fleetd-p3/MAP.md`, Q19): a `cleaned` tree is `removed`,
-/// and each other tree is `orphaned`, as no attempt of it is live.
 fn insert_worktree(
     conn: &Connection,
     c: &Value,
@@ -643,8 +589,6 @@ fn insert_worktree(
     Ok(())
 }
 
-/// Map 1 worktree claim, and record what the disk says about it in
-/// `facts`.
 fn map_claim(
     conn: &Connection,
     facts: &ImportFacts,
@@ -692,9 +636,6 @@ fn map_claim(
     Ok(format!("worktrees:{id}"))
 }
 
-/// Gather what the findings of the claim's worktree need, from its
-/// measures `(ahead, dirty)`. A worktree is on disk exactly when `bytes` is
-/// known.
 fn claim_facts<'a>(
     conn: &Connection,
     (ahead, dirty): (usize, usize),
@@ -726,8 +667,6 @@ fn claim_facts<'a>(
     })
 }
 
-/// The paths of the fleet worktrees `git worktree list` reports in `root`;
-/// none when the git call fails.
 fn fleet_worktrees(git: &Git, root: &Path) -> Vec<String> {
     git.try_run(root, &["worktree", "list", "--porcelain"])
         .ok()
@@ -743,7 +682,6 @@ fn fleet_worktrees(git: &Git, root: &Path) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Whether an orphan finding already names the worktree `p`.
 fn orphan_reported(conn: &Connection, p: &str) -> Result<bool> {
     let reported: i64 = conn.query_row(
         "SELECT count(*) FROM import_findings WHERE kind = 'worktree_orphan' AND detail LIKE ?1",
@@ -753,7 +691,6 @@ fn orphan_reported(conn: &Connection, p: &str) -> Result<bool> {
     Ok(reported > 0)
 }
 
-/// Every project: (project id, root).
 fn project_roots(conn: &Connection) -> Result<Vec<(String, String)>> {
     let mut stmt = conn.prepare("SELECT project_id, root FROM projects")?;
     let roots = stmt
@@ -762,11 +699,7 @@ fn project_roots(conn: &Connection) -> Result<Vec<(String, String)>> {
     Ok(roots)
 }
 
-/// The canonical paths of every worktree row that is not `removed`. Git can report a
-/// worktree through a different spelling than its claim (macOS `/tmp` is
-/// `/private/tmp`).
 fn known_worktrees(conn: &Connection) -> Result<HashSet<PathBuf>> {
-    // A `removed` row is history: its path is free for a new tree.
     let mut stmt = conn.prepare("SELECT path FROM worktrees WHERE state <> 'removed'")?;
     let paths = stmt
         .query_map([], |r| r.get::<_, String>(0))?
@@ -778,8 +711,6 @@ fn canonical(p: &str) -> PathBuf {
     std::fs::canonicalize(p).unwrap_or_else(|_| PathBuf::from(p))
 }
 
-/// Folders git knows under `<repo>/.worktrees/` that no row names: reported,
-/// never removed.
 fn orphans(conn: &Connection, facts: &ImportFacts, report: &mut ImportReport) -> Result<()> {
     let known = known_worktrees(conn)?;
     for (pid, root) in project_roots(conn)? {
@@ -806,8 +737,6 @@ fn orphans(conn: &Connection, facts: &ImportFacts, report: &mut ImportReport) ->
     Ok(())
 }
 
-/// Map the unmapped raw rows of `kind` to typed rows. A row that cannot be
-/// mapped keeps its raw copy with the error.
 fn map_staged(
     tx: &Connection,
     facts: &ImportFacts,
@@ -827,7 +756,6 @@ fn map_staged(
     Ok(())
 }
 
-/// Map 1 raw row and record where it went, or why it did not.
 fn map_one(
     tx: &Connection,
     facts: &ImportFacts,
@@ -856,8 +784,6 @@ fn map_one(
     Ok(())
 }
 
-/// Stage 1 for every old file under `state_root`. Each file must have the
-/// sha256 that `facts` recorded for it, and `facts` must name each file.
 fn stage1_all(
     tx: &Connection,
     state_root: &Path,
@@ -884,39 +810,24 @@ fn stage1_all(
     Ok(())
 }
 
-/// What the disk and git say for 1 import: the facts that the rows of
-/// [`import_from`] need and that a ledger transaction cannot read. The
-/// command gathers them with [`gather`] and sends them; fleetd writes the
-/// rows from them, and runs no git.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ImportFacts {
-    /// The sha256 of each old file under the state root, by its path.
     pub files: BTreeMap<String, String>,
-    /// The facts of each worktree claim to map.
     pub claims: Vec<ClaimDisk>,
-    /// The fleet worktrees that `git worktree list` reports, by project
-    /// root.
     pub worktrees: BTreeMap<String, Vec<ListedTree>>,
 }
 
-/// What the disk and git say about the worktree of 1 claim.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ClaimDisk {
-    /// The `path`, `branch` and `base` of the claim, as it names them.
     pub path: String,
     pub branch: String,
     pub base: String,
-    /// The repository of the worktree; `None` when no fact names it.
     pub repo: Option<String>,
-    /// The bytes of the folder; `None` when it is gone from disk.
     pub bytes: Option<u64>,
-    /// The commits of the branch that are not on the base.
     pub ahead: usize,
-    /// The uncommitted files of the folder.
     pub dirty: usize,
 }
 
-/// 1 worktree that `git worktree list` reports, with its bytes on disk.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ListedTree {
     pub path: String,
@@ -924,7 +835,6 @@ pub struct ListedTree {
 }
 
 impl ImportFacts {
-    /// The facts of the claim `c`.
     fn claim(&self, c: &Value) -> Option<&ClaimDisk> {
         let (path, branch, base) = claim_names(c);
         self.claims
@@ -933,7 +843,6 @@ impl ImportFacts {
     }
 }
 
-/// The `path`, `branch` and `base` of the claim `c`.
 fn claim_names(c: &Value) -> (&str, &str, &str) {
     (
         str_of(c, "path").unwrap_or(""),
@@ -942,9 +851,6 @@ fn claim_names(c: &Value) -> (&str, &str, &str) {
     )
 }
 
-/// Gather the [`ImportFacts`] of an import of `state_root` into the ledger
-/// `conn`: it reads the old files, the claims that `conn` has staged, the
-/// disk and git. It writes nothing.
 pub fn gather(conn: &Connection, git: &Git, state_root: &Path) -> Result<ImportFacts> {
     let mut facts = ImportFacts::default();
     let mut claims = Vec::new();
@@ -980,7 +886,6 @@ pub fn gather(conn: &Connection, git: &Git, state_root: &Path) -> Result<ImportF
     Ok(facts)
 }
 
-/// The claims that `conn` has staged and not mapped.
 fn staged_claims(conn: &Connection) -> Result<Vec<Value>> {
     let mut stmt = conn.prepare(
         "SELECT raw_json FROM import_raw
@@ -996,8 +901,6 @@ fn staged_claims(conn: &Connection) -> Result<Vec<Value>> {
         .collect()
 }
 
-/// What the disk and git say about the worktree of the claim `c`; `None`
-/// for a claim with no path.
 fn claim_disk(git: &Git, c: &Value) -> Option<ClaimDisk> {
     let (path, branch, base) = claim_names(c);
     if path.is_empty() {
@@ -1021,7 +924,6 @@ fn claim_disk(git: &Git, c: &Value) -> Option<ClaimDisk> {
     })
 }
 
-/// The sha256 of `bytes`, in lowercase hex.
 fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     Sha256::digest(bytes)
@@ -1030,8 +932,6 @@ fn sha256_hex(bytes: &[u8]) -> String {
         .collect()
 }
 
-/// Import every old file under `state_root` into `conn` from `facts`. The
-/// caller holds the transaction: it commits or rolls back.
 pub fn import_from(
     conn: &Connection,
     state_root: &Path,
@@ -1043,7 +943,6 @@ pub fn import_from(
         ..Default::default()
     };
     stage1_all(conn, state_root, facts, &mut report)?;
-    // Stage 2: session records first, so claims find their records.
     for kind in [SourceKind::SessionLedger, SourceKind::WorktreeClaims] {
         map_staged(conn, facts, kind, &mut report)?;
     }
@@ -1051,7 +950,6 @@ pub fn import_from(
     Ok(report)
 }
 
-/// Import every old file under `state_root`. With `dry_run` nothing is kept.
 pub fn import(
     store: &mut Store,
     git: &Git,
@@ -1072,7 +970,6 @@ pub fn import(
     Ok(report)
 }
 
-/// 1 open finding, as `ledger unfinished` lists it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Unfinished {
     pub finding_id: i64,
@@ -1086,7 +983,6 @@ pub struct Unfinished {
 }
 
 impl Unfinished {
-    /// The 8 columns of the `import_findings` SELECTs, in order.
     fn from_row(r: &Row<'_>) -> rusqlite::Result<Unfinished> {
         let (finding_id, kind, run, project, task_id, worktree_id, detail, created_at) =
             r.try_into()?;
@@ -1103,35 +999,14 @@ impl Unfinished {
     }
 }
 
-/// Native runs feed `unfinished` too: a cancelled task that still has an
-/// open worktree, an `orphaned` or `rescued` tree of a task that is not
-/// done, and a task whose last attempt died and that no worker finished.
-/// Each becomes a finding once. The pass of fleetd runs it.
 pub fn sync_native(conn: &Connection) -> Result<()> {
     sync_worktrees(conn)?;
     sync_custody_trees(conn)?;
     sync_tasks(conn)
 }
 
-/// A finding for each cancelled task that still has an open worktree.
 fn sync_worktrees(conn: &Connection) -> Result<()> {
-    let mut stmt = conn.prepare(&format!(
-        "SELECT t.task_id, t.run_id, r.project_id, w.worktree_id, w.path, t.seq
-         FROM tasks t JOIN runs r ON r.run_id = t.run_id JOIN worktrees w ON w.task_id = t.task_id
-         WHERE t.origin = 'native' AND t.status = {cancelled}
-           AND (w.status IN ({unfinished})
-                -- The cancel keeps the folder of the worktree it abandons (#136).
-                OR (w.status = {abandoned} AND w.cleaned_at IS NULL))
-           AND NOT EXISTS (SELECT 1 FROM import_findings f WHERE f.worktree_id = w.worktree_id
-                           AND f.kind = 'task_cancelled_open_worktree')",
-        cancelled = word(TaskStatus::Cancelled),
-        unfinished = sql_words::list(&[
-            WorktreeStatus::Open,
-            WorktreeStatus::Unlanded,
-            WorktreeStatus::CleanupFailed
-        ]),
-        abandoned = word(WorktreeStatus::Abandoned)
-    ))?;
+    let mut stmt = conn.prepare(&cancelled_open_trees_sql())?;
     let rows = stmt
         .query_map([], |r| r.try_into())?
         .collect::<rusqlite::Result<Vec<(String, String, String, String, String, i64)>>>()?;
@@ -1148,16 +1023,34 @@ fn sync_worktrees(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// A finding `worktree_unlanded` for each tree of a native task that is
-/// `orphaned` or `rescued`, or that has a rescue ref, when no finding names
-/// the tree yet (RR-15). A tree with a rescue ref gets its finding also
-/// after a later claim, removal or land: [`work_landed`] decides whether it
-/// is listed. A tree that a finding names was decided, or waits for its
-/// decision. 1 statement finds and inserts, so 2 calls never insert 2
-/// findings for 1 tree.
+fn cancelled_open_trees_sql() -> String {
+    format!(
+        "SELECT t.task_id, t.run_id, r.project_id, w.worktree_id, w.path, t.seq
+         FROM tasks t JOIN runs r ON r.run_id = t.run_id JOIN worktrees w ON w.task_id = t.task_id
+         WHERE t.origin = 'native' AND t.status = {cancelled}
+           AND (w.status IN ({unfinished})
+                -- The cancel keeps the folder of the worktree it abandons (#136).
+                OR (w.status = {abandoned} AND w.cleaned_at IS NULL))
+           AND w.worktree_id NOT IN (SELECT f.worktree_id FROM import_findings f
+                                     WHERE f.kind = 'task_cancelled_open_worktree'
+                                       AND f.worktree_id IS NOT NULL)",
+        cancelled = word(TaskStatus::Cancelled),
+        unfinished = sql_words::list(&[
+            WorktreeStatus::Open,
+            WorktreeStatus::Unlanded,
+            WorktreeStatus::CleanupFailed
+        ]),
+        abandoned = word(WorktreeStatus::Abandoned)
+    )
+}
+
 fn sync_custody_trees(conn: &Connection) -> Result<()> {
-    conn.execute(
-        &format!(
+    conn.execute(&custody_trees_sql(), [util::now()])?;
+    Ok(())
+}
+
+fn custody_trees_sql() -> String {
+    format!(
             "INSERT INTO import_findings (project_id, run_id, kind, task_id, worktree_id, detail, status, created_at)
              SELECT r.project_id, t.run_id, {kind}, t.task_id, w.worktree_id,
                  'T-' || t.seq || ': the worktree ' || w.path || ' (' || w.state
@@ -1166,28 +1059,15 @@ fn sync_custody_trees(conn: &Connection) -> Result<()> {
              FROM worktrees w JOIN tasks t ON t.task_id = w.task_id JOIN runs r ON r.run_id = t.run_id
              WHERE t.origin = 'native'
                AND (w.state IN ('orphaned', 'rescued') OR w.rescue_ref IS NOT NULL)
-               AND NOT EXISTS (SELECT 1 FROM import_findings f WHERE f.worktree_id = w.worktree_id)",
+               AND w.worktree_id NOT IN (SELECT f.worktree_id FROM import_findings f
+                                         WHERE f.worktree_id IS NOT NULL)",
             kind = word(FindingKind::WorktreeUnlanded),
             open = word(FindingStatus::Open)
-        ),
-        [util::now()],
-    )?;
-    Ok(())
+    )
 }
 
-/// A finding for each unfinished task of an ended run whose worker died on it.
 fn sync_tasks(conn: &Connection) -> Result<()> {
-    let mut stmt = conn.prepare(&format!(
-        "SELECT t.task_id, t.run_id, r.project_id, t.seq, t.status
-         FROM tasks t JOIN runs r ON r.run_id = t.run_id
-         WHERE t.origin = 'native' AND r.status <> {active} AND t.status NOT IN ({ended})
-           AND EXISTS (SELECT 1 FROM workers w WHERE w.task_id = t.task_id AND w.status = {incomplete})
-           AND NOT EXISTS (SELECT 1 FROM import_findings f WHERE f.task_id = t.task_id
-                           AND f.kind = 'reaped_never_finished')",
-        active = word(RunStatus::Active),
-        ended = sql_words::list(sql_words::TASKS_ENDED),
-        incomplete = word(WorkerStatus::Incomplete)
-    ))?;
+    let mut stmt = conn.prepare(&reaped_tasks_sql())?;
     let rows = stmt
         .query_map([], |r| r.try_into())?
         .collect::<rusqlite::Result<Vec<(String, String, String, i64, String)>>>()?;
@@ -1204,15 +1084,21 @@ fn sync_tasks(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// Every open finding, newest first; of 1 project when `root` is given. It
-/// only reads: the pass of fleetd writes the findings of native runs
-/// ([`sync_native`]), so `horch ledger unfinished` works on a read-only
-/// ledger (T-885).
-///
-/// The detail of a finding whose tree has a rescue ref names that ref. A
-/// finding is not listed while the work of its tree is landed
-/// ([`work_landed`]); a tree with work that did not land stays listed
-/// until a decision, also when its task is done (RR-15).
+fn reaped_tasks_sql() -> String {
+    format!(
+        "SELECT t.task_id, t.run_id, r.project_id, t.seq, t.status
+         FROM tasks t JOIN runs r ON r.run_id = t.run_id
+         WHERE t.origin = 'native' AND r.status <> {active} AND t.status NOT IN ({ended})
+           AND EXISTS (SELECT 1 FROM workers w WHERE w.task_id = t.task_id AND w.status = {incomplete})
+           AND t.task_id NOT IN (SELECT f.task_id FROM import_findings f
+                                 WHERE f.kind = 'reaped_never_finished'
+                                   AND f.task_id IS NOT NULL)",
+        active = word(RunStatus::Active),
+        ended = sql_words::list(sql_words::TASKS_ENDED),
+        incomplete = word(WorkerStatus::Incomplete)
+    )
+}
+
 pub fn unfinished(conn: &Connection, root: Option<&Path>) -> Result<Vec<Unfinished>> {
     let mut stmt = conn.prepare(&format!(
         "SELECT f.finding_id, f.kind, r.slug, p.root, f.task_id, f.worktree_id,
@@ -1238,14 +1124,6 @@ pub fn unfinished(conn: &Connection, root: Option<&Path>) -> Result<Vec<Unfinish
     Ok(open)
 }
 
-/// Whether the task of `f` is a native task that is done, and each piece
-/// of work of the tree of `f` is in the commit that the task landed
-/// ([`landed_commit_of`]): its rescue ref ([`rescue_landed`]), and its
-/// folder ([`folder_landed`]) or, when the folder is gone, the commit that
-/// the tree landed.
-///
-/// A finding with no tree, and each fact that git cannot read, gives
-/// `false`: the finding stays listed.
 fn work_landed(conn: &Connection, git: &Git, f: &Unfinished) -> Result<bool> {
     let (Some(task), Some(wt)) = (f.task_id.as_deref(), f.worktree_id.as_deref()) else {
         return Ok(false);
@@ -1272,7 +1150,6 @@ fn work_landed(conn: &Connection, git: &Git, f: &Unfinished) -> Result<bool> {
     Ok(tree_landed_commit(conn, wt)?.is_some_and(|c| git.is_ancestor(repo, &c, &landed)))
 }
 
-/// The newest commit that the native task `task` landed, when it is done.
 fn landed_commit_of(conn: &Connection, task: &str) -> Result<Option<String>> {
     optional(conn.query_row(
         &format!(
@@ -1287,7 +1164,6 @@ fn landed_commit_of(conn: &Connection, task: &str) -> Result<Option<String>> {
     ))
 }
 
-/// The commit that the tree `wt` landed; `None` when it did not land.
 fn tree_landed_commit(conn: &Connection, wt: &str) -> Result<Option<String>> {
     Ok(optional(conn.query_row(
         "SELECT landed_commit FROM worktrees WHERE worktree_id = ?1",
@@ -1297,15 +1173,12 @@ fn tree_landed_commit(conn: &Connection, wt: &str) -> Result<Option<String>> {
     .flatten())
 }
 
-/// Whether the rescue ref `rescue` is in `landed`, or saved nothing
-/// beyond its parent and that parent is in `landed`.
 fn rescue_landed(git: &Git, repo: &Path, rescue: &str, landed: &str) -> bool {
     git.is_ancestor(repo, rescue, landed)
         || (saved_nothing(git, repo, rescue)
             && git.is_ancestor(repo, &format!("{rescue}^1"), landed))
 }
 
-/// Whether the folder `folder` is clean, with its HEAD in `landed`.
 fn folder_landed(git: &Git, folder: &Path, landed: &str) -> bool {
     let clean = git.dirty(folder).is_ok_and(|d| d.is_empty());
     clean
@@ -1314,8 +1187,6 @@ fn folder_landed(git: &Git, folder: &Path, landed: &str) -> bool {
             .is_ok_and(|h| git.is_ancestor(folder, &h, landed))
 }
 
-/// Whether the rescue commit `rescue` holds the same files as its parent:
-/// the tree had no change beyond its HEAD when it was saved.
 fn saved_nothing(git: &Git, repo: &Path, rescue: &str) -> bool {
     let tree_of =
         |rev: String| git.run(repo, &["rev-parse", "--verify", &format!("{rev}^{{tree}}")]);
@@ -1325,7 +1196,6 @@ fn saved_nothing(git: &Git, repo: &Path, rescue: &str) -> bool {
     }
 }
 
-/// 1 finding by id.
 pub fn get_finding(conn: &Connection, id: i64) -> Result<Unfinished> {
     conn.query_row(
         "SELECT f.finding_id, f.kind, r.slug, p.root, f.task_id, f.worktree_id, f.detail, f.created_at
@@ -1337,7 +1207,6 @@ pub fn get_finding(conn: &Connection, id: i64) -> Result<Unfinished> {
     .with_context(|| format!("no finding {id}"))
 }
 
-/// Close a finding: `requeued` (with the new task) or `dismissed`.
 pub fn decide(
     conn: &Connection,
     id: i64,
@@ -1359,10 +1228,6 @@ pub fn decide(
     Ok(())
 }
 
-/// `horch ledger reopen`: queue `new` in `run` for the open finding
-/// `finding` and close the finding as `requeued`, in the caller's
-/// transaction. The old worktree of the finding, when it is still on disk
-/// and not cleaned, becomes the worktree of the new task.
 pub fn reopen(
     conn: &Connection,
     run: &runs::Run,
@@ -1392,7 +1257,6 @@ pub fn reopen(
     Ok(task)
 }
 
-/// The earlier sessions of `task_id`, 1 indented line each.
 fn earlier_sessions(conn: &Connection, task_id: &str) -> Result<String> {
     let mut stmt = conn.prepare(
         "SELECT transcript_path, session_id, summary FROM workers WHERE task_id = ?1 ORDER BY attempt",
@@ -1413,8 +1277,6 @@ fn earlier_sessions(conn: &Connection, task_id: &str) -> Result<String> {
         .collect())
 }
 
-/// What a reopened task's claim shows: the finding it came from, and the
-/// earlier attempt's transcript.
 pub fn reopened_from(conn: &Connection, task_id: &str) -> Result<Option<String>> {
     let f: Option<(String, Option<String>)> = optional(conn.query_row(
         &format!(
@@ -1438,9 +1300,6 @@ mod trf_45_tests {
     use super::*;
     use crate::execution::store::ExecutionStore;
 
-    /// `ledger import` copies each old JSON session record into
-    /// `session_records` once, never changes the file, and a dry run keeps
-    /// nothing.
     #[test]
     fn trf_45_ledger_import_copies_old_json_once() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1486,15 +1345,12 @@ mod trf_45_tests {
                 ("b".into(), "-repo".into(), "-repo".into())
             ]
         );
-        // The store reads the copies; the file is gone from its view.
         std::fs::remove_file(&file).unwrap();
         let records = ExecutionStore::in_db(&state, &db, "/repo").read().unwrap();
         let ids: Vec<&str> = records.iter().map(|r| r.record_id.as_str()).collect();
         assert_eq!(ids, ["a", "b"]);
     }
 
-    /// A legacy record with 3 history entries imports with all 3, and 1
-    /// later `update` appends a 4th: all 4 remain, in order.
     #[test]
     fn trf_45_import_keeps_a_non_empty_history() {
         use crate::execution::legacy::HistoryEntry;
@@ -1520,10 +1376,8 @@ mod trf_45_tests {
         let mut store = Store::open(&db).unwrap();
         let report = import(&mut store, &Git::new("git"), &state, false).unwrap();
         assert_eq!(report.sessions, 1);
-        // Only the imported copy remains.
         std::fs::remove_file(&file).unwrap();
 
-        // A test of the store writes with the writer of fleetd (T-884).
         let records = ExecutionStore::in_db(&state, &db, "/repo").with_writer(std::sync::Arc::new(
             crate::taskledger::store::LedgerWriter::fleetd(),
         ));
@@ -1557,5 +1411,39 @@ mod trf_45_tests {
                 ("note".into(), "third note".into()),
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod sync_native_tests {
+    use super::*;
+
+    fn plan(conn: &Connection, sql: &str) -> Vec<String> {
+        let mut stmt = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+        let args = vec!["now"; stmt.parameter_count()];
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(args), |r| r.get::<_, String>(3))
+            .unwrap();
+        rows.collect::<rusqlite::Result<_>>().unwrap()
+    }
+
+    #[test]
+    fn each_sync_statement_reads_the_findings_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(&tmp.path().join("ledger.sqlite3")).unwrap();
+        for sql in [
+            cancelled_open_trees_sql(),
+            custody_trees_sql(),
+            reaped_tasks_sql(),
+        ] {
+            let plan = plan(store.conn(), &sql);
+            let per_row = plan
+                .windows(2)
+                .any(|w| w[0].starts_with("CORRELATED") && w[1] == "SCAN f");
+            assert!(
+                !per_row,
+                "a correlated read of import_findings in {sql}: {plan:#?}"
+            );
+        }
     }
 }

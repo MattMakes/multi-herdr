@@ -1,7 +1,3 @@
-//! `horch idea park <id> [<reason>]`: park an idea
-//! (`docs/specs/fleetd/design.md`, "Ideas"). It sends `idea_park` to
-//! fleetd. Its running tasks go on, and no new task of it starts.
-
 use std::process::ExitCode;
 
 use anyhow::Result;
@@ -10,7 +6,6 @@ use horch_core::fleetd::fleet_runtime::domain::requests::Kind;
 use horch_core::runtime::RuntimeContext;
 use serde_json::{json, Map, Value};
 
-/// The reason of a park with no reason.
 const NO_REASON: &str = "parked by the operator";
 
 #[derive(Args)]
@@ -21,7 +16,6 @@ pub struct ParkArgs {
     pub reason: Option<String>,
 }
 
-/// `horch idea park`.
 pub fn run(ctx: &RuntimeContext, args: ParkArgs) -> Result<ExitCode> {
     let reason = args
         .reason

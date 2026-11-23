@@ -1,36 +1,3 @@
-//! The replan of a failed task: the sub-orchestrator replaces the task or
-//! sends it back 1 time, else it is escalated.
-//!
-//! `replan_task` is the use case `ReplanTask` (docs/specs/fleetd/design.md,
-//! "The task state machine", `failed`; RR-6, FM-21;
-//! docs/tickets/fleetd-p6/31-replan.md). The sub-orchestrator of the
-//! feature owns a `failed` task. It writes `replan-<task key>.yaml` in the
-//! idea folder (MAP.md, Q4), with exactly 1 of 2 keys:
-//!
-//! - `retry: <reason>`: the task goes back to `ready` with its attempt
-//!   count at 0, through the requeue of task execution;
-//! - `replace:` with new task entries in the form of plan.yaml: fleetd
-//!   validates the plan of the idea after the replace with the plan
-//!   validator, then, in 1 transaction, the old task follows A cancel and
-//!   the new tasks go in through `replace_planned_task` (MAP.md, Q20).
-//!
-//! Each adds 1 to `replans`. A task that fails after its 1 replan, and a
-//! task that a replace added, are escalated by rung 6. A `failed` task past
-//! its replan limit on the fleet clock is escalated here, and its replan
-//! file is not applied. Each escalation opens 1 needs-you item.
-//!
-//! fleetd writes `replan-<task key>.verdict.json` after each decision on a
-//! replan file, so the sub-orchestrator sees each problem of a refused
-//! replan and writes its file again within the limit.
-//!
-//! A task in `blocked_on_user` whose question has a `replan` answer
-//! (ticket 32, [`answers::replan_question`]) has its replan too, with the
-//! exits of `blocked_on_user` only: `retry` answers the question with the
-//! text of the answer, so the task goes to `ready`; `replace` cancels the
-//! task (A cancel) and answers its question. The time limit of the
-//! question bounds the wait for the file, so the replan limit does not
-//! apply.
-
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -67,43 +34,28 @@ use crate::taskledger::model::{Actor, TaskStatus};
 use crate::taskledger::tasks::{self, Task};
 use crate::taskledger::{runs, Store};
 
-/// The rule name of a problem of reading the replan file.
 const READ: &str = "read";
 
-/// The mode of a verdict file.
 const VERDICT_MODE: u32 = 0o600;
 
-/// What the replan needs besides the ledger: the facts of the plan
-/// validator, and the requeue of a retry.
 pub struct Replan<'a> {
     pub plan: PlanCommit<'a>,
     pub jobs: JobCtx<'a>,
 }
 
-/// The result of 1 replan.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Replanned {
-    /// The task waits for its replan file, within its replan limit.
     Waiting,
-    /// The task is `ready` again with its attempt count at 0.
     Retried,
-    /// The old task is `cancelled`, and the new tasks are in the ledger:
-    /// (key, task id) of each, in the order of the file.
     Replaced { tasks: Vec<(String, String)> },
-    /// The replan file is refused, with each problem. The ledger is as
-    /// before.
     Refused { problems: Vec<Problem> },
-    /// The task is past its replan limit: `escalated`, with 1 needs-you
-    /// item.
     Escalated,
 }
 
-/// The replan file of the task `key`, in its idea folder.
 pub fn replan_file(key: &str) -> String {
     format!("replan-{key}.yaml")
 }
 
-/// The verdict of fleetd on the replan file of the task `key`.
 pub fn verdict_file(key: &str) -> String {
     format!("replan-{key}.verdict.json")
 }
@@ -115,36 +67,25 @@ struct ReplanKeys {
     retry: Option<String>,
 }
 
-/// The decision of a replan file.
 enum Decision {
     Retry(String),
     Replace(Vec<serde_yaml::Value>),
 }
 
-/// The `failed` task of a replan, with its place in the plan of its idea.
 struct Failed {
     task: Task,
     key: String,
     idea: IdeaRow,
-    /// For a task in `blocked_on_user`: its question with a `replan`
-    /// answer, and the text of that answer.
     question: Option<(Question, String)>,
 }
 
-/// The plan of the idea after a replace, with what the commit needs.
 struct Combined {
     plan: Plan,
-    /// The number of tasks of `plan` before the new tasks.
     kept: usize,
-    /// The text of the ticket of each new task.
     tickets: Vec<Option<String>>,
-    /// The tasks of the idea that stay: key -> task id.
     live: BTreeMap<String, String>,
 }
 
-/// The replan of the `failed` task `task_id` at fleet clock `clock`, or of
-/// the task `task_id` in `blocked_on_user` whose question has a `replan`
-/// answer. A task in another state is an error that writes nothing.
 pub fn replan_task(
     store: &mut Store,
     ctx: &Replan<'_>,
@@ -218,8 +159,6 @@ pub fn replan_task(
     }
 }
 
-/// The `failed` task `task_id`, or the task in `blocked_on_user` with a
-/// `replan` answer, with its key in the plan and its idea.
 fn failed_task(conn: &Connection, task_id: &str) -> Result<Failed> {
     let task = tasks::get(conn, task_id)?;
     let question = if task.status == TaskStatus::BlockedOnUser.as_str() {
@@ -252,9 +191,6 @@ fn failed_task(conn: &Connection, task_id: &str) -> Result<Failed> {
     })
 }
 
-/// The retry of the task `task` in `blocked_on_user`: its replan is used,
-/// and its question `q` is answered with the text `answer` of the
-/// sub-orchestrator, so the task goes to `ready` and its worker resumes.
 fn retry_blocked(
     tx: &Connection,
     guard: Option<Generation>,
@@ -266,7 +202,6 @@ fn retry_blocked(
     questions::answered(tx, q, Some(answer))
 }
 
-/// Read the replan file `name` with the checks of SR-6, and its decision.
 fn read_decision(dir: &Path, owner: &User, name: &str) -> Result<Decision, Problem> {
     let text =
         read_ticket(dir, owner, name).map_err(|r| Problem::plan(READ, format!("{name}: {r}")))?;
@@ -284,10 +219,6 @@ fn read_decision(dir: &Path, owner: &User, name: &str) -> Result<Decision, Probl
     }
 }
 
-/// The plan of the idea after the replace: the header of the committed
-/// plan.yaml, each task of the idea that stays, then `entries`. A task that
-/// stays is not `cancelled`, is not the failed task, and is not a judge
-/// task of it (a judge follows the cancel of the task it judges).
 fn combine(
     conn: &Connection,
     dir: &Path,
@@ -341,8 +272,6 @@ fn combine(
     })
 }
 
-/// A key that names 1 file of the idea folder: letters, digits, `.`, `_`
-/// and `-`, and no `.` first. A plan key can hold any text.
 fn file_word(key: &str) -> bool {
     !key.is_empty()
         && !key.starts_with('.')
@@ -351,14 +280,11 @@ fn file_word(key: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
 }
 
-/// The key of the task as committed in `spec_json`.
 fn spec_key(spec_json: &str) -> Option<String> {
     let spec: serde_json::Value = serde_json::from_str(spec_json).ok()?;
     spec["key"].as_str().map(str::to_string)
 }
 
-/// The task of plan.yaml form of each task of the idea that stays, oldest
-/// first, and key -> task id of each.
 fn kept_tasks(
     conn: &Connection,
     failed: &Failed,
@@ -384,8 +310,6 @@ fn kept_tasks(
     Ok((specs, live))
 }
 
-/// Commit the replace in `tx`: the old task follows A cancel, the new
-/// tasks go in, and each new task gets its `task_covers` rows.
 fn commit(
     tx: &Connection,
     ctx: &Replan<'_>,
@@ -446,13 +370,11 @@ fn commit(
     Ok(ids)
 }
 
-/// Write the verdict of a refused replan file. The ledger is as before.
 fn refuse(dir: &Path, key: &str, problems: Vec<Problem>) -> Result<Replanned> {
     write_verdict(dir, key, false, &problems, &[])?;
     Ok(Replanned::Refused { problems })
 }
 
-/// Write `replan-<key>.verdict.json` in the idea folder `dir`, atomically.
 fn write_verdict(
     dir: &Path,
     key: &str,

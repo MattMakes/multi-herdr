@@ -1,4 +1,3 @@
-# docs-sources.toml
 [herdr]
 kind = "sitemap"
 url = "https://herdr.dev/sitemap.xml"
@@ -15,7 +14,7 @@ version_cmd = "claude --version"
 kind = "llms_txt"
 url = "https://learn.chatgpt.com/docs/llms.txt"
 include = ["config-reference", "non-interactive-mode", "sandboxing", "hooks", "agents-md", "build-skills"]
-also_git = "https://github.com/openai/codex"   # docs/ folder and release notes
+also_git = "https://github.com/openai/codex"
 version_cmd = "codex --version"
 
 [agy]

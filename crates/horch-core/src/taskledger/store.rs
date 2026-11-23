@@ -1,7 +1,6 @@
-//! Opening the task ledger: 1 SQLite file per machine (ADR 0001).
-
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -9,30 +8,18 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, Transactio
 
 use super::schema;
 
-/// How long a writer waits for another writer's lock before it fails.
-/// A claim or a checkin holds the lock for milliseconds; 30 s is room for
-/// many workers at once on a slow disk.
 pub const BUSY_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// A live opener keeps its initialization lock for at most this long before
-/// another machine may break it. Dead local processes are detected at once.
 const OPEN_LOCK_STALE_AFTER: Duration = Duration::from_secs(5 * 60);
 
-/// The cross-process lock used only while a ledger switches to WAL and runs
-/// its first migration. Ledgers already in WAL mode do not take this lock.
 const OPEN_LOCK_NAME: &str = "task-ledger-open";
 
-/// The ledger file under a home directory: `<home>/.horch/ledger.sqlite3`.
 pub fn default_path(home: &Path) -> PathBuf {
     home.join(".horch").join("ledger.sqlite3")
 }
 
-/// The opt-in that lets a development build migrate the shared ledger.
 pub const ALLOW_MIGRATE_ENV: &str = "HORCH_ALLOW_LEDGER_MIGRATE";
 
-/// True when `exe` is a cargo build output: a `target` component followed
-/// by `debug` or `release`, or by 1 more component and then `debug`,
-/// `release` or `deps` (`target/<triple>/debug`, `target/<profile>/deps`).
 pub fn is_dev_build(exe: &Path) -> bool {
     let parts: Vec<&std::ffi::OsStr> = exe
         .parent()
@@ -49,15 +36,10 @@ pub fn is_dev_build(exe: &Path) -> bool {
     })
 }
 
-/// True when `ledger` is the operator's shared ledger,
-/// `<passwd_home>/.horch/ledger.sqlite3`.
 pub fn is_shared_ledger(ledger: &Path, passwd_home: &Path) -> bool {
     ledger == default_path(passwd_home)
 }
 
-/// Why this horch must not migrate `ledger` from version `from`, or `None`
-/// when it may. A development build refuses the shared ledger unless
-/// `allow` (the value of [`ALLOW_MIGRATE_ENV`]) is `1`.
 pub fn migrate_refusal(
     exe: &Path,
     ledger: &Path,
@@ -65,8 +47,7 @@ pub fn migrate_refusal(
     allow: Option<&str>,
     from: i64,
 ) -> Option<String> {
-    let shared = passwd_home.is_some_and(|home| is_shared_ledger(ledger, home));
-    if !shared || !is_dev_build(exe) || allow == Some("1") {
+    if !refused(exe, ledger, passwd_home, allow) {
         return None;
     }
     Some(format!(
@@ -80,38 +61,104 @@ pub fn migrate_refusal(
     ))
 }
 
-/// [`migrate_refusal`] for this process and `ledger`.
-fn guard(ledger: &Path, from: i64) -> Result<()> {
+fn refused(exe: &Path, ledger: &Path, passwd_home: Option<&Path>, allow: Option<&str>) -> bool {
+    let shared = passwd_home.is_some_and(|home| is_shared_ledger(ledger, home));
+    shared && is_dev_build(exe) && allow != Some("1")
+}
+
+pub fn write_refusal(
+    exe: &Path,
+    ledger: &Path,
+    passwd_home: Option<&Path>,
+    allow: Option<&str>,
+) -> Option<String> {
+    if !refused(exe, ledger, passwd_home, allow) {
+        return None;
+    }
+    Some(format!(
+        "the development build {exe} refuses to open the shared task ledger {ledger} for a write, \
+         because its rows name the live runs and processes of the installed horch.\n\
+         Set HORCH_LEDGER_DB=<scratch file> to use a scratch ledger, \
+         or set {ALLOW_MIGRATE_ENV}=1 to write the shared ledger.",
+        exe = exe.display(),
+        ledger = ledger.display(),
+    ))
+}
+
+pub fn canonical(path: &Path) -> PathBuf {
+    let mut rest = Vec::new();
+    let mut at = path;
+    loop {
+        if let Ok(real) = std::fs::canonicalize(at) {
+            return rest.iter().rev().fold(real, |p, name| p.join(name));
+        }
+        match (at.parent(), at.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name.to_os_string());
+                at = if parent.as_os_str().is_empty() {
+                    Path::new(".")
+                } else {
+                    parent
+                };
+            }
+            _ => return path.to_path_buf(),
+        }
+    }
+}
+
+fn passwd_home() -> Option<PathBuf> {
+    horch_platform::path::passwd_home().ok().flatten()
+}
+
+fn shared<'a>(ledger: &Path, passwd_home: Option<&'a Path>) -> (Option<&'a Path>, PathBuf) {
+    let home = passwd_home.filter(|h| canonical(&default_path(h)) == canonical(ledger));
+    let shown = home.map_or_else(|| ledger.to_path_buf(), default_path);
+    (home, shown)
+}
+
+fn open_refusal(
+    exe: &Path,
+    ledger: &Path,
+    passwd_home: Option<&Path>,
+    allow: Option<&str>,
+) -> Option<String> {
+    let (home, shown) = shared(ledger, passwd_home);
+    write_refusal(exe, &shown, home, allow)
+}
+
+fn this_process() -> Option<(PathBuf, Option<String>)> {
     use crate::runtime::{EnvSource, ProcessEnv};
-    let Some(exe) = ProcessEnv.current_exe() else {
+    let exe = ProcessEnv.current_exe()?;
+    Some((exe, ProcessEnv.var(ALLOW_MIGRATE_ENV)))
+}
+
+fn guard(ledger: &Path, from: i64) -> Result<()> {
+    let Some((exe, allow)) = this_process() else {
         return Ok(());
     };
-    let real = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
-    // Compare real paths, so a symlinked home or a relative path still matches.
-    // The home of this user in the passwd database, not `$HOME`: a test or a
-    // fleet can point `$HOME` anywhere, but the shared ledger stays. Where
-    // the OS has no passwd database, no ledger counts as shared.
-    let home = horch_platform::path::passwd_home().ok().flatten();
-    let shared = home.as_deref().map(|h| real(&default_path(h)));
-    let ledger = real(ledger);
-    let allow = ProcessEnv.var(ALLOW_MIGRATE_ENV);
-    // `is_shared_ledger` checks `<home>/.horch/ledger.sqlite3`; pass the home
-    // only when the real paths match.
-    let home = home.filter(|_| shared.as_deref() == Some(ledger.as_path()));
-    let shown = home.as_deref().map(default_path).unwrap_or(ledger);
-    match migrate_refusal(&exe, &shown, home.as_deref(), allow.as_deref(), from) {
+    let home = passwd_home();
+    let (home, shown) = shared(ledger, home.as_deref());
+    match migrate_refusal(&exe, &shown, home, allow.as_deref(), from) {
         Some(text) => anyhow::bail!(text),
         None => Ok(()),
     }
 }
 
-/// The current SQLite journal mode, in lower-case ASCII.
+fn guard_open(ledger: &Path) -> Result<()> {
+    let Some((exe, allow)) = this_process() else {
+        return Ok(());
+    };
+    match open_refusal(&exe, ledger, passwd_home().as_deref(), allow.as_deref()) {
+        Some(text) => anyhow::bail!(text),
+        None => Ok(()),
+    }
+}
+
 fn journal_mode(conn: &Connection) -> Result<String> {
     conn.query_row("PRAGMA journal_mode", [], |row| row.get(0))
         .context("reading the task ledger journal mode")
 }
 
-/// Serialize the WAL switch and first migration across threads and processes.
 fn open_lock(path: &Path) -> Result<crate::fsx::DirLockGuard> {
     let dir = path
         .parent()
@@ -121,16 +168,10 @@ fn open_lock(path: &Path) -> Result<crate::fsx::DirLockGuard> {
         .with_context(|| format!("locking task ledger initialization for {}", path.display()))
 }
 
-/// The test seam of RR-5: with this variable set to `1`, a writable open of
-/// the ledger in a process that made no [`LedgerWriter`] panics. The e2e
-/// tests set it for each CLI process.
 pub const ASSERT_READ_ONLY_ENV: &str = "HORCH_TEST_ASSERT_READ_ONLY";
 
-/// True after this process made the [`LedgerWriter`] of fleetd.
 static FLEETD_WRITER: AtomicBool = AtomicBool::new(false);
 
-/// Panic under the seam ([`ASSERT_READ_ONLY_ENV`]) when this process is not
-/// fleetd.
 fn assert_fleetd_writer(path: &Path) {
     use crate::runtime::{EnvSource, ProcessEnv};
     if FLEETD_WRITER.load(Ordering::SeqCst) {
@@ -144,63 +185,165 @@ fn assert_fleetd_writer(path: &Path) {
     }
 }
 
-/// The right of this process to write the ledger (RR-5, FM-24). From
-/// Phase 5 fleetd is the 1 writer: each other process opens the ledger with
-/// [`Store::open_read_only`] and sends a request or writes a file.
-///
-/// Only the composition root of fleetd (`crates/horch/src/cmd/fleetd.rs`)
-/// makes it, for `horch fleetd` and for `horch ledger watch --once`, which
-/// takes the fleetd lock. The arch rule
-/// `fitness_only_fleet_runtime_opens_the_ledger_writable` holds that.
 #[derive(Debug)]
 pub struct LedgerWriter(());
 
 impl LedgerWriter {
-    /// The writer of fleetd. After this call, the seam lets this process
-    /// open the ledger for a write.
     pub fn fleetd() -> LedgerWriter {
         FLEETD_WRITER.store(true, Ordering::SeqCst);
         LedgerWriter(())
     }
 
-    /// Open (and create, and migrate) the ledger at `path` for a write.
     pub fn open(&self, path: &Path) -> Result<Store> {
         Store::open(path)
     }
 }
 
-/// An open task ledger.
+#[derive(Clone, Debug)]
+pub struct ReadOnlyRecord(Arc<ReadOnlyEntry>);
+
+#[derive(Debug)]
+struct ReadOnlyEntry {
+    path: PathBuf,
+    last: Mutex<String>,
+}
+
+fn record_statements(conn: &Connection, path: &Path) -> ReadOnlyRecord {
+    unsafe extern "C" fn on_statement(
+        event: std::os::raw::c_uint,
+        ctx: *mut std::os::raw::c_void,
+        _stmt: *mut std::os::raw::c_void,
+        sql: *mut std::os::raw::c_void,
+    ) -> std::os::raw::c_int {
+        if event == rusqlite::ffi::SQLITE_TRACE_STMT as std::os::raw::c_uint && !sql.is_null() {
+            // SAFETY: `ctx` is the `ReadOnlyEntry` of the `Store` that owns
+            // this connection. The `Store` declares `conn` before `record`,
+            // so the connection closes, and SQLite stops calling this
+            // callback, before the `Store` drops its `Arc` of the entry.
+            let entry = unsafe { &*ctx.cast::<ReadOnlyEntry>() };
+            // SAFETY: for SQLITE_TRACE_STMT, SQLite passes the SQL text as
+            // a NUL-terminated string that lives for this call.
+            let text = unsafe { std::ffi::CStr::from_ptr(sql.cast()) };
+            if let Ok(mut last) = entry.last.lock() {
+                *last = text.to_string_lossy().into_owned();
+            }
+        }
+        0
+    }
+    let record = ReadOnlyRecord(Arc::new(ReadOnlyEntry {
+        path: path.to_path_buf(),
+        last: Mutex::new(String::new()),
+    }));
+    // SAFETY: the handle is the open connection of `conn`. The context
+    // pointer stays valid for each call of the callback: see the SAFETY
+    // comment in `on_statement`.
+    unsafe {
+        rusqlite::ffi::sqlite3_trace_v2(
+            conn.handle(),
+            rusqlite::ffi::SQLITE_TRACE_STMT as std::os::raw::c_uint,
+            Some(on_statement),
+            Arc::as_ptr(&record.0).cast_mut().cast(),
+        );
+    }
+    record
+}
+
+pub fn read_only_failure(
+    command: &str,
+    record: Option<&ReadOnlyRecord>,
+    err: anyhow::Error,
+) -> anyhow::Error {
+    let read_only = err.chain().any(|e| {
+        e.downcast_ref::<rusqlite::Error>()
+            .and_then(rusqlite::Error::sqlite_error)
+            .is_some_and(|f| f.extended_code & 0xff == rusqlite::ffi::SQLITE_READONLY)
+    });
+    if !read_only {
+        return err;
+    }
+    let last = record.map(|r| {
+        let sql = r.0.last.lock().map(|l| l.clone()).unwrap_or_default();
+        (&r.0.path, sql)
+    });
+    let text = match last {
+        Some((path, sql)) if !sql.is_empty() => format!(
+            "`{command}` got SQLITE_READONLY on the read-only task ledger {}; the last statement was: {sql}",
+            path.display()
+        ),
+        Some((path, _)) => format!(
+            "`{command}` got SQLITE_READONLY on the read-only task ledger {} before its first statement",
+            path.display()
+        ),
+        None => format!("`{command}` got SQLITE_READONLY with no read-only task ledger open"),
+    };
+    err.context(text)
+}
+
+pub const SQL_TRACE_ENV: &str = "HORCH_TEST_SQL_TRACE";
+
+fn trace_writes(conn: &Connection) {
+    #[cfg(debug_assertions)]
+    {
+        use crate::runtime::{EnvSource, ProcessEnv};
+        if let Some(file) = ProcessEnv.var(SQL_TRACE_ENV) {
+            trace_to(conn, PathBuf::from(file));
+        }
+    }
+    #[cfg(not(debug_assertions))]
+    let _ = conn;
+}
+
+#[cfg(debug_assertions)]
+fn trace_to(conn: &Connection, file: PathBuf) {
+    use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+    conn.authorizer(Some(move |ctx: AuthContext<'_>| {
+        let read = matches!(
+            ctx.action,
+            AuthAction::Read { .. } | AuthAction::Select | AuthAction::Function { .. }
+        ) || matches!(
+            ctx.action,
+            AuthAction::Savepoint { savepoint_name, .. } if savepoint_name == SNAPSHOT
+        );
+        if !read {
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&file)
+            {
+                let _ = writeln!(f, "{:?}", ctx.action);
+            }
+        }
+        Authorization::Allow
+    }));
+}
+
 pub struct Store {
     conn: Connection,
     path: PathBuf,
+    record: Option<ReadOnlyRecord>,
 }
 
 impl Store {
-    /// Open (and create, and migrate) the ledger at `path`. A development
-    /// build does not migrate the shared ledger ([`migrate_refusal`]).
-    ///
-    /// A writable open: production code calls it through [`LedgerWriter`],
-    /// and under [`ASSERT_READ_ONLY_ENV`] a process that is not fleetd
-    /// panics here, before it touches the file.
     pub fn open(path: &Path) -> Result<Store> {
+        Store::open_checked(path, &guard_open)
+    }
+
+    fn open_checked(path: &Path, check: &dyn Fn(&Path) -> Result<()>) -> Result<Store> {
         assert_fleetd_writer(path);
+        check(path)?;
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
         }
         let mut conn = Connection::open(path)
             .with_context(|| format!("opening the task ledger {}", path.display()))?;
         conn.busy_timeout(BUSY_TIMEOUT)?;
-        // Switching journal mode is not covered by SQLite's busy timeout. A
-        // first opener holds a cross-process lock until migration completes;
-        // later openers see WAL and rely on SQLite's writer lock as usual.
         let _open_lock = if journal_mode(&conn)? == "wal" {
             None
         } else {
             Some(open_lock(path)?)
         };
         if journal_mode(&conn)? != "wal" {
-            // WAL: readers never block the 1 writer, and a crash mid-write
-            // keeps the last committed state.
             let _: String = conn
                 .query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))
                 .context("setting the task ledger journal mode to WAL")?;
@@ -212,35 +355,35 @@ impl Store {
         Ok(Store {
             conn,
             path: path.to_path_buf(),
+            record: None,
         })
     }
 
-    /// Open an existing ledger without creating, migrating, or changing its
-    /// journal settings. Read-only commands use this in a sandbox.
     pub fn open_read_only(path: &Path) -> Result<Store> {
         let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
             .with_context(|| format!("opening the task ledger {} read-only", path.display()))?;
         conn.busy_timeout(BUSY_TIMEOUT)?;
+        let record = record_statements(&conn, path);
+        trace_writes(&conn);
         Ok(Store {
             conn,
             path: path.to_path_buf(),
+            record: Some(record),
         })
     }
 
-    /// The file this store reads and writes.
+    pub fn read_only_record(&self) -> Option<ReadOnlyRecord> {
+        self.record.clone()
+    }
+
     pub fn path(&self) -> &Path {
         &self.path
     }
 
-    /// The connection, for reads.
     pub fn conn(&self) -> &Connection {
         &self.conn
     }
 
-    /// A second writable store of this writable ledger: the own connection
-    /// of the custody of a caller (`finish::with_custody`). A read-only
-    /// store gives an error. It opens through [`Store::open`], so the seam
-    /// checks the process again (T-885).
     pub fn second_writer(&self) -> Result<Store> {
         anyhow::ensure!(
             !self.conn.is_readonly(rusqlite::MAIN_DB)?,
@@ -251,18 +394,10 @@ impl Store {
         Store::open(path)
     }
 
-    /// The connection, for a call that takes `&mut Connection`: a custody
-    /// call that runs a job between its transactions ([`Store::second_writer`]).
     pub fn conn_mut(&mut self) -> &mut Connection {
         &mut self.conn
     }
 
-    /// Run `f` in a `BEGIN IMMEDIATE` transaction: the write lock is taken
-    /// before the first read, so a read-then-write (claim, reap, land) cannot
-    /// interleave with another writer. Commits when `f` returns `Ok`. When
-    /// `f` fails, the transaction rolls back, and a refused move of the
-    /// error is recorded after it
-    /// ([`super::util::record_refusal_after_rollback`]).
     pub fn immediate<T>(&mut self, f: impl FnOnce(&Transaction) -> Result<T>) -> Result<T> {
         let tx = self
             .conn
@@ -282,7 +417,20 @@ impl Store {
     }
 }
 
-/// 1 optional value of a query.
+pub fn one_snapshot<T>(conn: &Connection, f: impl FnOnce() -> Result<T>) -> Result<T> {
+    conn.execute_batch(&format!("SAVEPOINT {SNAPSHOT}"))?;
+    let out = f();
+    let end = if out.is_ok() {
+        format!("RELEASE {SNAPSHOT}")
+    } else {
+        format!("ROLLBACK TO {SNAPSHOT}; RELEASE {SNAPSHOT}")
+    };
+    conn.execute_batch(&end)?;
+    out
+}
+
+const SNAPSHOT: &str = "one_snapshot";
+
 pub fn optional<T>(r: rusqlite::Result<T>) -> Result<Option<T>> {
     Ok(r.optional()?)
 }
@@ -318,7 +466,6 @@ mod tests {
             .unwrap();
         assert_eq!(v, schema::VERSION);
         drop(store);
-        // Reopening is a no-op migration.
         Store::open(&path).unwrap();
     }
 
@@ -334,6 +481,128 @@ mod tests {
             .unwrap();
         assert_eq!(version, schema::VERSION);
         assert!(store.conn().execute("PRAGMA user_version = 0", []).is_err());
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn the_trace_records_a_write_of_a_read_only_connection() {
+        let dir = temp();
+        let path = dir.path().join("ledger.sqlite3");
+        drop(Store::open(&path).unwrap());
+        let store = Store::open_read_only(&path).unwrap();
+        let trace = dir.path().join("trace.txt");
+        trace_to(store.conn(), trace.clone());
+        let _: i64 = store
+            .conn()
+            .query_row("SELECT count(*) FROM projects", [], |r| r.get(0))
+            .unwrap();
+        assert!(!trace.exists(), "a read is not traced");
+        let err = store
+            .conn()
+            .execute("INSERT INTO projects VALUES ('p', '/r', 'now')", [])
+            .unwrap_err();
+        assert!(err.to_string().contains("readonly"), "{err}");
+        let text = std::fs::read_to_string(&trace).unwrap();
+        assert!(text.contains("Insert"), "{text}");
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn the_trace_counts_only_the_snapshot_savepoint_as_a_read() {
+        let dir = temp();
+        let path = dir.path().join("ledger.sqlite3");
+        drop(Store::open(&path).unwrap());
+        let store = Store::open_read_only(&path).unwrap();
+        let trace = dir.path().join("trace.txt");
+        trace_to(store.conn(), trace.clone());
+        let conn = store.conn();
+        one_snapshot(conn, || {
+            let _: i64 = conn.query_row("SELECT count(*) FROM projects", [], |r| r.get(0))?;
+            Ok(())
+        })
+        .unwrap();
+        assert!(one_snapshot(conn, || Err::<(), _>(anyhow::anyhow!("x"))).is_err());
+        assert!(!trace.exists(), "a snapshot read is not traced");
+        let written = one_snapshot(conn, || {
+            Ok(conn.execute("INSERT INTO projects VALUES ('p', '/r', 'now')", [])?)
+        });
+        assert!(written.is_err(), "the read-only ledger refuses the insert");
+        let text = std::fs::read_to_string(&trace).unwrap();
+        assert!(text.contains("Insert"), "{text}");
+        std::fs::remove_file(&trace).unwrap();
+        for name in ["other", "one_snapshot_x"] {
+            conn.execute_batch(&format!("SAVEPOINT {name}; RELEASE {name}"))
+                .unwrap();
+        }
+        let text = std::fs::read_to_string(&trace).unwrap();
+        assert!(text.contains("\"other\""), "{text}");
+        assert!(text.contains("\"one_snapshot_x\""), "{text}");
+    }
+
+    #[test]
+    fn a_read_only_failure_names_the_command_the_statement_and_the_ledger() {
+        let dir = temp();
+        let path = dir.path().join("ledger.sqlite3");
+        drop(Store::open(&path).unwrap());
+        let store = Store::open_read_only(&path).unwrap();
+        let err: anyhow::Error = store
+            .conn()
+            .execute("INSERT INTO projects VALUES ('p', '/r', 'now')", [])
+            .unwrap_err()
+            .into();
+        let text = format!(
+            "{:#}",
+            read_only_failure(
+                "horch ledger status --json",
+                store.read_only_record().as_ref(),
+                err
+            )
+        );
+        assert!(text.contains("`horch ledger status --json`"), "{text}");
+        assert!(
+            text.contains("the last statement was: INSERT INTO projects VALUES ('p', '/r', 'now')"),
+            "{text}"
+        );
+        assert!(text.contains(&path.display().to_string()), "{text}");
+        assert!(text.contains("Error code 8"), "{text}");
+        let other = read_only_failure("horch ledger status", None, anyhow::anyhow!("no run"));
+        assert_eq!(format!("{other:#}"), "no run", "another error is unchanged");
+    }
+
+    #[test]
+    fn a_read_only_failure_names_the_store_that_failed_with_2_stores_open() {
+        let dir = temp();
+        let first_path = dir.path().join("first.sqlite3");
+        let second_path = dir.path().join("second.sqlite3");
+        drop(Store::open(&first_path).unwrap());
+        drop(Store::open(&second_path).unwrap());
+        let first = Store::open_read_only(&first_path).unwrap();
+        let second = Store::open_read_only(&second_path).unwrap();
+        let err: anyhow::Error = first
+            .conn()
+            .execute("INSERT INTO projects VALUES ('first', '/r', 'now')", [])
+            .unwrap_err()
+            .into();
+        let _: i64 = second
+            .conn()
+            .query_row("SELECT count(*) FROM tasks", [], |r| r.get(0))
+            .unwrap();
+        let text = format!(
+            "{:#}",
+            read_only_failure(
+                "horch ledger status",
+                first.read_only_record().as_ref(),
+                err
+            )
+        );
+        assert!(
+            text.contains(
+                "the last statement was: INSERT INTO projects VALUES ('first', '/r', 'now')"
+            ),
+            "{text}"
+        );
+        assert!(text.contains(&first_path.display().to_string()), "{text}");
+        assert!(!text.contains(&second_path.display().to_string()), "{text}");
     }
 
     #[test]
@@ -417,6 +686,88 @@ mod tests {
             Ok(())
         })
         .unwrap();
+    }
+
+    fn check_as<'a>(
+        exe: &'a Path,
+        home: &'a Path,
+        allow: Option<&'a str>,
+    ) -> impl Fn(&Path) -> Result<()> + 'a {
+        move |ledger: &Path| match open_refusal(exe, ledger, Some(home), allow) {
+            Some(text) => anyhow::bail!(text),
+            None => Ok(()),
+        }
+    }
+
+    const DEV: &str = "/w/target/debug/horch";
+
+    #[test]
+    fn a_dev_build_refuses_a_same_version_write_of_the_shared_ledger() {
+        let home = temp();
+        let shared = default_path(home.path());
+        drop(Store::open(&shared).unwrap());
+        let before = std::fs::read(&shared).unwrap();
+        let err = Store::open_checked(&shared, &check_as(Path::new(DEV), home.path(), None))
+            .err()
+            .expect("a dev build refuses the shared ledger");
+        let text = format!("{err:#}");
+        assert!(
+            text.contains("refuses to open the shared task ledger"),
+            "{text}"
+        );
+        assert!(text.contains(ALLOW_MIGRATE_ENV), "{text}");
+        assert_eq!(
+            std::fs::read(&shared).unwrap(),
+            before,
+            "the file is unchanged"
+        );
+        for opt_out in [Some("0"), Some("")] {
+            assert!(
+                Store::open_checked(&shared, &check_as(Path::new(DEV), home.path(), opt_out))
+                    .is_err(),
+                "{opt_out:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_dev_build_refuses_the_shared_ledger_before_it_touches_the_disk() {
+        let home = temp();
+        let shared = default_path(home.path());
+        let err = Store::open_checked(&shared, &check_as(Path::new(DEV), home.path(), None));
+        assert!(err.is_err());
+        assert!(
+            !home.path().join(".horch").exists(),
+            "no folder and no file is created"
+        );
+    }
+
+    #[test]
+    fn a_dev_build_opens_a_scratch_ledger_or_the_shared_one_with_the_opt_in() {
+        let home = temp();
+        let check = check_as(Path::new(DEV), home.path(), None);
+        let scratch = home.path().join("scratch").join("ledger.sqlite3");
+        Store::open_checked(&scratch, &check).expect("a scratch ledger opens");
+        let shared = default_path(home.path());
+        let allowed = check_as(Path::new(DEV), home.path(), Some("1"));
+        Store::open_checked(&shared, &allowed).expect("the opt-in opens the shared ledger");
+        let installed = check_as(Path::new("/usr/local/bin/horch"), home.path(), None);
+        Store::open_checked(&shared, &installed).expect("an installed build opens it");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_home_still_names_the_shared_ledger() {
+        let dir = temp();
+        let real = dir.path().join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let via_link = default_path(&link);
+        assert_eq!(canonical(&via_link), canonical(&default_path(&real)));
+        let err = Store::open_checked(&via_link, &check_as(Path::new(DEV), &real, None));
+        assert!(err.is_err(), "the link names the shared ledger");
+        assert!(!real.join(".horch").exists());
     }
 
     #[test]

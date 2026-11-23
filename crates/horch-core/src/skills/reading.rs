@@ -1,10 +1,3 @@
-//! Reading a catalog skill's files outside a bundle (`horch skills read`),
-//! and finding the catalog skills a bundle's texts name but do not hold.
-//!
-//! A worker's bundle holds only its teammate's skills, but the skill texts
-//! name many others. The briefing says how many, and `horch skills read`
-//! prints one on demand, so no listed skill costs context it does not use.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 
@@ -12,9 +5,6 @@ use anyhow::{bail, Context, Result};
 
 use super::catalog::{CatalogEntry, CatalogSource, SkillCatalog};
 
-/// The files of skill `id`, as paths relative to its directory, sorted.
-/// A bundled skill lists its compiled-in files; any other skill lists the
-/// regular files of its directory on disk.
 pub fn files(catalog: &SkillCatalog, id: &str) -> Result<Vec<String>> {
     let entry = lookup(catalog, id)?;
     let mut out: Vec<String> = match disk_dir(catalog, entry)? {
@@ -29,9 +19,6 @@ pub fn files(catalog: &SkillCatalog, id: &str) -> Result<Vec<String>> {
     Ok(out)
 }
 
-/// The bytes of `file` (relative to the skill directory) of skill `id`.
-/// Refuses an empty, absolute or `..` path, and a file the skill does not
-/// have. Reads only; writes nothing.
 pub fn read(catalog: &SkillCatalog, id: &str, file: &str) -> Result<Vec<u8>> {
     let rel = Path::new(file);
     if file.is_empty()
@@ -77,7 +64,6 @@ fn lookup<'a>(catalog: &'a SkillCatalog, id: &str) -> Result<&'a CatalogEntry> {
         .with_context(|| format!("no skill '{id}' in the catalog; list skills with horch skills"))
 }
 
-/// The directory on disk of a skill whose files are not compiled in.
 fn disk_dir(catalog: &SkillCatalog, entry: &CatalogEntry) -> Result<Option<PathBuf>> {
     Ok(match &entry.source {
         CatalogSource::Bundled => None,
@@ -91,8 +77,6 @@ fn disk_dir(catalog: &SkillCatalog, entry: &CatalogEntry) -> Result<Option<PathB
     })
 }
 
-/// Every regular file under `dir`, relative to `root`, with `/`
-/// separators. Symlinks are skipped: a skill tree never holds one.
 fn walk(root: &Path, dir: &Path, out: &mut Vec<String>) -> Result<()> {
     for item in std::fs::read_dir(dir).with_context(|| format!("{}", dir.display()))? {
         let item = item?;
@@ -113,15 +97,6 @@ fn walk(root: &Path, dir: &Path, out: &mut Vec<String>) -> Result<()> {
     Ok(())
 }
 
-/// How often each of `ids` is named in `texts`.
-///
-/// A name is a maximal run of `[A-Za-z0-9_-]`, so an id never matches
-/// inside a longer word or id: `code-review` does not match in
-/// `godot-code-review`. An id with a hyphen counts on every such match. An
-/// id without one (`tdd`, `check`) is often an English word, so it counts
-/// only in 3 forms: in backticks (`` `tdd` ``), in a link path
-/// (`../tdd/SKILL.md`), or qualified by a namespace (`horch:tdd`). Plain
-/// prose such as "check the build" does not count.
 pub fn mentions<'a>(
     texts: impl IntoIterator<Item = &'a [u8]>,
     ids: &BTreeSet<&str>,
@@ -139,12 +114,10 @@ pub fn mentions<'a>(
     out
 }
 
-/// A byte of a name: `[A-Za-z0-9_-]`.
 fn is_word(b: u8) -> bool {
     b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-')
 }
 
-/// The `(start, end)` of each maximal run of name bytes in `text`.
 fn words(text: &[u8]) -> impl Iterator<Item = (usize, usize)> + '_ {
     let mut at = 0;
     text.split(|&b| !is_word(b)).filter_map(move |run| {
@@ -154,7 +127,6 @@ fn words(text: &[u8]) -> impl Iterator<Item = (usize, usize)> + '_ {
     })
 }
 
-/// Whether the name at `text[start..end]` counts as a mention of the skill.
 fn is_mention(text: &[u8], start: usize, end: usize, name: &str) -> bool {
     let before = start.checked_sub(1).map(|j| text[j]);
     let after = text.get(end).copied();
@@ -166,10 +138,6 @@ fn is_mention(text: &[u8], start: usize, end: usize, name: &str) -> bool {
         }
 }
 
-/// The catalog skills that the `.md` files of the `activated` skills name
-/// but that are not activated, most-named first, ties in id order.
-/// Candidates are the bundled and marketplace skills, which
-/// `horch skills read` can print. Only compiled-in text is scanned.
 pub fn outside_bundle(catalog: &SkillCatalog, activated: &[&str]) -> Vec<(String, usize)> {
     let ids: BTreeSet<&str> = catalog
         .entries()

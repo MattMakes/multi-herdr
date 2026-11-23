@@ -1,9 +1,3 @@
-//! A0 behavior oracles for the `horch` binary: `horch skills` and `horch
-//! sessions` output, frozen in `tests/oracles/` (ARC-01).
-//!
-//! The oracle files never change. `HORCH_BLESS=1` writes them; that is for
-//! the A0 baseline only, and a diff here means user-visible output changed.
-
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -11,8 +5,6 @@ fn oracles() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/oracles")
 }
 
-/// Write `actual` under `HORCH_BLESS=1`; otherwise compare it with the
-/// frozen file, which must exist.
 fn check_oracle(rel: &str, actual: &str) {
     let path = oracles().join(rel);
     if std::env::var("HORCH_BLESS").ok().as_deref() == Some("1") {
@@ -44,10 +36,6 @@ fn check_oracle(rel: &str, actual: &str) {
 
 const PHASES: [&str; 4] = ["research", "plan", "implementation", "validation"];
 
-/// The skills of the A0 oracle. Skills added later appear in the full
-/// listing (`horch skills` without `--phase`) but belong to no phase, so the
-/// frozen full-listing oracle holds these 16 skills only, with its metadata
-/// totals blanked. A bless writes that same view, never the host listing.
 const A0_SKILLS: [&str; 16] = [
     "brainstorm",
     "check",
@@ -67,8 +55,6 @@ const A0_SKILLS: [&str; 16] = [
     "trace",
 ];
 
-/// `text` (a full `horch skills` listing, text or JSON) reduced to the A0
-/// skills, with the metadata totals blanked.
 fn a0_skills_view(text: &str) -> String {
     if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(text) {
         if let Some(skills) = v["skills"].as_array_mut() {
@@ -97,10 +83,8 @@ fn a0_skills_view(text: &str) -> String {
         .join("\n")
 }
 
-/// The project path every session fixture is installed under.
 const PROJECT: &str = "/oracle/project";
 
-/// A temp home and state root, and a `horch` command that sees only them.
 struct World {
     _tmp: tempfile::TempDir,
     root: PathBuf,
@@ -109,7 +93,7 @@ struct World {
 impl World {
     fn new() -> World {
         let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().canonicalize().unwrap();
+        let root = horch_platform::path::canonicalize(tmp.path()).unwrap();
         std::fs::create_dir_all(root.join("home")).unwrap();
         std::fs::create_dir_all(root.join("state")).unwrap();
         World { _tmp: tmp, root }
@@ -122,9 +106,16 @@ impl World {
     fn horch(&self, args: &[&str]) -> String {
         let teammates = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../teammates");
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_horch"));
-        // A test run inside a herdr pane must not see that pane's workspace:
-        // sessions are filtered by workspace, which would hide the fixtures.
         for (key, _) in std::env::vars().filter(|(k, _)| k.starts_with("HERDR_")) {
+            cmd.env_remove(key);
+        }
+        for key in [
+            "HERDR_PANE_ID",
+            "HC_TERMINAL_ID",
+            "HC_SCOPE",
+            "HC_TERMINAL_SOCKET",
+            "HORCH_BACKEND",
+        ] {
             cmd.env_remove(key);
         }
         let out = cmd

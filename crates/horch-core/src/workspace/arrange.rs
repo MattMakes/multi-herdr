@@ -1,21 +1,3 @@
-//! Laying the fleet's panes out: `horch tile`, `horch layout`'s report and the
-//! column balance `horch balance`, `horch spawn` and `horch done` share.
-//!
-//! The planning is pure and lives in [`tile`], [`balance`] and [`layout`]; this
-//! is the part that talks to herdr. What it adds on top of the plan is
-//! everything that needs the live workspace: reading it, substituting the ids of
-//! tabs the plan creates, stopping when herdr declines a move, putting focus
-//! back, evening the columns out, and keeping two tilers from running at once.
-//!
-//! `horch spawn` and `horch done` call this themselves (see [`after_change`] and
-//! [`settle_after_close`]), so the grid is laid out without an agent spending a
-//! token on it. `HORCH_TILE=0` puts both back to the old behaviour of only
-//! evening out the columns.
-//!
-//! Moved out of the CLI's `cmd/{tilecmd,layoutcmd,balancecmd}.rs` in A7. Every
-//! function takes [`Herdr`]: the tab, layout, move, resize and focus calls are
-//! not part of [`WorkspaceClient`](crate::workspace::client::WorkspaceClient).
-
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
@@ -27,26 +9,19 @@ use crate::messaging::mailbox::Mailbox;
 use crate::runtime::process::spawn_detached;
 use crate::runtime::RuntimeContext;
 use crate::workspace::balance;
-use crate::workspace::herdr::Herdr;
+use crate::workspace::host::PaneHost;
 use crate::workspace::layout::{self, Orchestrator};
 use crate::workspace::model::{Direction, Layout};
 use crate::workspace::tile::{self, Fleet, FocusState, Op, Plan, TabRef, TabShape, Worker};
 
-/// The label of the `horch telemetry` workspace, which tiling leaves alone.
-/// The CLI's `telemetry::WORKSPACE_LABEL` is the same string.
 pub const TELEMETRY_WORKSPACE_LABEL: &str = "horch telemetry";
 
-/// One resize per divider, plus slack for a divider that lands a cell out and
-/// wants a second nudge. The same budget `horch balance` uses.
 const MAX_BALANCE_OPS: usize = 24;
 
-/// How long a tiler waits for another one to finish before giving up.
 const LOCK_WAIT: Duration = Duration::from_secs(20);
-/// A lock older than this is from a run that died; no tile takes minutes.
 const LOCK_STALE: Duration = Duration::from_secs(60);
 
-/// Whether `workspace_id` is the `horch telemetry` workspace.
-fn is_telemetry_space(herdr: &Herdr, workspace_id: &str) -> bool {
+fn is_telemetry_space(herdr: &PaneHost, workspace_id: &str) -> bool {
     herdr.workspace_list().is_ok_and(|list| {
         list.iter().any(|w| {
             w.workspace_id == workspace_id && w.label.as_deref() == Some(TELEMETRY_WORKSPACE_LABEL)
@@ -54,18 +29,15 @@ fn is_telemetry_space(herdr: &Herdr, workspace_id: &str) -> bool {
     })
 }
 
-/// One tab of the workspace as it is now.
 struct TabState {
     tab_id: String,
     layout: Layout,
 }
 
-/// The whole workspace as one gather read it.
 struct Snapshot {
     tabs: Vec<TabState>,
     orchestrator: String,
     orchestrator_tab: String,
-    /// The tab the workspace is showing, so focus can be handed back.
     active_tab: Option<String>,
 }
 
@@ -105,10 +77,6 @@ impl Snapshot {
         }
     }
 
-    /// Where the operator is looking: the viewed tab and the pane that tab hands
-    /// the keyboard to. `None` when herdr reported neither, which is the case on
-    /// a herdr too old to report `focused_pane_id`; the caller then keeps the
-    /// old tab-only restore.
     fn focus_state(&self) -> Option<FocusState> {
         let tab = self.active_tab.clone()?;
         let pane = self
@@ -121,9 +89,6 @@ impl Snapshot {
         Some(FocusState { tab, pane })
     }
 
-    /// The tab that is zoomed, if any. herdr refuses to move panes into or out of
-    /// a zoomed tab, reporting `changed: false` rather than failing, so a tiler
-    /// that ignored this would walk through a plan achieving nothing.
     fn zoomed_tab(&self) -> Option<&str> {
         self.tabs
             .iter()
@@ -132,14 +97,7 @@ impl Snapshot {
     }
 }
 
-/// Read every tab of the workspace, and work out which pane is the orchestrator.
-///
-/// One `tab list` plus one `pane list` plus one `pane layout` per tab: `pane
-/// layout` reports the whole tab that holds the pane it is asked about, and every
-/// pane in `pane list` carries its `tab_id`, so one pane per tab is enough.
-fn gather(ctx: &RuntimeContext, herdr: &Herdr, workspace_id: &str) -> Result<Snapshot> {
-    // The telemetry space holds no fleet, and its pane must stay where the
-    // operator left it (design 12.3).
+fn gather(ctx: &RuntimeContext, herdr: &PaneHost, workspace_id: &str) -> Result<Snapshot> {
     if is_telemetry_space(herdr, workspace_id) {
         bail!("workspace {workspace_id} is the telemetry space; horch tile leaves it alone");
     }
@@ -161,8 +119,7 @@ fn gather(ctx: &RuntimeContext, herdr: &Herdr, workspace_id: &str) -> Result<Sna
     })
 }
 
-/// Every tab that holds a pane, with its layout.
-fn read_tabs(herdr: &Herdr, workspace_id: &str) -> Result<Vec<TabState>> {
+fn read_tabs(herdr: &PaneHost, workspace_id: &str) -> Result<Vec<TabState>> {
     let tabs = herdr.tab_list(workspace_id)?;
     let panes = herdr.pane_list(workspace_id)?;
     let states = tabs
@@ -187,8 +144,7 @@ fn read_tabs(herdr: &Herdr, workspace_id: &str) -> Result<Vec<TabState>> {
     Ok(states)
 }
 
-/// The tab the workspace shows now, when herdr says.
-fn active_tab(herdr: &Herdr, workspace_id: &str) -> Option<String> {
+fn active_tab(herdr: &PaneHost, workspace_id: &str) -> Option<String> {
     herdr
         .workspace_list()
         .ok()?
@@ -197,12 +153,6 @@ fn active_tab(herdr: &Herdr, workspace_id: &str) -> Option<String> {
         .active_tab_id
 }
 
-/// The pane that is the orchestrator.
-///
-/// The mailbox is the registry; the leftmost full-height pane of the first tab
-/// is the same guess `horch layout` has always made. Never a silent third
-/// option: tiling a workspace whose orchestrator cannot be identified would
-/// file it as a worker and move it.
 fn find_orchestrator(
     ctx: &RuntimeContext,
     workspace_id: &str,
@@ -230,14 +180,7 @@ fn find_orchestrator(
     }
 }
 
-/// Run the plan. Returns how many panes moved.
-///
-/// A declined move aborts the run rather than carrying on: every later op targets
-/// a pane the earlier ones were supposed to have placed, so continuing would
-/// build a shape nobody planned. Aborting is safe - no pane is ever closed, so
-/// the workers sit in the scratch tab and the next run gathers them like any
-/// other panes and finishes the job.
-fn apply(herdr: &Herdr, plan: &Plan) -> Result<usize> {
+fn apply(herdr: &PaneHost, plan: &Plan) -> Result<usize> {
     let mut created: HashMap<usize, String> = HashMap::new();
     let mut moved = 0;
     for op in plan.ops() {
@@ -246,8 +189,7 @@ fn apply(herdr: &Herdr, plan: &Plan) -> Result<usize> {
     Ok(moved)
 }
 
-/// Run 1 op. True when it moved a pane.
-fn apply_op(herdr: &Herdr, op: &Op, created: &mut HashMap<usize, String>) -> Result<bool> {
+fn apply_op(herdr: &PaneHost, op: &Op, created: &mut HashMap<usize, String>) -> Result<bool> {
     match op {
         Op::NewTab {
             pane,
@@ -273,8 +215,7 @@ fn apply_op(herdr: &Herdr, op: &Op, created: &mut HashMap<usize, String>) -> Res
     }
 }
 
-/// Move `pane` into a new tab, returning the id herdr gave the tab.
-fn new_tab(herdr: &Herdr, op: &Op, pane: &str, label: &str) -> Result<String> {
+fn new_tab(herdr: &PaneHost, op: &Op, pane: &str, label: &str) -> Result<String> {
     let result = herdr.pane_move_new_tab(pane, label)?;
     declined(op, result.changed, result.reason.as_deref())?;
     result
@@ -284,10 +225,8 @@ fn new_tab(herdr: &Herdr, op: &Op, pane: &str, label: &str) -> Result<String> {
         .with_context(|| format!("herdr moved {pane} to a new tab but did not name it"))
 }
 
-/// Move `pane` into `tab`; a tab the plan creates is looked up in `created`
-/// by its index.
 fn move_pane(
-    herdr: &Herdr,
+    herdr: &PaneHost,
     op: &Op,
     (pane, tab, created): (&str, &TabRef, &HashMap<usize, String>),
     (split, target, ratio): (Direction, &str, Option<f64>),
@@ -318,13 +257,7 @@ fn declined(op: &Op, changed: bool, reason: Option<&str>) -> Result<()> {
     );
 }
 
-/// Even out one tab's columns, returning how many resizes were sent.
-///
-/// Re-plans against the layout herdr hands back after each resize, so rounding
-/// cannot accumulate. Two things stop it: `changed: false`, which is how the
-/// minimum pane width announces itself, and a divider asked to move from the same
-/// place twice, which means the previous op did not land.
-fn balance_tab(herdr: &Herdr, mut layout: Layout, orchestrator: Option<&str>) -> Result<usize> {
+fn balance_tab(herdr: &PaneHost, mut layout: Layout, orchestrator: Option<&str>) -> Result<usize> {
     let mut applied = 0;
     let mut last: Option<(String, i64)> = None;
     for _ in 0..MAX_BALANCE_OPS {
@@ -346,8 +279,7 @@ fn balance_tab(herdr: &Herdr, mut layout: Layout, orchestrator: Option<&str>) ->
     Ok(applied)
 }
 
-/// Even out every tab: equal columns, and the orchestrator on its share of tab 1.
-fn balance_all(herdr: &Herdr, snapshot: &Snapshot) -> Result<usize> {
+fn balance_all(herdr: &PaneHost, snapshot: &Snapshot) -> Result<usize> {
     let mut applied = 0;
     for tab in &snapshot.tabs {
         let orchestrator =
@@ -357,30 +289,13 @@ fn balance_all(herdr: &Herdr, snapshot: &Snapshot) -> Result<usize> {
     Ok(applied)
 }
 
-/// Put the operator's view back where it was, and say what happened.
-///
-/// Why this is needed at all: the park phase moves every worker out of its tab
-/// with `--no-focus`, so herdr hands that tab's focus to a pane that stayed -
-/// on tab 1 always the orchestrator - and nothing gives it back, because every
-/// move that follows also passes `--no-focus`. Restoring the tab alone is not
-/// enough, and restoring the tab BY ID is not enough either: an overflow tab
-/// loses its last pane to the park phase and is rebuilt under a new id, so the
-/// view has to follow the pane.
-///
-/// Best effort throughout. A view that cannot be restored must never fail a
-/// tiling that has already moved the panes.
 fn restore_focus(
-    herdr: &Herdr,
+    herdr: &PaneHost,
     after: &Snapshot,
     before: Option<&FocusState>,
     before_tab: Option<&str>,
 ) -> Option<String> {
     let Some(before) = before else {
-        // herdr never told us which pane had the keyboard, so this is the old
-        // behaviour: the tab the operator WAS viewing if it survived, else the
-        // orchestrator's. `before_tab` has to come from the snapshot taken
-        // BEFORE the rebuild; the one taken after it would only name the tab
-        // herdr happened to land on, which is the thing being corrected.
         let tab = before_tab?;
         let _ = herdr.tab_focus(if after.tabs.iter().any(|t| t.tab_id == tab) {
             tab
@@ -396,7 +311,6 @@ fn restore_focus(
             pane.to_string(),
             herdr.pane_focus_walk(&target.tab, pane).unwrap_or(false),
         ),
-        // Nothing to aim at, so herdr's own choice is the answer, not a failure.
         None => ("herdr's own choice".to_string(), true),
     };
     Some(if !landed {
@@ -414,16 +328,6 @@ fn restore_focus(
     })
 }
 
-/// A workspace-wide lock, so two tilers never interleave their moves.
-///
-/// `horch balance` needs no lock: its target is absolute, so two passes aim at
-/// the same schedule and at worst repeat each other's work. Tiling is not like
-/// that - it moves panes out of their tabs and back, and a second tiler reading
-/// the workspace half way through that would see a shape neither of them planned.
-///
-/// A tiler WAITS rather than skipping, because the caller has a change to apply:
-/// a spawn that skipped tiling would leave its new worker wherever the split put
-/// it until something else happened to tile.
 struct TileLock {
     path: PathBuf,
 }
@@ -435,8 +339,6 @@ impl TileLock {
         Self::at(dir.join("tile.lock"), LOCK_STALE)
     }
 
-    /// `stale_after` is a parameter so a test can say "anything already there is
-    /// stale" without waiting a minute.
     fn at(path: PathBuf, stale_after: Duration) -> Result<Option<Self>> {
         let deadline = SystemTime::now() + LOCK_WAIT;
         loop {
@@ -454,7 +356,6 @@ impl TileLock {
     }
 }
 
-/// Make the lock file. `Ok(false)` when another run holds it.
 fn try_create(path: &std::path::Path) -> Result<bool> {
     match std::fs::OpenOptions::new()
         .write(true)
@@ -467,8 +368,6 @@ fn try_create(path: &std::path::Path) -> Result<bool> {
     }
 }
 
-/// Remove a lock a run that died left behind; nothing legitimate holds it
-/// for a minute. True when it was stale.
 fn clear_stale(path: &std::path::Path, stale_after: Duration) -> bool {
     let stale = std::fs::metadata(path)
         .and_then(|m| m.modified())
@@ -486,7 +385,6 @@ impl Drop for TileLock {
     }
 }
 
-/// Roles by pane id, for labelling a report.
 fn roles(ctx: &RuntimeContext, workspace_id: &str) -> HashMap<String, String> {
     Mailbox::in_context(ctx, workspace_id)
         .panes_to_roles()
@@ -494,17 +392,16 @@ fn roles(ctx: &RuntimeContext, workspace_id: &str) -> HashMap<String, String> {
         .collect()
 }
 
-/// Lay the whole workspace out. The one path both the command and the hooks use.
-///
-/// `newcomer` is a pane that must be placed last whatever its rectangle says;
-/// `horch spawn` passes the pane it just made.
 pub fn run(
     ctx: &RuntimeContext,
-    herdr: &Herdr,
+    herdr: &PaneHost,
     workspace_id: &str,
     newcomer: Option<&str>,
     plan_only: bool,
 ) -> Result<String> {
+    if !herdr.caps().geometry {
+        return Ok("the Herdr app arranges its own panes; nothing to tile\n".to_string());
+    }
     let snapshot = gather(ctx, herdr, workspace_id)?;
     let plan = tile::plan(&snapshot.fleet(newcomer));
     if plan_only {
@@ -514,7 +411,6 @@ pub fn run(
     }
 }
 
-/// The `--plan` report: what a live run would do, changing nothing.
 fn plan_report(
     ctx: &RuntimeContext,
     snapshot: &Snapshot,
@@ -557,8 +453,6 @@ fn push_ops(out: &mut String, ops: &[Op]) {
     }
 }
 
-/// Refuse a tile that herdr would decline or another tiler is running, and
-/// take the lock.
 fn ready_to_tile(
     ctx: &RuntimeContext,
     snapshot: &Snapshot,
@@ -580,36 +474,23 @@ fn ready_to_tile(
 
 fn run_live(
     ctx: &RuntimeContext,
-    herdr: &Herdr,
+    herdr: &PaneHost,
     workspace_id: &str,
     snapshot: Snapshot,
     plan: &Plan,
 ) -> Result<String> {
     let _lock = ready_to_tile(ctx, &snapshot, workspace_id)?;
     let workers = plan.placement.len();
-    // Fast path: the grid is already the right shape, so nothing is moved and only
-    // the columns are evened out. This is the common case for a re-run, and it is
-    // what keeps `horch spawn` from rebuilding a grid that was already right.
     let already = tile::is_canonical(&snapshot.shapes(), &snapshot.orchestrator, workers);
-    // Read where the operator is looking BEFORE anything moves. Both values are
-    // already in the snapshot, so this costs no herdr call. The tab is kept
-    // separately because the fallback below still needs it on a herdr too old
-    // to report which pane holds the focus.
     let was = snapshot.focus_state();
     let was_tab = snapshot.active_tab.clone();
     let (moved, snapshot) = if already {
         (0, snapshot)
     } else {
-        // Tabs have appeared and disappeared; read it all again for the balance
-        // and the report.
         (apply(herdr, plan)?, gather(ctx, herdr, workspace_id)?)
     };
 
     let resized = balance_all(herdr, &snapshot)?;
-    // After the balance, not before it: the view should settle once, on the
-    // finished grid. The fast path moved nothing, so there is nothing to put
-    // back - and a focus call herdr does not need would pull the workspace into
-    // view for no reason.
     let focus = (!already)
         .then(|| restore_focus(herdr, &snapshot, was.as_ref(), was_tab.as_deref()))
         .flatten();
@@ -621,7 +502,6 @@ fn run_live(
         resized
     );
     out.extend(focus);
-    // `already` moved nothing.
     if already {
         out.push_str("the grid was already laid out; only the columns needed evening\n");
     }
@@ -630,11 +510,9 @@ fn run_live(
     Ok(out)
 }
 
-/// Which workspace to work on: one named explicitly, the one holding a named
-/// pane, else this pane's own.
 pub fn workspace_of(
     ctx: &RuntimeContext,
-    herdr: &Herdr,
+    herdr: &PaneHost,
     pane: Option<&str>,
     workspace: Option<&str>,
 ) -> Result<String> {
@@ -646,29 +524,24 @@ pub fn workspace_of(
             .with_context(|| format!("herdr did not say which workspace holds {pane}")),
         (None, None) => Ok(Mailbox::resolve_in(herdr, ctx)
             .context(
-                "horch needs --workspace, or to run inside a herdr pane (HERDR_PANE_ID) or with \
-                 HORCH_WORKSPACE_ID set",
+                "horch needs --workspace, or to run inside a herdr pane or a Herdr app terminal \
+                 (HERDR_PANE_ID and HC_TERMINAL_ID are unset) or with HORCH_WORKSPACE_ID set",
             )?
             .workspace_id()
             .to_string()),
     }
 }
 
-/// Lay the grid out after something changed it, without failing the caller.
-///
-/// `horch spawn` calls this once the new pane is running. A grid that will not
-/// lay out must never fail a spawn, so problems are reported and life goes on.
-/// `HORCH_TILE=0` (`settings.tiling`) turns automatic tiling off and puts this
-/// back to only evening out the columns.
 pub fn after_change(
     ctx: &RuntimeContext,
-    herdr: &Herdr,
+    herdr: &PaneHost,
     workspace_id: &str,
     newcomer: Option<&str>,
 ) {
+    if !herdr.caps().geometry {
+        return;
+    }
     if ctx.settings.tiling == TilingMode::Disabled {
-        // The operator asked for the old behaviour: even the columns and nothing
-        // else.
         if let Ok(layout) = herdr.pane_layout(newcomer) {
             equalize_quietly(ctx, herdr, layout);
         }
@@ -680,14 +553,10 @@ pub fn after_change(
     }
 }
 
-/// Lay the grid out once this pane has finished closing.
-///
-/// `herdr pane close` takes down the calling pane's whole process tree, so a
-/// worker shutting itself down cannot do this in-process: by the time the hole it
-/// leaves exists, it has been killed. This hands the job to a detached child that
-/// outlives the pane, which fills the hole and lets herdr close an emptied
-/// overflow tab.
 pub fn settle_after_close(ctx: &RuntimeContext, workspace_id: &str) {
+    if !PaneHost::for_workspace(ctx, workspace_id).caps().geometry {
+        return;
+    }
     let Some(exe) = ctx.bins.current_exe.clone() else {
         return;
     };
@@ -707,19 +576,13 @@ pub fn settle_after_close(ctx: &RuntimeContext, workspace_id: &str) {
     .stdin(std::process::Stdio::null())
     .stdout(std::process::Stdio::null())
     .stderr(std::process::Stdio::null());
-    // A new SESSION, not merely a new process group. Measured against herdr
-    // 0.7.4: closing a pane tears down its whole session, so a child that only
-    // left the process group is killed along with it, while one that called
-    // `setsid` survives.
     let _ = spawn_detached(&mut cmd);
 }
 
-/// The whole workspace's grid, one block per tab in tab-strip order.
-///
-/// The orchestrator is only sought on the tab that actually holds it. On the
-/// others every pane is a worker, and the positional guess - leftmost full-height
-/// pane - would quietly drop a worker column from the report.
-pub fn report(ctx: &RuntimeContext, herdr: &Herdr, workspace_id: &str) -> Result<String> {
+pub fn report(ctx: &RuntimeContext, herdr: &PaneHost, workspace_id: &str) -> Result<String> {
+    if !herdr.caps().geometry {
+        return report_without_geometry(ctx, herdr, workspace_id);
+    }
     let tabs = herdr.tab_list(workspace_id)?;
     let panes = herdr.pane_list(workspace_id)?;
 
@@ -738,10 +601,6 @@ pub fn report(ctx: &RuntimeContext, herdr: &Herdr, workspace_id: &str) -> Result
         }
     }
 
-    // One orchestrator for the whole workspace: whatever the mailbox registered,
-    // else the leftmost full-height pane of the first tab, which is the guess
-    // `horch layout` has always made. A workspace with neither is reported with
-    // every pane as a worker rather than refused.
     let orchestrator = roles
         .iter()
         .find(|(_, role)| role.as_str() == "orchestrator")
@@ -769,20 +628,57 @@ pub fn report(ctx: &RuntimeContext, herdr: &Herdr, workspace_id: &str) -> Result
     Ok(layout::render_all(&analyses, &notes, &roles))
 }
 
+fn report_without_geometry(
+    ctx: &RuntimeContext,
+    herdr: &PaneHost,
+    workspace_id: &str,
+) -> Result<String> {
+    let tabs = herdr.tab_list(workspace_id)?;
+    let mut panes = herdr.pane_list(workspace_id)?;
+    panes.sort_by(|a, b| {
+        crate::workspace::place::address_key(&a.pane_id)
+            .cmp(&crate::workspace::place::address_key(&b.pane_id))
+    });
+    let roles: HashMap<String, String> = Mailbox::in_context(ctx, workspace_id)
+        .panes_to_roles()
+        .into_iter()
+        .collect();
+
+    let mut out = format!("space {workspace_id}\n");
+    for tab in &tabs {
+        let label_suffix = tab
+            .label
+            .as_deref()
+            .filter(|l| !l.is_empty())
+            .map(|l| format!(" ({l})"))
+            .unwrap_or_default();
+        out.push_str(&format!(
+            "  tab {} {}{label_suffix}\n",
+            tab.number, tab.tab_id
+        ));
+        for pane in panes
+            .iter()
+            .filter(|p| p.tab_id.as_deref() == Some(tab.tab_id.as_str()))
+        {
+            let role = roles
+                .get(&pane.pane_id)
+                .map(|r| format!(" [{r}]"))
+                .unwrap_or_default();
+            let agent = pane.agent.as_deref().unwrap_or("shell");
+            let status = pane.agent_status.as_deref().unwrap_or("none");
+            out.push_str(&format!("    {}{role}: {agent} ({status})\n", pane.pane_id));
+        }
+    }
+    Ok(out)
+}
+
 fn holds(layout: &Layout, pane_id: &str) -> bool {
     layout.panes.iter().any(|p| p.pane_id == pane_id)
 }
 
-/// One line saying whether this tab is the shape `horch tile` builds.
-///
-/// Worth stating plainly, because the per-tab state below it judges a tab as if it
-/// were the whole grid: an overflow tab whose last bottom slot is free reads as
-/// `ragged-bottom` when it is exactly what the tiler meant to build.
 fn verdict(layout: &Layout, orchestrator: Option<&str>, expected: usize) -> String {
     let shape = tile::TabShape::from_layout(layout);
     let panes = shape.panes.len() - usize::from(orchestrator.is_some());
-    // Tab 1 shares its width with the orchestrator, so it holds 4 workers where an
-    // overflow tab holds 6.
     let slots = tile::capacity(if orchestrator.is_some() { 1 } else { 2 });
     if tile::tab_is_canonical(&shape, orchestrator, expected) {
         format!("matches the fleet grid, {panes}/{slots} slots filled")
@@ -791,12 +687,8 @@ fn verdict(layout: &Layout, orchestrator: Option<&str>, expected: usize) -> Stri
     }
 }
 
-/// Two rows of at most a dozen columns need one op per divider; the rest is slack
-/// for a divider that lands a cell off and wants a second nudge.
 const MAX_OPS: usize = 24;
 
-/// Whichever pane the mailbox registered as the orchestrator. `None` lets the
-/// planner fall back to the leftmost full-height pane, matching `horch layout`.
 pub fn orchestrator_of(ctx: &RuntimeContext, layout: &Layout) -> Option<String> {
     Mailbox::in_context(ctx, &layout.workspace_id)
         .panes_to_roles()
@@ -805,14 +697,10 @@ pub fn orchestrator_of(ctx: &RuntimeContext, layout: &Layout) -> Option<String> 
         .map(|(pane_id, _)| pane_id)
 }
 
-/// Equalise the worker columns, returning how many resizes were sent.
-///
-/// Re-plans against the layout herdr returns after every resize rather than
-/// predicting the next position, so accumulated rounding cannot walk the grid
-/// off target. Two things stop the loop: herdr reporting `changed: false`, which
-/// is how the minimum pane width announces itself, and a divider that is asked
-/// to move from the same place twice, which means the previous op did not land.
-pub fn equalize(ctx: &RuntimeContext, herdr: &Herdr, mut layout: Layout) -> Result<usize> {
+pub fn equalize(ctx: &RuntimeContext, herdr: &PaneHost, mut layout: Layout) -> Result<usize> {
+    if !herdr.caps().geometry {
+        return Ok(0);
+    }
     let orch = orchestrator_of(ctx, &layout);
     let mut applied = 0;
     let mut last: Option<(String, i64)> = None;
@@ -836,24 +724,15 @@ pub fn equalize(ctx: &RuntimeContext, herdr: &Herdr, mut layout: Layout) -> Resu
     Ok(applied)
 }
 
-/// Best-effort equalise for callers whose real job is something else.
-///
-/// A grid that will not even out must never fail a spawn or a worker's shutdown,
-/// so this reports the problem and returns.
-pub fn equalize_quietly(ctx: &RuntimeContext, herdr: &Herdr, layout: Layout) {
+pub fn equalize_quietly(ctx: &RuntimeContext, herdr: &PaneHost, layout: Layout) {
     if let Err(e) = equalize(ctx, herdr, layout) {
         eprintln!("horch: could not even out the worker columns ({e:#}); carrying on");
     }
 }
 
-/// The layout `horch balance` works on.
-///
-/// Same resolution order as `horch layout`: an explicit pane, else any pane in
-/// the named workspace, else this pane. HERDR_PANE_ID is an internal id, so it
-/// round-trips through `pane get` for the public one.
 pub fn balance_target(
     ctx: &RuntimeContext,
-    herdr: &Herdr,
+    herdr: &PaneHost,
     pane: Option<&str>,
     workspace: Option<&str>,
 ) -> Result<Layout> {
@@ -890,7 +769,6 @@ mod tests {
         assert!(declined(&op, true, None).is_ok());
     }
 
-    /// The lock goes away when the run ends however it ends.
     #[test]
     fn the_tile_lock_is_created_and_released_on_drop() {
         let tmp = tempfile::tempdir().unwrap();
@@ -915,8 +793,6 @@ mod tests {
         );
     }
 
-    /// A lock left behind by a run that died must not wedge the fleet: nothing
-    /// legitimate holds it for a minute, so an old one is taken over.
     #[test]
     fn a_stale_lock_is_taken_over_rather_than_waited_on() {
         let tmp = tempfile::tempdir().unwrap();
@@ -930,5 +806,98 @@ mod tests {
         assert!(path.exists(), "and the new holder now owns it");
         drop(taken);
         assert!(!path.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hcb_09_tilers_do_nothing_without_geometry() {
+        use crate::runtime::MapEnv;
+        use crate::workspace::hc::HcApp;
+        use crate::workspace::model::{LayoutPane, Rect};
+
+        let dir = tempfile::tempdir().unwrap();
+        let hc_bin = dir.path().join("hc");
+        let app_bin = dir.path().join("herdr-app");
+        let sock = dir.path().join("default.sock");
+        std::fs::write(&sock, b"").unwrap();
+        let hc_body = r#"#!/bin/sh
+if [ "$1" = warm ]; then exit 0; fi
+d=$(dirname "$0")
+printf 'hc %s\n' "$*" >> "$d/calls"
+case "$1" in
+ls) printf '{"hidden_finished":0,"terminals":[{"address":"t1"},{"address":"t2"}]}\n';;
+get)
+  case "$3" in
+  t1) printf '{"address":"t1","state":"live","labels":{"herdr.space":"sp1","herdr.tab":"tb1"},"status":{"app":"claude-code","state":"idle"},"status_ms":10}\n';;
+  t2) printf '{"address":"t2","state":"live","labels":{"herdr.space":"sp1","herdr.tab":"tb1"},"status":{"app":"codex","state":"working"},"status_ms":20}\n';;
+  esac;;
+esac"#;
+        let app_body = r#"#!/bin/sh
+if [ "$1" = warm ]; then exit 0; fi
+d=$(dirname "$0")
+printf 'app %s\n' "$*" >> "$d/calls"
+case "$1" in
+ls) printf '{"spaces":[{"id":"sp1","name":"fleet","folder":"/w","active":true,"tabs":[{"id":"tb1","name":"1","active":true,"settled":false,"terminals":[{"terminal":"t1","pane":"p1"},{"terminal":"t2","pane":"p2"}]}]}]}\n';;
+*) exit 1;;
+esac"#;
+        assert!(
+            crate::test_support::write_warmed(&hc_bin, hc_body, &["warm"])
+                .status
+                .success()
+        );
+        assert!(
+            crate::test_support::write_warmed(&app_bin, app_body, &["warm"])
+                .status
+                .success()
+        );
+
+        let state = dir.path().join("state");
+        let env = MapEnv::new(dir.path())
+            .with("HOME", &dir.path().to_string_lossy())
+            .with("HORCH_STATE_DIR", &state.to_string_lossy())
+            .with("HC_TERMINAL_ID", "t1");
+        let ctx = RuntimeContext::from_env(&env).unwrap();
+        let host = PaneHost::hc_app(HcApp::new(&hc_bin, &app_bin, &sock));
+
+        after_change(&ctx, &host, "sp1", Some("t2"));
+        settle_after_close(&ctx, "sp1");
+        let tile_out = run(&ctx, &host, "sp1", None, false).unwrap();
+        assert_eq!(
+            tile_out.trim(),
+            "the Herdr app arranges its own panes; nothing to tile"
+        );
+
+        let dummy_layout = Layout {
+            workspace_id: "sp1".into(),
+            tab_id: "tb1".into(),
+            area: Rect {
+                x: 0,
+                y: 0,
+                width: 200,
+                height: 60,
+            },
+            panes: vec![LayoutPane {
+                pane_id: "t1".into(),
+                rect: Rect {
+                    x: 0,
+                    y: 0,
+                    width: 20,
+                    height: 60,
+                },
+            }],
+            focused_pane_id: None,
+            zoomed: false,
+        };
+        assert_eq!(equalize(&ctx, &host, dummy_layout).unwrap(), 0);
+        assert!(
+            !dir.path().join("calls").exists(),
+            "after_change, settle_after_close, run and equalize must make zero host calls without geometry"
+        );
+
+        let rep = report(&ctx, &host, "sp1").unwrap();
+        assert!(rep.contains("sp1"), "{rep}");
+        assert!(rep.contains("tb1"), "{rep}");
+        assert!(rep.contains("t1") && rep.contains("idle"), "{rep}");
+        assert!(rep.contains("t2") && rep.contains("working"), "{rep}");
     }
 }

@@ -1,22 +1,3 @@
-//! The handlers of the custody, job and integration request kinds:
-//! `job_requeue`, `worktree_scratch`, `worktree_drop`, `worktree_restore`,
-//! `worktree_triage`, `feature_abandon`, `branch_abandon` and `rescue_drop`
-//! (T-885).
-//!
-//! Requirements: RR-5, RR-8, RR-13 to RR-18 (ticket 20 of fleetd-p5).
-//!
-//! Each handler writes the rows of the `horch` command of today, through
-//! the same functions, in the transaction of the request. It runs no git
-//! and no process: a git command is a job, and the handler queues its row.
-//!
-//! A git fact that the command of today reads before its first write (a
-//! dirty tree, a stash on the branch, unique commits, the HEAD, a base
-//! commit, an existing branch or path) comes in the payload. The command
-//! reads it, and only an operator request with the token reaches a handler.
-//! A missing fact refuses the request. The `worktree_remove` job guard reads
-//! the facts that guard work from loss (the stash, the HEAD, a dirty landed
-//! tree) again at run time.
-
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -51,9 +32,6 @@ use crate::taskledger::model::{Actor, TriageDecision, WorktreeStatus};
 use crate::taskledger::triage::{apply as triage_apply, refs, reply::Decided, Row};
 use crate::taskledger::{finish, runs, util, workers, worktree_ops};
 
-/// What the handlers of this file read: the generation of the fleetd that
-/// applies the requests, its `fleet.toml`, and the refs of git, read with
-/// no write (the `branch_abandon` handler verifies its rescue ref).
 pub struct Custody {
     pub guard: Generation,
     pub config: FleetConfig,
@@ -70,7 +48,6 @@ impl Custody {
     }
 }
 
-/// Register the handler of each kind of this file in `handlers`.
 pub fn register(handlers: &mut Handlers, custody: Arc<Custody>) {
     let with = |f: fn(&Custody, &Connection, &Value) -> Result<Value>| {
         let custody = Arc::clone(&custody);
@@ -86,22 +63,16 @@ pub fn register(handlers: &mut Handlers, custody: Arc<Custody>) {
     handlers.insert(Kind::RescueDrop, with(rescue_drop));
 }
 
-/// The payload of a kind, with no unknown field.
 fn payload<T: DeserializeOwned>(kind: &str, payload: &Value) -> Result<T> {
     serde_json::from_value(payload.clone()).with_context(|| format!("a bad {kind} payload"))
 }
 
-// ─── job_requeue ────────────────────────────────────────────────────────
-
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct JobRequeue {
-    /// The id of a run of the job.
     job: i64,
 }
 
-/// `horch job requeue <job>`: 1 more run of the key of the job, with its
-/// count of abandoned runs at 0, and its needs-you item resolved.
 fn job_requeue(c: &Custody, tx: &Connection, p: &Value) -> Result<Value> {
     let JobRequeue { job } = payload("job_requeue", p)?;
     let row = jobs_store::get(tx, job)?.with_context(|| format!("no job {job}"))?;
@@ -129,27 +100,17 @@ fn job_requeue(c: &Custody, tx: &Connection, p: &Value) -> Result<Value> {
     }
 }
 
-// ─── worktree_scratch ───────────────────────────────────────────────────
-
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct WorktreeScratch {
-    /// The worker of the scratch tree.
     worker_id: String,
     name: String,
-    /// The base of the tree, as the command read it: the run branch, else
-    /// the base branch of the run.
     base: String,
-    /// The commit of `base`.
     base_commit: String,
-    /// The path of the tree exists.
     path_exists: bool,
-    /// The branch of the tree exists.
     branch_exists: bool,
 }
 
-/// `horch ledger worktree scratch <name>`: 1 `reserved` scratch tree of the
-/// worker and its `worktree_add` job.
 fn worktree_scratch(c: &Custody, tx: &Connection, p: &Value) -> Result<Value> {
     let s: WorktreeScratch = payload("worktree_scratch", p)?;
     worktree_ops::valid_name(&s.name)?;
@@ -200,8 +161,6 @@ fn worktree_scratch(c: &Custody, tx: &Connection, p: &Value) -> Result<Value> {
     }))
 }
 
-/// The `reserved` row of `lease` and its `worktree_add` job. A lease with a
-/// new row always reserves it.
 fn reserve(c: &Custody, tx: &Connection, lease: &Lease<'_>) -> Result<(trees::WorktreeRow, i64)> {
     let clock = create::fleet_clock(tx)?;
     match create_worktree(&c.jobs(), tx, lease, clock)? {
@@ -212,12 +171,9 @@ fn reserve(c: &Custody, tx: &Connection, lease: &Lease<'_>) -> Result<(trees::Wo
     }
 }
 
-// ─── worktree_drop ──────────────────────────────────────────────────────
-
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct WorktreeDrop {
-    /// The run that owns the worktree.
     run_id: String,
     name: String,
     reason: String,
@@ -225,32 +181,18 @@ struct WorktreeDrop {
     facts: DropFacts,
 }
 
-/// The git facts of a drop, as the command read them. The facts of the
-/// folder are `None` when the folder is gone.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DropFacts {
-    /// The folder exists.
     path_exists: bool,
-    /// The folder has an uncommitted or untracked file.
     dirty: Option<bool>,
-    /// The branch of the HEAD of the folder; `None` for a detached HEAD.
     head_branch: Option<String>,
-    /// The HEAD of the folder equals the recorded branch.
     head_is_recorded: Option<bool>,
-    /// A `git stash` entry names the branch.
     stash: bool,
-    /// The HEAD has commits that no other branch, remote or tag has.
     unique_commits: bool,
-    /// The commit of the work: the HEAD of the folder, else the branch.
     head: String,
 }
 
-/// `horch ledger worktree drop <name> --reason`: the refusals of today
-/// (row W6, RR-13), then the removal through custody: a `landed` or
-/// `rescued` tree gets its `worktree_remove` job; each other tree moves to
-/// `orphaned` (cause `dropped`) and gets its `rescue` job. The row is
-/// `abandoned` with the reason.
 fn worktree_drop(c: &Custody, tx: &Connection, p: &Value) -> Result<Value> {
     let d: WorktreeDrop = payload("worktree_drop", p)?;
     if d.reason.trim().is_empty() {
@@ -258,6 +200,9 @@ fn worktree_drop(c: &Custody, tx: &Connection, p: &Value) -> Result<Value> {
     }
     let wt = worktree_ops::find_in(tx, &d.run_id, &d.name)?;
     refuse_drop(&d, &wt.branch)?;
+    if d.facts.path_exists {
+        refuse_moved_head(c, Path::new(&wt.path), &d.facts.head)?;
+    }
     let job = if d.facts.path_exists {
         Some(queue_drop(
             c,
@@ -278,8 +223,6 @@ fn worktree_drop(c: &Custody, tx: &Connection, p: &Value) -> Result<Value> {
     }))
 }
 
-/// The refusals of today's drop, in their order, from the facts of `d`. A
-/// missing fact of a folder that exists refuses.
 fn refuse_drop(d: &WorktreeDrop, recorded: &str) -> Result<()> {
     let f = &d.facts;
     if f.path_exists && fact(f.dirty, "dirty")? {
@@ -305,14 +248,18 @@ fn refuse_drop(d: &WorktreeDrop, recorded: &str) -> Result<()> {
     Ok(())
 }
 
-/// The fact `name`, or a refusal when the command did not read it.
+fn refuse_moved_head(c: &Custody, path: &Path, checked: &str) -> Result<()> {
+    match c.refs.tip(path, "HEAD")? {
+        Some(head) if head == checked => Ok(()),
+        Some(_) => bail!("worktree HEAD changed during the drop checks; nothing removed"),
+        None => bail!("worktree HEAD is unreadable; nothing removed"),
+    }
+}
+
 fn fact(value: Option<bool>, name: &str) -> Result<bool> {
     value.with_context(|| format!("the fact {name} is unknown; nothing removed"))
 }
 
-/// The job of the removal of the tree `id` at the commit `head`: its
-/// `worktree_remove` job when it is `landed` or `rescued`, else its `rescue`
-/// job after the move to `orphaned`.
 fn queue_drop(
     c: &Custody,
     tx: &Connection,
@@ -358,11 +305,15 @@ fn queue_drop(
         input_key: &input_key,
     };
     let q = jobs::queue(&ctx, tx, &key, Some(&row.repo_root), clock)?;
-    queued_id(q, "rescue", &row.path)
+    let job = queued_id(q, "rescue", &row.path)?;
+    let ended = remove::OwnerEnded {
+        keep_branch,
+        rescue_job: Some(job),
+    };
+    remove::record_owner_end(&ctx, tx, id, Actor::Worker, &ended)?;
+    Ok(job)
 }
 
-/// The id of the run of a queued job of `kind` for the tree at `path`. A
-/// held key refuses, as the command of today does.
 fn queued_id(q: Queued, kind: &str, path: &str) -> Result<i64> {
     match q {
         Queued::New(id) => Ok(id),
@@ -375,34 +326,22 @@ fn queued_id(q: Queued, kind: &str, path: &str) -> Result<i64> {
     }
 }
 
-// ─── worktree_restore ───────────────────────────────────────────────────
-
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct WorktreeRestore {
-    /// A task (`T<seq>` of `run_id`), a worktree id, or a triage name.
     name: String,
-    /// The active run, when the project has 1.
     run_id: Option<String>,
-    /// The main checkout of the project.
     root: String,
     facts: RestoreFacts,
 }
 
-/// The git facts of a restore, as the command read them.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RestoreFacts {
-    /// The path of the new tree exists.
     path_exists: bool,
-    /// The branch of the new tree exists.
     branch_exists: bool,
-    /// The commit of the branch of the new tree, when it exists.
     branch_commit: Option<String>,
-    /// The commit of the rescue ref of the name, when it has one.
     rescue_commit: Option<String>,
-    /// The archive ref of the name, else its newest trash ref, and the
-    /// commit of that ref.
     archive: Option<RefAt>,
 }
 
@@ -413,9 +352,6 @@ struct RefAt {
     commit: String,
 }
 
-/// `horch worktree restore <name>`: the newest rescue ref of a task or a
-/// worktree id, else the archive or trash ref of a triage name, gives a new
-/// `reserved` tree and its `worktree_add` job.
 fn worktree_restore(c: &Custody, tx: &Connection, p: &Value) -> Result<Value> {
     let r: WorktreeRestore = payload("worktree_restore", p)?;
     match queries::rescue_source(tx, r.run_id.as_deref(), &r.name)? {
@@ -424,8 +360,6 @@ fn worktree_restore(c: &Custody, tx: &Connection, p: &Value) -> Result<Value> {
     }
 }
 
-/// The branch `rescue/T<seq>-<n>` at the rescue commit, in its tree
-/// `<project>/.worktrees/rescue-T<seq>-<n>`.
 fn restore_rescue(
     c: &Custody,
     tx: &Connection,
@@ -466,8 +400,6 @@ fn restore_rescue(
     }))
 }
 
-/// The lease of a restored tree: no task and no worker, so the request
-/// never attaches another tree, and the new row has no owner.
 fn operator_lease(new: &NewWorktree) -> Lease<'_> {
     Lease {
         task_id: None,
@@ -478,8 +410,6 @@ fn operator_lease(new: &NewWorktree) -> Lease<'_> {
     }
 }
 
-/// The folder `<root>/.worktrees/<name>` again from its archive or trash
-/// ref, on the branch of the archived row, else `restored/<name>`.
 fn restore_archive(c: &Custody, tx: &Connection, r: &WorktreeRestore) -> Result<Value> {
     let f = &r.facts;
     let name = &r.name;
@@ -537,29 +467,21 @@ fn restore_archive(c: &Custody, tx: &Connection, r: &WorktreeRestore) -> Result<
     }))
 }
 
-// ─── worktree_triage ────────────────────────────────────────────────────
-
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct WorktreeTriage {
-    /// The main checkout of the project.
     root: String,
-    /// The persona of the tasks that `FINISH` queues.
     primary: String,
-    /// The decisions of the reply that the command parsed, in its order.
     decisions: Vec<TriageItem>,
 }
 
-/// 1 decision of a triage reply, with the facts of its row.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TriageItem {
     row: Row,
     decision: String,
     direction: Option<String>,
-    /// The 1-based line of the reply.
     line: usize,
-    /// The brief of a `FINISH` that the command wrote, relative to `root`.
     ticket: Option<TicketFile>,
 }
 
@@ -570,11 +492,6 @@ struct TicketFile {
     sha256: String,
 }
 
-/// `horch worktree triage apply`: each `KEEP` and `FINISH` decision of the
-/// reply, as the command of today applies it. The decisions of
-/// [`triage_apply::JOB_DECISIONS`] (`ARCHIVE`, `DELETE`, `LAND` and `PR`)
-/// run git or gh: they go to 1 `triage_apply` job, and fleetd writes their
-/// rows from its result file.
 fn worktree_triage(c: &Custody, tx: &Connection, p: &Value) -> Result<Value> {
     let t: WorktreeTriage = payload("worktree_triage", p)?;
     let root = Path::new(&t.root);
@@ -634,8 +551,6 @@ fn worktree_triage(c: &Custody, tx: &Connection, p: &Value) -> Result<Value> {
     Ok(json!({ "applied": applied, "failed": failed, "job": job, "queued": queued }))
 }
 
-/// The path of the brief `file` under `root`, after its read with the size
-/// limit of a request and the check of its sha256.
 fn checked_ticket(c: &Custody, root: &Path, file: &TicketFile) -> Result<String> {
     let full = root.join(&file.path);
     let limit = c.config.request_max_bytes;
@@ -656,23 +571,14 @@ fn checked_ticket(c: &Custody, root: &Path, file: &TicketFile) -> Result<String>
     Ok(file.path.clone())
 }
 
-// ─── branch_abandon ─────────────────────────────────────────────────────
-
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BranchAbandon {
     branch: String,
-    /// The rescue ref that the command wrote, or `None` when git has no
-    /// such branch.
     rescue_ref: Option<String>,
-    /// The tip of the branch that the rescue ref holds.
     tip: Option<String>,
 }
 
-/// `horch branch abandon <branch>`: the command writes the rescue ref of
-/// the tip first (I10). The handler reads the branch and the ref again in
-/// git, with no write, and refuses facts that git does not confirm. Then it
-/// records the ref and moves the branch to `abandoned`.
 fn branch_abandon(c: &Custody, tx: &Connection, p: &Value) -> Result<Value> {
     let BranchAbandon {
         branch,
@@ -690,24 +596,13 @@ fn branch_abandon(c: &Custody, tx: &Connection, p: &Value) -> Result<Value> {
     }))
 }
 
-// ─── feature_abandon ────────────────────────────────────────────────────
-
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct FeatureAbandon {
     feature: String,
-    /// The rescue ref that the command wrote for each task branch of the
-    /// feature that is not landed, with its tip.
     branches: Vec<BranchAbandon>,
 }
 
-/// `horch feature abandon <feature>`: the command writes the rescue ref of
-/// each task branch of the feature that is not landed first (I10). The
-/// handler reads each branch and each ref again in git, with no write, and
-/// refuses facts that git does not confirm. Then it records the refs, moves
-/// the branches, cancels the open tasks of the run and moves the feature
-/// (`integration::record_feature`). The caller stops the workers of
-/// `to_stop`; else the pass completes each cancel that waits for a stop.
 fn feature_abandon(c: &Custody, tx: &Connection, p: &Value) -> Result<Value> {
     let FeatureAbandon { feature, branches } = payload("feature_abandon", p)?;
     let repo = integration::feature_repo(tx, &feature)?;
@@ -737,27 +632,16 @@ fn feature_abandon(c: &Custody, tx: &Connection, p: &Value) -> Result<Value> {
     }))
 }
 
-// ─── rescue_drop ────────────────────────────────────────────────────────
-
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RescueDrop {
-    /// The main checkout of a project of the ledger.
     repo: PathBuf,
-    /// The full name of the rescue ref.
     name: String,
-    /// The tip of the ref that the command showed.
     tip: String,
-    /// `unique` or `superseded`, as the command classed the ref.
     class: String,
     bytes: Option<u64>,
 }
 
-/// `horch rescue drop <ref>`: the command reads the facts of the ref and
-/// shows them. The handler checks that the repository is a project of the
-/// ledger and that git confirms the ref at its tip, with no write. Then it
-/// records the drop with 1 event (`rescue_refs::record_drop`). The command
-/// deletes the ref after the reply: the effect runs after the commit.
 fn rescue_drop(c: &Custody, tx: &Connection, p: &Value) -> Result<Value> {
     let RescueDrop {
         repo,

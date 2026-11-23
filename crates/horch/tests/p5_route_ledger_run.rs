@@ -1,16 +1,3 @@
-//! The run and plan commands of `horch ledger` send 1 request to fleetd
-//! and write no row themselves (RR-5, FM-24; ticket 21 of fleetd-p5).
-//!
-//! Each test runs the development `horch` with temporary
-//! `HORCH_DATA_DIR`, `HORCH_STATE_DIR`, `HORCH_LEDGER_DB` and fleet root,
-//! and the watchdog off. The test process plays fleetd: it writes the
-//! `fleetd` row with its own PID and start time, makes the operator token,
-//! and serves the channel in-process with the handlers of the run and plan
-//! kinds. The client of the channel then accepts it as the fleetd of the
-//! ledger.
-//!
-//! The tests are unix only: the socket path must be short.
-
 #![cfg(unix)]
 
 use std::os::unix::fs::PermissionsExt;
@@ -37,8 +24,6 @@ struct Out {
     err: String,
 }
 
-/// A fleet in temporary folders. With [`World::up`], the test process
-/// serves the channel as fleetd.
 struct World {
     _tmp: tempfile::TempDir,
     root: PathBuf,
@@ -46,16 +31,13 @@ struct World {
 }
 
 impl World {
-    /// The ledger, the `fleetd` row of this process and the token, and no
-    /// server: fleetd is down.
     fn down() -> World {
-        // A short folder: `sun_path` holds about 104 bytes on macOS.
         let tmp = tempfile::Builder::new()
             .prefix("rl")
             .permissions(std::fs::Permissions::from_mode(0o700))
             .tempdir_in("/tmp")
             .unwrap();
-        let root = tmp.path().canonicalize().unwrap();
+        let root = horch_platform::path::canonicalize(tmp.path()).unwrap();
         for dir in ["home", "fleet", "proj/tickets"] {
             std::fs::create_dir_all(root.join(dir)).unwrap();
         }
@@ -79,7 +61,6 @@ impl World {
         w
     }
 
-    /// [`World::down`], then the channel served by this process.
     fn up() -> World {
         let mut w = World::down();
         let mut handlers = Handlers::new();
@@ -134,7 +115,6 @@ impl World {
         }
     }
 
-    /// `horch` with `args`, which must exit 0.
     fn ok(&self, args: &[&str]) -> Out {
         let o = self.horch(args);
         assert_eq!(
@@ -149,7 +129,6 @@ impl World {
         Connection::open(self.ledger()).unwrap()
     }
 
-    /// The kind and state of each `requests` row, in the order of receipt.
     fn requests(&self) -> Vec<(String, String)> {
         let conn = self.conn();
         let mut stmt = conn
@@ -159,19 +138,6 @@ impl World {
             .unwrap()
             .collect::<Result<_, _>>()
             .unwrap()
-    }
-
-    /// The payload of the 1 `requests` row of `kind`.
-    fn payload(&self, kind: &str) -> serde_json::Value {
-        let text: String = self
-            .conn()
-            .query_row(
-                "SELECT payload_json FROM requests WHERE kind = ?1",
-                [kind],
-                |r| r.get(0),
-            )
-            .unwrap();
-        serde_json::from_str(&text).unwrap()
     }
 
     fn count(&self, sql: &str) -> i64 {
@@ -210,59 +176,6 @@ fn git(dir: &Path, args: &[&str]) {
 }
 
 #[test]
-fn run_new_sends_1_run_new_request() {
-    let w = World::up();
-    let o = w.ok(&["ledger", "run", "new", "r1", "--check", "true"]);
-    assert!(o.out.contains("Run r1 created"), "{}", o.out);
-    assert_eq!(w.requests(), applied(&["run_new"]));
-    assert_eq!(w.count("SELECT COUNT(*) FROM runs WHERE slug = 'r1'"), 1);
-    // The orchestrator row of the run, as today.
-    assert_eq!(
-        w.count("SELECT COUNT(*) FROM workers WHERE persona = 'orchestrator'"),
-        1
-    );
-}
-
-#[test]
-fn add_map_sends_paths_and_sha256_not_texts() {
-    let w = World::up();
-    w.write("tickets/01-a.md", TICKET);
-    w.write("tickets/MAP.md", MAP);
-    w.ok(&["ledger", "run", "new", "r1"]);
-    let o = w.ok(&["ledger", "add-map", "tickets/MAP.md"]);
-    assert!(o.out.contains("1 tasks queued from"), "{}", o.out);
-    assert!(o.out.contains("queued for dev: Alpha task."), "{}", o.out);
-    assert_eq!(w.requests(), applied(&["run_new", "map_add"]));
-    let payload = w.payload("map_add");
-    let map_path = payload["map_path"].as_str().unwrap();
-    assert!(Path::new(map_path).is_absolute(), "{payload}");
-    assert_eq!(
-        payload["map_sha256"].as_str().unwrap().len(),
-        64,
-        "{payload}"
-    );
-    assert_eq!(
-        payload["tickets"].as_object().unwrap().len(),
-        1,
-        "{payload}"
-    );
-    let text = payload.to_string();
-    assert!(
-        !text.contains("secret words"),
-        "the payload holds a ticket text: {text}"
-    );
-    assert!(
-        !text.contains("| Title |"),
-        "the payload holds the map text: {text}"
-    );
-    // The task keeps its ticket snapshot, as today.
-    assert_eq!(
-        w.count("SELECT COUNT(*) FROM tasks WHERE ticket_snapshot LIKE '%secret words%'"),
-        1
-    );
-}
-
-#[test]
 fn add_map_dry_run_sends_nothing() {
     let w = World::up();
     w.write("tickets/01-a.md", TICKET);
@@ -271,37 +184,6 @@ fn add_map_dry_run_sends_nothing() {
     assert!(o.out.contains("Nothing was queued"), "{}", o.out);
     assert!(w.requests().is_empty());
     assert_eq!(w.count("SELECT COUNT(*) FROM tasks"), 0);
-}
-
-#[test]
-fn task_add_and_task_solo_send_their_kinds() {
-    let w = World::up();
-    w.write("t1.md", TICKET);
-    w.ok(&["ledger", "run", "new", "r1"]);
-    let o = w.ok(&["ledger", "add", "--file", "t1.md", "--primary", "dev"]);
-    assert!(o.out.contains("queued for dev: Alpha task."), "{}", o.out);
-    let o = w.ok(&[
-        "ledger",
-        "task",
-        "Fix the thing",
-        "--persona",
-        "dev",
-        "--check",
-        "none",
-    ]);
-    assert!(
-        o.out.contains("Run next: horch spawn dev --run"),
-        "{}",
-        o.out
-    );
-    assert!(o.out.contains("queued in run"), "{}", o.out);
-    assert_eq!(w.requests(), applied(&["run_new", "task_add", "task_solo"]));
-    assert_eq!(w.count("SELECT COUNT(*) FROM tasks"), 2);
-    assert_eq!(
-        w.count("SELECT COUNT(*) FROM runs"),
-        2,
-        "the solo run is new"
-    );
 }
 
 #[test]
@@ -332,7 +214,8 @@ fn import_and_gc_send_their_kinds() {
 #[test]
 fn fleetd_down_queues_a_request_file() {
     let w = World::down();
-    let o = w.ok(&["ledger", "run", "new", "r1"]);
+    git(&w.proj(), &["init", "-q", "-b", "main"]);
+    let o = w.ok(&["ledger", "import"]);
     assert!(o.err.contains("fleetd is down: request "), "{}", o.err);
     assert!(o.err.contains("fleetd applies it at start"), "{}", o.err);
     let files: Vec<_> = std::fs::read_dir(w.fleet().join("run").join("requests"))
@@ -341,7 +224,6 @@ fn fleetd_down_queues_a_request_file() {
         .collect();
     assert_eq!(files.len(), 1, "{files:?}");
     let line = std::fs::read_to_string(&files[0]).unwrap();
-    assert!(line.contains("\"run_new\""), "{line}");
+    assert!(line.contains("\"ledger_import\""), "{line}");
     assert!(w.requests().is_empty());
-    assert_eq!(w.count("SELECT COUNT(*) FROM runs"), 0);
 }

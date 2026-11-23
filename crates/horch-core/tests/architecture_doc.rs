@@ -1,9 +1,3 @@
-//! `docs/architecture.md` is the "what lives where" map. These tests fail
-//! when a module or a command file has no row in it (#213), and when a type
-//! in horch-core is named plain `Ledger` (#215): horch has 2 ledgers, the
-//! JSON session ledger and the SQLite task ledger, and a plain name hides
-//! which one a reader holds.
-
 use std::path::{Path, PathBuf};
 
 fn repo() -> PathBuf {
@@ -15,7 +9,6 @@ fn architecture_doc() -> String {
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("reading {}: {e}", path.display()))
 }
 
-/// The first cell of every table row in `doc`, without its backticks.
 fn first_cells(doc: &str) -> Vec<String> {
     doc.lines()
         .filter_map(|line| line.strip_prefix("| `"))
@@ -24,7 +17,6 @@ fn first_cells(doc: &str) -> Vec<String> {
         .collect()
 }
 
-/// Every `pub mod <name>;` line of `crates/horch-core/src/lib.rs`.
 fn core_modules() -> Vec<String> {
     let lib = std::fs::read_to_string(repo().join("crates/horch-core/src/lib.rs")).unwrap();
     lib.lines()
@@ -57,7 +49,6 @@ fn every_cli_file_has_a_row_in_the_architecture_doc() {
         let name = entry.file_name().to_string_lossy().into_owned();
         seen += 1;
         let listed = if entry.file_type().unwrap().is_dir() {
-            // `cost/` holds the child modules of `cost.rs`; either row names it.
             cells.contains(&format!("{name}/")) || cells.contains(&format!("{name}.rs"))
         } else {
             cells.contains(&name)

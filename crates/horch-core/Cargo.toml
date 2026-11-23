@@ -20,15 +20,11 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 uuid = { version = "1", features = ["v4"] }
 rusqlite.workspace = true
 
-# `build.rs` digests the bundled skill catalog once at build time, so no
-# process digests the 8 MB of compiled-in files at run time.
 [build-dependencies]
 sha2 = "0.10"
 
 [dev-dependencies]
 tempfile = "3"
 
-# The Unix tests read and signal processes directly, to check the code under
-# test against the OS.
 [target.'cfg(unix)'.dev-dependencies]
 libc = "0.2"

@@ -1,0 +1,4 @@
+# Text files have LF in the work tree on each OS. A Windows checkout with
+# core.autocrlf would give CRLF; the tests that read source, goldens, fixtures
+# and shipped teammates or skills compare with LF text.
+* text=auto eol=lf

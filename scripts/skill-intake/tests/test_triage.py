@@ -243,7 +243,7 @@ class PlanTest(TriageCase):
         c = self.run_source(fixtures.f_clean(), PENDING_EXIT)
         self.add_scan(c, ("OPQ-01", "high", f"{SKILL_DIR}/bin/fmt"), ("OPQ-06", "low", f"{SKILL_DIR}/logo.png"))
         self.audit(c, PURPOSE)
-        out = self.triage(c, 4)  # no inference file for OPQ-01: a gate failure, not a default
+        out = self.triage(c, 4)
         self.assertTrue(any(r.startswith("finding with no possible disposition: OPQ-01#") for r in out["reasons"]))
         opq = {self.findings_by_id(c)[k]["rule"]: e for k, e in self.entries(c).items()}
         self.assertEqual((opq["OPQ-01"]["status"], opq["OPQ-06"]["disposition"]), ("unresolved", "remove"))
@@ -263,7 +263,7 @@ class PlanTest(TriageCase):
         """Scan, then triage, on a real tree: the OPQ inference file is sweep/opaque/<scan id>.md."""
         files = {**fixtures.f_clean(), f"{SKILL_DIR}/requirements.txt": "flask==3.0.0\n",
                  f"{SKILL_DIR}/bin/fmt": fixtures.binary(fixtures.MACHO_64, "--format")}
-        c = self.run_source(files, 4)  # no inference file for OPQ-01 yet: GATE 1 cannot pass
+        c = self.run_source(files, 4)
         hits = {h["rule"]: h for h in self.scan_hits(c)}
         self.assertEqual(set(hits), {"SUP-01", "OPQ-01"})
         opq_id = hits["OPQ-01"]["id"]

@@ -1,8 +1,3 @@
-//! The `jobs` table: its rows, with no rule.
-//!
-//! The `state` column changes only through `transition()`
-//! (`application::ledger`). Each other column is written here.
-
 use anyhow::{Context, Result};
 use rusqlite::types::Type;
 use rusqlite::{params, Connection, OptionalExtension, Row};
@@ -11,7 +6,6 @@ use crate::fleetd::fleet_runtime::domain::clock::FleetSeconds;
 use crate::fleetd::fleet_runtime::domain::jobs::{Kind, State};
 use crate::taskledger::util;
 
-/// 1 row of `jobs`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JobRow {
     pub id: i64,
@@ -33,7 +27,6 @@ pub struct JobRow {
     pub ended_at: Option<String>,
 }
 
-/// The row `r`, read by column name.
 fn from_row(r: &Row<'_>) -> rusqlite::Result<JobRow> {
     let word = |column: &str, w: String| {
         rusqlite::Error::InvalidColumnType(0, format!("{column} = {w}"), Type::Text)
@@ -76,13 +69,10 @@ fn one(conn: &Connection, filter: &str, p: impl rusqlite::Params) -> Result<Opti
     row.context("reading a jobs row")
 }
 
-/// The row `id`.
 pub fn get(conn: &Connection, id: i64) -> Result<Option<JobRow>> {
     one(conn, "WHERE id = ?1", [id])
 }
 
-/// The `queued` or `running` run of `kind` and `subject` (at most 1, by
-/// the index `jobs_one_active`).
 pub fn active(conn: &Connection, kind: Kind, subject: &str) -> Result<Option<JobRow>> {
     one(
         conn,
@@ -91,7 +81,6 @@ pub fn active(conn: &Connection, kind: Kind, subject: &str) -> Result<Option<Job
     )
 }
 
-/// The last run of `kind`, `subject` and `input_key`.
 pub fn latest(
     conn: &Connection,
     kind: Kind,
@@ -105,7 +94,52 @@ pub fn latest(
     )
 }
 
-/// The newest run of `kind` and `subject`, of any input key.
+pub fn active_subjects(
+    conn: &Connection,
+    kind: Kind,
+) -> Result<std::collections::BTreeSet<String>> {
+    let mut stmt = conn
+        .prepare("SELECT subject FROM jobs WHERE kind = ?1 AND state IN ('queued', 'running')")?;
+    let ids = stmt.query_map([kind.as_str()], |r| r.get(0))?;
+    Ok(ids.collect::<rusqlite::Result<_>>()?)
+}
+
+pub fn latest_states<'a>(
+    conn: &Connection,
+    kind: Kind,
+    subjects: impl IntoIterator<Item = &'a str>,
+) -> Result<std::collections::BTreeMap<(String, String), String>> {
+    let subjects: Vec<&str> = subjects.into_iter().collect();
+    let sql = format!(
+        "SELECT subject, input_key, state, max(run) FROM jobs
+         WHERE kind = ?1 AND subject IN ({}) GROUP BY subject, input_key",
+        crate::taskledger::sql_words::marks(2, subjects.len())
+    );
+    let mut values = vec![kind.as_str()];
+    values.extend(subjects);
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(values), |r| {
+        Ok(((r.get(0)?, r.get(1)?), r.get(2)?))
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+pub fn of_subjects<'a>(
+    conn: &Connection,
+    kinds: &[Kind],
+    subjects: impl IntoIterator<Item = &'a str>,
+) -> Result<Vec<JobRow>> {
+    let subjects: Vec<&str> = subjects.into_iter().collect();
+    let filter = format!(
+        "WHERE kind IN ({}) AND subject IN ({}) ORDER BY id",
+        crate::taskledger::sql_words::marks(1, kinds.len()),
+        crate::taskledger::sql_words::marks(kinds.len() + 1, subjects.len())
+    );
+    let mut values: Vec<&str> = kinds.iter().map(|k| k.as_str()).collect();
+    values.extend(subjects);
+    rows(conn, &filter, rusqlite::params_from_iter(values))
+}
+
 pub fn last(conn: &Connection, kind: Kind, subject: &str) -> Result<Option<JobRow>> {
     one(
         conn,
@@ -114,8 +148,6 @@ pub fn last(conn: &Connection, kind: Kind, subject: &str) -> Result<Option<JobRo
     )
 }
 
-/// The newest run of `kind` whose subject is `word` or starts with `word`
-/// and a space, of any input key.
 pub fn last_of_word(conn: &Connection, kind: Kind, word: &str) -> Result<Option<JobRow>> {
     one(
         conn,
@@ -125,7 +157,6 @@ pub fn last_of_word(conn: &Connection, kind: Kind, word: &str) -> Result<Option<
     )
 }
 
-/// The newest `passed` run of `kind` for each subject, by subject.
 pub fn last_passed(conn: &Connection, kind: Kind) -> Result<Vec<JobRow>> {
     rows(
         conn,
@@ -135,7 +166,6 @@ pub fn last_passed(conn: &Connection, kind: Kind) -> Result<Vec<JobRow>> {
     )
 }
 
-/// The `queued` runs that may start at `clock`, oldest first.
 pub fn due(conn: &Connection, clock: FleetSeconds) -> Result<Vec<JobRow>> {
     rows(
         conn,
@@ -144,12 +174,10 @@ pub fn due(conn: &Connection, clock: FleetSeconds) -> Result<Vec<JobRow>> {
     )
 }
 
-/// The `running` runs, oldest first.
 pub fn running(conn: &Connection) -> Result<Vec<JobRow>> {
     rows(conn, "WHERE state = 'running' ORDER BY id", [])
 }
 
-/// A new `queued` run.
 #[derive(Debug, Clone)]
 pub struct NewRun<'a> {
     pub kind: Kind,
@@ -162,7 +190,6 @@ pub struct NewRun<'a> {
     pub time_limit_s: u64,
 }
 
-/// Insert `new` as a `queued` row. Gives its id.
 pub fn insert(conn: &Connection, new: &NewRun<'_>) -> Result<i64> {
     conn.execute(
         "INSERT INTO jobs (kind, subject, repo, input_key, run, abandoned_runs, not_before,
@@ -184,7 +211,6 @@ pub fn insert(conn: &Connection, new: &NewRun<'_>) -> Result<i64> {
     Ok(conn.last_insert_rowid())
 }
 
-/// Record the process of the run `id` and its deadline.
 pub fn set_started(
     conn: &Connection,
     id: i64,
@@ -199,7 +225,6 @@ pub fn set_started(
     Ok(())
 }
 
-/// Record the result of the run `id`.
 pub fn set_result(conn: &Connection, id: i64, result_json: &str) -> Result<()> {
     conn.execute(
         "UPDATE jobs SET result_json = ?2 WHERE id = ?1",
@@ -208,7 +233,6 @@ pub fn set_result(conn: &Connection, id: i64, result_json: &str) -> Result<()> {
     Ok(())
 }
 
-/// Record the end of the run `id` with `abandoned_runs`.
 pub fn set_ended(conn: &Connection, id: i64, abandoned_runs: u64) -> Result<()> {
     conn.execute(
         "UPDATE jobs SET ended_at = ?2, abandoned_runs = ?3 WHERE id = ?1",
@@ -222,8 +246,6 @@ mod tests {
     use super::*;
     use crate::taskledger::schema;
 
-    /// Each column gets a distinct value, so a column read into the wrong
-    /// field fails.
     #[test]
     fn each_column_goes_to_its_field() {
         let mut conn = Connection::open_in_memory().unwrap();
@@ -276,7 +298,6 @@ mod tests {
         };
         assert_eq!(last(&conn, Kind::TaskCheck, "T-1").unwrap(), None);
         let first = insert(&conn, &run("T-1", "tip1", 1)).unwrap();
-        // 1 run of a kind and subject is active at a time.
         conn.execute("UPDATE jobs SET state = 'abandoned' WHERE id = ?1", [first])
             .unwrap();
         let newest = insert(&conn, &run("T-1", "tip2", 1)).unwrap();

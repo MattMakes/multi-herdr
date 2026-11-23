@@ -1,63 +1,27 @@
-//! The content of `task.yaml` and `START.md` of an attempt (ticket 07), and
-//! the SR-2 lint that refuses a secret in them.
-//!
-//! Facts in, text out. No I/O: the writer is `adapters/task_files.rs`.
-//! SR-2 (`docs/specs/fleetd/design.md`): secrets reach agents only through
-//! env vars named in the profile, never through task files. The lint
-//! refuses a text that holds the value of an env var of the profile, the
-//! value of a variable named in `FORBIDDEN_ENV`, or a line that assigns a
-//! `*_KEY`, `*_TOKEN` or `*_SECRET`. A refusal names the rule and the
-//! variable, never the value.
-
-/// The facts of 1 attempt that its 2 task files show, from the ledger.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TaskFacts {
-    /// The short id, `T<seq>`.
     pub task: String,
-    /// The UUID of the task.
     pub task_id: String,
     pub run: String,
-    /// The attempt, `A<n>`.
     pub attempt: String,
-    /// The persona of the attempt.
     pub profile: String,
-    /// The absolute path of the worktree.
     pub worktree: String,
     pub branch: String,
-    /// The ticket path.
     pub read_first: String,
-    /// The ticket title.
     pub goal: String,
     pub check: Option<String>,
-    /// `work_kind` of the task.
     pub kind: Option<String>,
-    /// `ticket_snapshot` of the task: the head of `START.md`.
     pub ticket_snapshot: String,
-    /// The section of a resolver or fix attempt (ticket 33), after the
-    /// fixed part of `START.md`.
     pub extra: Option<String>,
-    /// The real path of the handoff file of the last attempt, when it ended
-    /// with a handoff and fleetd kept the path (ticket 29 of fleetd-p5, Q4).
     pub handoff: Option<String>,
-    /// The idea of the task, `I-NNNN` (FR-12). `None` for a task with no
-    /// idea.
     pub idea: Option<String>,
-    /// The feature of the idea, `F-NNNN`, whose decisions file the worker
-    /// reads (MAP.md, Q15).
     pub feature: Option<String>,
-    /// The requirement ids of `task_covers` of the task.
     pub covers: Vec<String>,
-    /// The verdict file of the judge, for a fix attempt of a judged task
-    /// (ticket 41 of fleetd-p6).
     pub verdict: Option<String>,
 }
 
-/// The lease renewal period that `task.yaml` names.
 pub const RENEW_EVERY_S: u64 = 10;
 
-/// `task.yaml` of `f`, whose outbox is `report_to`. 1 key on each line.
-/// `attempt` and `worktree` stay unquoted when they are plain. `read_first`
-/// is the list of files that the worker reads first (RR-12).
 pub fn render_task_yaml(f: &TaskFacts, report_to: &str, read_first: &[String]) -> String {
     let optional = |v: &Option<String>| v.as_deref().map_or("null".to_string(), scalar);
     [
@@ -82,9 +46,6 @@ pub fn render_task_yaml(f: &TaskFacts, report_to: &str, read_first: &[String]) -
     .collect()
 }
 
-/// `START.md` of `f`, whose outbox is `report_to`: the ticket snapshot,
-/// then the fixed part with the `read_first` files and the handoff file,
-/// if any, then the extra section, if any.
 pub fn render_start_md(f: &TaskFacts, report_to: &str, read_first: &[String]) -> String {
     let mut out = f.ticket_snapshot.clone();
     if !out.ends_with('\n') {
@@ -121,7 +82,34 @@ pub fn render_start_md(f: &TaskFacts, report_to: &str, read_first: &[String]) ->
     out
 }
 
-/// `value` as a YAML scalar: plain when it is safe, else double-quoted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AnsweredQuestion {
+    pub id: String,
+    pub question: Option<String>,
+    pub answer: Option<String>,
+}
+
+pub fn answers_section(answered: &[AnsweredQuestion]) -> Option<String> {
+    if answered.is_empty() {
+        return None;
+    }
+    let mut out = String::from(
+        "## Answers to the questions of this task\n\n\
+         An earlier attempt asked these questions. Use each answer.\n",
+    );
+    for q in answered {
+        out.push_str(&format!(
+            "\n### Question {}\n\n{}\n\nAnswer: {}\n",
+            q.id,
+            q.question
+                .as_deref()
+                .unwrap_or("(the question has no text)"),
+            q.answer.as_deref().unwrap_or("(the answer has no text)"),
+        ));
+    }
+    Some(out)
+}
+
 fn scalar(value: &str) -> String {
     if is_plain(value) {
         value.to_string()
@@ -130,20 +118,15 @@ fn scalar(value: &str) -> String {
     }
 }
 
-/// `items` as a YAML flow list of scalars.
 fn list(items: &[String]) -> String {
     let items: Vec<String> = items.iter().map(|i| scalar(i)).collect();
     format!("[{}]", items.join(", "))
 }
 
-/// Words that YAML reads as a bool or a null when plain.
 const RESERVED: [&str; 11] = [
     "null", "true", "false", "yes", "no", "on", "off", "y", "n", "~", "",
 ];
 
-/// A plain scalar that every YAML reader reads back as the same string:
-/// it starts with a letter or `/`, and holds only letters, digits and
-/// `_ . / - @ +`.
 fn is_plain(value: &str) -> bool {
     let first_ok = value
         .chars()
@@ -156,7 +139,6 @@ fn is_plain(value: &str) -> bool {
         && !RESERVED.contains(&value.to_ascii_lowercase().as_str())
 }
 
-/// `value` as a YAML double-quoted scalar.
 fn quoted(value: &str) -> String {
     let mut out = String::from("\"");
     for c in value.chars() {
@@ -174,17 +156,12 @@ fn quoted(value: &str) -> String {
     out
 }
 
-/// Where the lint got a secret from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {
-    /// An env var of the profile.
     Profile,
-    /// A variable named in `FORBIDDEN_ENV`.
     Forbidden,
 }
 
-/// 1 secret value that no task file may hold, with the name of its
-/// variable. Its `Debug` hides the value.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Secret {
     pub name: String,
@@ -193,7 +170,6 @@ pub struct Secret {
 }
 
 impl Secret {
-    /// The value of the env var `name` of the profile.
     pub fn profile(name: &str, value: &str) -> Secret {
         Secret {
             name: name.to_string(),
@@ -202,7 +178,6 @@ impl Secret {
         }
     }
 
-    /// The value of the variable `name` of `FORBIDDEN_ENV`.
     pub fn forbidden(name: &str, value: &str) -> Secret {
         Secret {
             name: name.to_string(),
@@ -221,21 +196,14 @@ impl std::fmt::Debug for Secret {
     }
 }
 
-/// A value shorter than this is not looked for: an env var such as
-/// `X=1` is a setting, and its value is in most texts.
 pub const MIN_SECRET_LEN: usize = 8;
 
-/// The suffixes of a variable whose assignment is refused.
 const SECRET_SUFFIXES: [&str; 3] = ["_KEY=", "_TOKEN=", "_SECRET="];
 
-/// The rule of SR-2 that refused a text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Sr2Rule {
-    /// The text holds the value of an env var of the profile.
     ProfileEnvValue,
-    /// The text holds the value of a variable named in `FORBIDDEN_ENV`.
     ForbiddenEnvValue,
-    /// A line assigns a `*_KEY`, `*_TOKEN` or `*_SECRET`.
     SecretAssignment,
 }
 
@@ -249,14 +217,10 @@ impl Sr2Rule {
     }
 }
 
-/// Why the lint refused a task file. It holds no secret value.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Sr2Refusal {
-    /// The file, relative to the attempt folder.
     pub file: String,
     pub rule: Sr2Rule,
-    /// The variable name of a value rule, or the line number of an
-    /// assignment, as text.
     pub what: String,
 }
 
@@ -272,8 +236,6 @@ impl std::fmt::Display for Sr2Refusal {
     }
 }
 
-/// Refuse `text` of the file `file` when it holds a secret of `secrets` or
-/// a secret assignment line.
 pub fn lint(file: &str, text: &str, secrets: &[Secret]) -> Result<(), Sr2Refusal> {
     let refusal = |rule, what: String| Sr2Refusal {
         file: file.to_string(),
@@ -300,8 +262,6 @@ pub fn lint(file: &str, text: &str, secrets: &[Secret]) -> Result<(), Sr2Refusal
     Ok(())
 }
 
-/// `line` holds `<NAME>_KEY=`, `<NAME>_TOKEN=` or `<NAME>_SECRET=`, with a
-/// non-empty variable name before the suffix.
 fn assigns_secret(line: &str) -> bool {
     SECRET_SUFFIXES.iter().any(|suffix| {
         line.match_indices(suffix).any(|(at, _)| {
@@ -362,6 +322,27 @@ mod tests {
         f.handoff = Some("/fleet/tasks/t-1/handoff.md".into());
         assert!(render_start_md(&f, "/o/", &[])
             .contains("Read its handoff file first: `/fleet/tasks/t-1/handoff.md`"));
+    }
+
+    #[test]
+    fn answers_section_holds_each_question_and_its_answer() {
+        assert_eq!(answers_section(&[]), None);
+        let q = |id: &str, question: &str, answer: Option<&str>| AnsweredQuestion {
+            id: id.into(),
+            question: Some(question.into()),
+            answer: answer.map(str::to_string),
+        };
+        let section = answers_section(&[
+            q("t-1/A1/Q1", "Which port?", Some("Port 8080.")),
+            q("t-1/A1/Q2", "Which host?", None),
+        ])
+        .unwrap();
+        let first = section.find("Which port?\n\nAnswer: Port 8080.").unwrap();
+        let second = section
+            .find("Which host?\n\nAnswer: (the answer has no text)")
+            .unwrap();
+        assert!(first < second, "oldest first:\n{section}");
+        assert!(section.contains("### Question t-1/A1/Q1"), "{section}");
     }
 
     #[test]

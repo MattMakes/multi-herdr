@@ -1,9 +1,3 @@
-//! `horch idea show <id> [--in-flight] [--json]`: 1 idea and what you
-//! approve, and with `--in-flight` the changed files and the diffs of each
-//! other feature in flight (`docs/specs/fleetd/design.md`, "Ideas";
-//! "Between features"; MAP.md of fleetd-p6, Q13). The sub-orchestrator runs
-//! it at plan time. It opens the ledger read-only.
-
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -37,7 +31,6 @@ struct Shown {
     in_flight: Option<Vec<InFlightFeature>>,
 }
 
-/// The git reads of the project repository.
 struct RepoDiffs {
     git: Git,
     repo: PathBuf,
@@ -58,7 +51,6 @@ impl BranchDiffs for RepoDiffs {
     }
 }
 
-/// `horch idea show`.
 pub fn run(ctx: &RuntimeContext, args: ShowArgs) -> Result<ExitCode> {
     let Some(store) = taskledger::open_existing_read_only(ctx)? else {
         bail!("no idea {}: the ledger does not exist", args.id);

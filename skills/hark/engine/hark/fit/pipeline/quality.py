@@ -20,13 +20,10 @@ N_MEL = 64
 WIDTH_W = 0.04
 WIDTH_CAP_DB = 20
 TAIL_CORR_W = 1.0
-CEN = 1000.0 * 2.0 ** (np.arange(-15, 13) / 3.0)   # the 28 tone band centres
+CEN = 1000.0 * 2.0 ** (np.arange(-15, 13) / 3.0)
 
 _PRE_ROLL = 240
 _EPS = 1e-20
-
-
-# ---------------------------------------------------------------- loading
 
 
 def load(x: Any) -> np.ndarray:
@@ -54,9 +51,6 @@ def _power_frames(mv: np.ndarray, step_n: int) -> np.ndarray:
     if kk == 0:
         return np.zeros(0)
     return np.mean(mv[: kk * step_n].reshape(kk, step_n) ** 2, axis=1)
-
-
-# ---------------------------------------------------------------- levels and onsets
 
 
 def peak_rms_db(x: np.ndarray, win_s: float = 0.05) -> float:
@@ -120,9 +114,6 @@ def t40(m: np.ndarray) -> float:
     return 5.0 * kk
 
 
-# ---------------------------------------------------------------- spectra
-
-
 def _hann_win(cnt: int) -> np.ndarray:
     return np.hanning(cnt + 2)[1:-1]
 
@@ -182,9 +173,6 @@ def bandgram(m: np.ndarray, nfft: int = 1024, hop: int = 512) -> np.ndarray:
     return _to_db(acc)
 
 
-# ---------------------------------------------------------------- alignment
-
-
 def _lined_up(ra: np.ndarray, rb: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     mel_a, mel_b = mono(ra), mono(rb)
     start_i = max(0, onset_index(mel_a) - _PRE_ROLL)
@@ -193,9 +181,6 @@ def _lined_up(ra: np.ndarray, rb: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     mel_b = mel_b * 10 ** (-peak_rms_db(mel_b) / 20)
     cnt = max(len(mel_a), len(mel_b))
     return np.pad(mel_a, (0, cnt - len(mel_a))), np.pad(mel_b, (0, cnt - len(mel_b)))
-
-
-# ---------------------------------------------------------------- single metrics
 
 
 def _mel_single(ra: np.ndarray, rb: np.ndarray, fft_n: int) -> float:
@@ -344,9 +329,6 @@ def _rounded(vv: Any, ndv: int) -> Any:
     return None if vv is None else round(float(vv), ndv)
 
 
-# ---------------------------------------------------------------- the metrics dict
-
-
 def _mono_stats(original: np.ndarray, resynth: np.ndarray) -> dict:
     ra, rb = _lined_up(original, resynth)
     to_mel, pieces = mel_distance(ra, rb, detail=True)
@@ -398,9 +380,6 @@ def floor(render_fn: Callable[[int], np.ndarray], seeds: tuple = (11, 12), clap:
     return quality(render_fn(seeds[0]), render_fn(seeds[1]), clap=clap)
 
 
-# ---------------------------------------------------------------- optional model checks
-
-
 def clap_cos(a: np.ndarray, b: np.ndarray) -> float:
     """Cosine of the CLAP audio embeddings of 2 sounds (needs the ML extras)."""
     from hark.models import require_ml
@@ -441,9 +420,6 @@ def describe_pair(a: np.ndarray, b: np.ndarray) -> dict:
             audio.write_wav(path, np.asarray(x, dtype=np.float32), SR, subtype="FLOAT")
             acc[kname] = _words_for_one(path)
     return acc
-
-
-# ---------------------------------------------------------------- text and picture
 
 
 def _stereo_words(res: dict) -> str:

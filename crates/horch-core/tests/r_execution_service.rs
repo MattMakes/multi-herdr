@@ -1,7 +1,3 @@
-//! `ExecutionService::spawn` pins: the brief stage failure, the role-taken
-//! refusal and each arm of the record upsert (fresh push, resumed update,
-//! duplicate record, vanished record).
-
 use std::path::Path;
 
 use horch_core::execution::legacy::LedgerRecordV1;
@@ -28,8 +24,6 @@ use horch_core::workspace::testing::FakeWorkspace;
 const NOW: &str = "2026-09-28T18:00:00Z";
 
 struct World {
-    /// The fleetd of the session records (T-884). Declared first, so it
-    /// drops before the folder.
     _fleetd: ChannelServer,
     _tmp: tempfile::TempDir,
     ctx: RuntimeContext,
@@ -38,8 +32,6 @@ struct World {
     fake: FakeWorkspace,
 }
 
-/// A temp state root, project and mailbox, and a fake workspace `w1` whose
-/// root pane is `p1`.
 fn world() -> World {
     let tmp = tempfile::tempdir().unwrap();
     let project = tmp.path().join("project");
@@ -115,7 +107,6 @@ fn fresh(exec: &str) -> ExecutionPlan {
     plan(&req, exec, None)
 }
 
-/// A finished record a resume can reopen.
 fn finished() -> LedgerRecordV1 {
     LedgerRecordV1 {
         record_id: "rec-1".into(),
@@ -141,6 +132,29 @@ fn resume_plan(record: &LedgerRecordV1) -> ExecutionPlan {
     plan(&req, "unused", Some(record))
 }
 
+fn spawn_apart(
+    ctx: &RuntimeContext,
+    project: &Path,
+    plan: ExecutionPlan,
+) -> Result<String, SpawnError> {
+    let store = ExecutionStore::open(&ctx.paths, project);
+    let mailbox = Mailbox::in_context(ctx, "w1");
+    let fake = FakeWorkspace::new();
+    fake.workspace_create("w1", None, false).unwrap();
+    let tile = |_: &str, _: TilingMode| {};
+    let service = ExecutionService {
+        ctx,
+        store: &store,
+        workspace: &fake,
+        mailbox: &mailbox,
+        tile: &tile,
+        open_pane: None,
+        ledger_worker: None,
+        task_yaml: None,
+    };
+    service.spawn(plan, None).map(|o| o.pane)
+}
+
 impl World {
     fn spawn(&self, plan: ExecutionPlan, role: Option<&str>) -> Result<String, SpawnError> {
         let tile = |_: &str, _: TilingMode| {};
@@ -150,6 +164,7 @@ impl World {
             workspace: &self.fake,
             mailbox: &self.mailbox,
             tile: &tile,
+            open_pane: None,
             ledger_worker: None,
             task_yaml: None,
         };
@@ -169,10 +184,6 @@ impl World {
 #[test]
 fn brief_failure_records_launch_failed_before_any_pane() {
     let w = world();
-    // A plain file at the mailbox path: the brief has no dir to go in. A
-    // read-only mailbox no longer fails the write: the mailbox makes its own
-    // dir 0700 before it writes. The role is explicit, so only the brief
-    // write fails.
     let mailbox = w.mailbox.dir();
     std::fs::create_dir_all(mailbox.parent().unwrap()).unwrap();
     std::fs::write(mailbox, "").unwrap();
@@ -227,6 +238,32 @@ fn a_fresh_spawn_pushes_its_record_after_the_existing_ones() {
 }
 
 #[test]
+fn parallel_spawns_with_no_role_get_distinct_roles() {
+    let w = world();
+    let (ctx, project) = (&w.ctx, w._tmp.path().join("project"));
+    let project = project.as_path();
+    for round in 0..5 {
+        let outs: Vec<Result<String, SpawnError>> = std::thread::scope(|s| {
+            let spawns: Vec<_> = (0..4)
+                .map(|i| {
+                    s.spawn(move || spawn_apart(ctx, project, fresh(&format!("exec-{round}-{i}"))))
+                })
+                .collect();
+            spawns.into_iter().map(|t| t.join().unwrap()).collect()
+        });
+        for out in outs {
+            out.unwrap();
+        }
+    }
+    let records = w.store.read().unwrap();
+    let mut roles: Vec<_> = records.iter().map(|r| r.role.clone()).collect();
+    assert_eq!(roles.len(), 20, "{roles:?}");
+    roles.sort();
+    roles.dedup();
+    assert_eq!(roles.len(), 20, "each spawn has its own role: {roles:?}");
+}
+
+#[test]
 fn a_fresh_plan_for_an_existing_record_id_is_refused() {
     let w = world();
     w.spawn(fresh("exec-1"), Some("one-1")).unwrap();
@@ -248,7 +285,6 @@ fn a_resume_updates_its_record_in_place_and_keeps_its_history() {
         text: "written since the plan read it".into(),
     }];
     let planned = resume_plan(&old);
-    // History the worker wrote after the plan read the record.
     let mut stored = old.clone();
     stored
         .history

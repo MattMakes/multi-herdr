@@ -1,8 +1,3 @@
-//! Fleet context policy, the core (W1 u2): windows and thresholds (CTX-07),
-//! row states and the warn rule (CTX-10, CTX-11), handoffs (CTX-12,
-//! CTX-14), the compact line (CTX-20), the job (CTX-13, CTX-15, CTX-22,
-//! CTX-23) and the job dir (CTX-15).
-
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
@@ -72,8 +67,6 @@ fn caps(kind: HarnessKind) -> horch_core::harness::capabilities::CompactionCaps 
     kind.capabilities().compaction
 }
 
-// ─── CTX-07: windows, triggers, thresholds ──────────────────────────────────
-
 #[test]
 fn ctx_07_threshold_is_min_of_base_and_eight_tenths() {
     assert_eq!(threshold(300_000, Some(467_000)), 300_000);
@@ -93,7 +86,6 @@ fn ctx_07_native_trigger_per_rule() {
     let native = |kind: HarnessKind, model: &str, setting, window| {
         native_trigger(caps(kind).trigger, kind.as_str(), model, setting, window)
     };
-    // Claude: min(setting, model window) - 33,000 (design §8.1, §8.2).
     let claude = |setting| native(HarnessKind::Claude, "claude-opus-5-5", setting, None);
     assert_eq!(claude(Some(500_000)), Some(467_000));
     assert_eq!(claude(Some(150_000)), Some(117_000));
@@ -102,14 +94,11 @@ fn ctx_07_native_trigger_per_rule() {
         native(HarnessKind::Claude, "claude-haiku-4-5", None, None),
         Some(167_000)
     );
-    // Codex: min(limit, floor(window x 18 / 19)); the limit alone without a
-    // window; nothing without either.
     let codex = |limit, window| native(HarnessKind::Codex, "gpt-5.6-sol", limit, window);
     assert_eq!(codex(Some(200_000), Some(258_400)), Some(200_000));
     assert_eq!(codex(None, Some(258_400)), Some(244_800));
     assert_eq!(codex(None, None), None);
     assert_eq!(codex(Some(150_000), None), Some(150_000));
-    // pi and Prime: min(setting, window) - 16,384, window from the table.
     assert_eq!(
         native(
             HarnessKind::Prime,
@@ -123,12 +112,10 @@ fn ctx_07_native_trigger_per_rule() {
         native(HarnessKind::Pi, "ollama/qwen3.8", None, None),
         Some(245_760)
     );
-    // OpenCode: a fixed trigger per model.
     assert_eq!(
         native(HarnessKind::OpenCode, "opencode/big-pickle", None, None),
         Some(140_000)
     );
-    // A model no table knows: unknown.
     assert_eq!(
         native(HarnessKind::Prime, "no/such-model", None, None),
         None
@@ -140,8 +127,6 @@ fn ctx_07_native_trigger_per_rule() {
     assert_eq!(native(HarnessKind::Antigravity, "gemini", None, None), None);
     assert_eq!(headroom(117_000, 93_600), 23_400);
 
-    // fleet_window: teammate override, then <harness>/<teammate>, then
-    // <harness>/<model>.
     let windows: BTreeMap<String, u64> = [
         ("claude/orchestrator".to_string(), 300_000),
         ("claude/opus".to_string(), 200_000),
@@ -164,8 +149,6 @@ fn ctx_07_native_trigger_per_rule() {
         None
     );
 
-    // decide: operator first and never applied; fleet applied; else the
-    // harness default with no tokens.
     let op = OperatorWindow {
         tokens: Some(500_000),
         detail: "~/.claude/settings.json".into(),
@@ -192,9 +175,6 @@ fn ctx_07_native_trigger_per_rule() {
     assert_eq!(d.detail, "harness default");
 }
 
-// ─── CTX-10, CTX-11: row states and the warn rule ───────────────────────────
-
-/// A named row input and the state it gives.
 type RowCase = (
     String,
     Result<Reading, Unreadable>,
@@ -203,8 +183,6 @@ type RowCase = (
     RowState,
 );
 
-/// Every input of `ctx_11_requested_state_after_ask`, with the state it
-/// gives.
 fn row_cases() -> Vec<RowCase> {
     let over = || Ok(reading(Some(311_225)));
     let asked = || vec![ev("2026-09-20T10:06:00Z", "compact-requested")];
@@ -321,7 +299,6 @@ fn ctx_11_requested_state_after_ask() {
     assert_eq!(RowState::NoTranscript.as_str(), "no-transcript");
 }
 
-/// Review finding 8: the note rule is `classify == Over`, nothing else.
 #[test]
 fn ctx_10_should_warn_is_classify_over() {
     let mut warned = 0;
@@ -345,11 +322,8 @@ fn ctx_10_should_warn_is_classify_over() {
 fn ctx_10_rule_a_cycle_starts_at_newest_compaction() {
     let m = mark("2026-09-20T10:05:00.000Z", 900, Some(18_207));
     let warned = ev("2026-09-20T10:00:00Z", "context-warned");
-    // Warned before the marker: a new cycle, not asked.
     assert!(!already_asked(std::slice::from_ref(&warned), Some(&m)));
-    // No compaction at all: any ask counts.
     assert!(already_asked(std::slice::from_ref(&warned), None));
-    // Asked after the marker. `Z` and `.000Z` compare as instants.
     let asked = ev("2026-09-20T10:06:00Z", "compact-requested");
     assert!(already_asked(&[warned.clone(), asked.clone()], Some(&m)));
     let same = ev("2026-09-20T10:05:00Z", "compact-requested");
@@ -357,7 +331,6 @@ fn ctx_10_rule_a_cycle_starts_at_newest_compaction() {
         already_asked(&[same], Some(&m)),
         "at the cycle start counts"
     );
-    // A `compacted` event later than the marker starts the cycle there.
     let compacted = ev("2026-09-20T10:10:00Z", "compacted");
     assert!(!already_asked(
         &[warned.clone(), asked.clone(), compacted.clone()],
@@ -366,25 +339,18 @@ fn ctx_10_rule_a_cycle_starts_at_newest_compaction() {
     assert!(!already_asked(&[asked, compacted.clone()], None));
     let later = ev("2026-09-20T10:11:00.000Z", "context-warned");
     assert!(already_asked(&[compacted, later], Some(&m)));
-    // A note is not an ask.
     assert!(!already_asked(
         &[ev("2026-09-20T10:06:00Z", "note")],
         Some(&m)
     ));
 }
 
-// ─── CTX-25: native and horch compactions ───────────────────────────────────
-
 fn marks_at(at: &[&str]) -> Vec<String> {
     at.iter().map(|s| s.to_string()).collect()
 }
 
-/// CTX-25: a mark is horch-driven when a `compacted` event is at or after it
-/// and within 15 minutes of it; each event matches 1 mark; the rest are
-/// native.
 #[test]
 fn ctx_25_counts_native_and_horch_compactions() {
-    // 2 marks, 1 matched `compacted` event: 1 native, 1 horch.
     let marks = marks_at(&["2026-09-20T09:00:00Z", "2026-09-20T10:05:00Z"]);
     let history = vec![
         ev("2026-09-20T10:04:00Z", "compact-requested"),
@@ -392,11 +358,8 @@ fn ctx_25_counts_native_and_horch_compactions() {
     ];
     assert_eq!(count_compactions(&marks, &history), (1, 1));
 
-    // No marks: nothing, whatever the ledger says.
     assert_eq!(count_compactions(&[], &history), (0, 0));
 
-    // The window: at the mark and at 15 minutes match; before the mark and
-    // after 15 minutes do not.
     let mark = marks_at(&["2026-09-20T10:00:00Z"]);
     for (event_at, want) in [
         ("2026-09-20T10:00:00Z", (0, 1)),
@@ -408,7 +371,6 @@ fn ctx_25_counts_native_and_horch_compactions() {
         assert_eq!(count_compactions(&mark, &history), want, "{event_at}");
     }
 
-    // 1 event matches 1 mark, not 2.
     let close = marks_at(&["2026-09-20T10:00:00Z", "2026-09-20T10:01:00Z"]);
     let one = vec![ev("2026-09-20T10:02:00Z", "compacted")];
     assert_eq!(count_compactions(&close, &one), (1, 1));
@@ -418,7 +380,6 @@ fn ctx_25_counts_native_and_horch_compactions() {
     ];
     assert_eq!(count_compactions(&close, &two), (0, 2));
 
-    // Only `compacted` counts; mark times compare as instants, not strings.
     let other = vec![
         ev("2026-09-20T10:01:00Z", "compact-failed"),
         ev("2026-09-20T10:01:00Z", "context-warned"),
@@ -428,12 +389,9 @@ fn ctx_25_counts_native_and_horch_compactions() {
     let utc = vec![ev("2026-09-20T10:05:00.000Z", "compacted")];
     assert_eq!(count_compactions(&offset, &utc), (0, 1));
 
-    // A mark with no readable time is native.
     let bad = marks_at(&[""]);
     assert_eq!(count_compactions(&bad, &utc), (1, 0));
 }
-
-// ─── CTX-12, CTX-14: handoffs ───────────────────────────────────────────────
 
 #[test]
 fn ctx_12_handoff_path_per_role_is_distinct() {
@@ -456,7 +414,6 @@ fn ctx_12_handoff_path_per_role_is_distinct() {
 #[test]
 fn ctx_14_handoff_freshness_rule() {
     let now = sys("2026-10-06T11:00:00Z");
-    // No ask: the 60-minute rule.
     assert_eq!(handoff_fresh(None, None, now), Err(HandoffProblem::Missing));
     assert_eq!(
         handoff_fresh(Some(sys("2026-10-06T10:01:00Z")), None, now),
@@ -466,7 +423,6 @@ fn ctx_14_handoff_freshness_rule() {
         handoff_fresh(Some(sys("2026-10-06T09:59:00Z")), None, now),
         Err(HandoffProblem::Stale { minutes: 61 })
     );
-    // With an ask at 10:00: later than the ask, at any age.
     let asked = Some(sys("2026-10-06T10:00:00Z"));
     let later = sys("2026-10-06T12:01:00Z");
     assert_eq!(
@@ -483,7 +439,6 @@ fn ctx_14_handoff_freshness_rule() {
         handoff_fresh(None, asked, now),
         Err(HandoffProblem::Missing)
     );
-    // asked_at: the newest request or warning; notes do not count.
     let history = [
         ev("2026-10-06T09:00:00Z", "compact-requested"),
         ev("2026-10-06T10:00:00.000Z", "context-warned"),
@@ -492,8 +447,6 @@ fn ctx_14_handoff_freshness_rule() {
     assert_eq!(asked_at(&history), asked);
     assert_eq!(asked_at(&history[2..]), None);
 }
-
-// ─── CTX-20: the compact line ───────────────────────────────────────────────
 
 #[test]
 fn ctx_20_compact_line_has_keep_list_only_where_accepted() {
@@ -514,33 +467,24 @@ fn ctx_20_compact_line_has_keep_list_only_where_accepted() {
     );
 }
 
-// ─── CTX-13, CTX-15, CTX-22, CTX-23: the job ────────────────────────────────
-
 const OLD_MARK: u64 = 100;
 const NEW_MARK: u64 = 5_000;
 const FAILED: &str =
     "[horch] BLOCKED: compaction of sonnet-1 failed at step {step}: {reason}. log /s/job.log";
 const REPORTED: &str = "[horch] NOTE: sonnet-1 compacted. {pre} -> {post} tokens.";
 
-/// A scripted pane and transcript, on a fake clock.
 struct Fake {
     statuses: RefCell<VecDeque<&'static str>>,
-    /// The new marker shows from this send on. None: never.
     marker_after: Option<usize>,
-    /// The tokens after the marker; None keeps the reading pending.
     post: Option<u64>,
     mark_post: Option<u64>,
     clock: Cell<Duration>,
-    /// What happened, in order: `status <s>`, `send <line>`, `marker`.
     trace: RefCell<Vec<String>>,
     sends: RefCell<Vec<String>>,
     events: RefCell<Vec<(String, String)>>,
     reports: RefCell<Vec<String>>,
-    /// The pane's scrollback before the first send.
     scrollback: String,
-    /// After send n (1-based) the pane shows this line. None: no new line.
     pane_line: Option<(usize, &'static str)>,
-    /// Pane reads, as a count.
     pane_reads: Cell<usize>,
 }
 
@@ -609,7 +553,6 @@ impl JobPorts for Fake {
         let mut text = self.scrollback.clone();
         let sends = compact_sends(self);
         if let Some((after, line)) = self.pane_line {
-            // 1 new line per send from send `after` on.
             for _ in after..=sends {
                 text.push_str(line);
                 text.push('\n');
@@ -780,7 +723,6 @@ fn ctx_22_job_records_compacted_with_exact_text() {
         )]
     );
 
-    // No response after the marker and no post figure in it: unknown.
     let mut f = Fake::new(&["idle"], Some(1));
     f.post = None;
     f.mark_post = None;
@@ -819,7 +761,6 @@ fn ctx_13_harness_failure_line_stops_the_job_within_one_poll() {
             reason: format!("pi said \"{line}\""),
         }
     );
-    // 2 idle polls (1 sleep) before the send, then at most 1 poll.
     assert!(f.elapsed() <= Duration::from_secs(4), "{:?}", f.elapsed());
     assert_eq!(
         *f.events.borrow(),
@@ -839,13 +780,11 @@ fn ctx_13_harness_failure_line_stops_the_job_within_one_poll() {
 
 #[test]
 fn ctx_13_failure_line_in_old_scrollback_does_not_stop_the_job() {
-    // The same text from an earlier attempt, before this send.
     let mut f = Fake::new(&["idle"], Some(1));
     f.scrollback = format!("{PI_FAILURE}\n> /compact\n");
     let done = run(&f, &plan(1)).unwrap();
     assert_eq!(done.mark.offset, NEW_MARK);
 
-    // No marker: the job waits the full marker timeout, as before.
     let mut f = Fake::new(&["idle"], None);
     f.scrollback = format!("{PI_FAILURE}\n");
     let err = run(&f, &plan(1)).unwrap_err();
@@ -894,8 +833,6 @@ fn ctx_13_failure_lines_are_cited_per_harness() {
         .any(|l| PI_FAILURE.contains(l)));
 }
 
-// ─── CTX-15: the job dir and the shared heartbeat ───────────────────────────
-
 fn write_json(dir: &Path, name: &str, value: &impl serde::Serialize) {
     std::fs::write(dir.join(name), serde_json::to_vec(value).unwrap()).unwrap();
 }
@@ -910,7 +847,6 @@ fn job(step: &str) -> JobRecord {
     }
 }
 
-/// A heartbeat written now by this test's own process.
 fn own_heartbeat() -> Heartbeat {
     let pid = std::process::id();
     Heartbeat {
@@ -920,7 +856,6 @@ fn own_heartbeat() -> Heartbeat {
     }
 }
 
-/// A fresh heartbeat whose process has ended.
 fn dead_heartbeat() -> Heartbeat {
     let mut child = std::process::Command::new("true").spawn().unwrap();
     let pid = child.id();
@@ -928,7 +863,6 @@ fn dead_heartbeat() -> Heartbeat {
     Heartbeat {
         pid,
         at: horch_core::clock::stamp(Utc::now()),
-        // No process has this start time.
         started: Some(1),
     }
 }
@@ -941,10 +875,8 @@ fn ctx_15_lost_job_classifies_compact_lost() {
     std::fs::create_dir_all(&dir).unwrap();
     let now = Utc::now();
 
-    // No job.json and no spawn: no job.
     assert_eq!(jobfile::liveness(&dir, now), JobLiveness::None);
 
-    // A fresh spawn and no heartbeat yet: live.
     write_json(
         &dir,
         SPAWNED_FILE,
@@ -956,16 +888,13 @@ fn ctx_15_lost_job_classifies_compact_lost() {
     assert_eq!(jobfile::liveness(&dir, now), JobLiveness::Live);
     std::fs::remove_file(dir.join(SPAWNED_FILE)).unwrap();
 
-    // job.json, created once only.
     create_job(&dir, &job("wait-idle")).unwrap();
     let again = create_job(&dir, &job("wait-idle")).unwrap_err();
     assert_eq!(again.kind(), std::io::ErrorKind::AlreadyExists);
 
-    // job.json with this process's fresh heartbeat: live.
     write_json(&dir, HEARTBEAT_FILE, &own_heartbeat());
     assert_eq!(jobfile::liveness(&dir, now), JobLiveness::Live);
 
-    // job.json with a dead pid's heartbeat: lost, at the step of job.json.
     jobfile::write_step(&dir, &job("wait-marker")).unwrap();
     write_json(&dir, HEARTBEAT_FILE, &dead_heartbeat());
     assert_eq!(
@@ -975,11 +904,9 @@ fn ctx_15_lost_job_classifies_compact_lost() {
         }
     );
 
-    // The first reader claims the loss; the second does not.
     assert_eq!(claim_lost(&dir).unwrap(), Some(job("wait-marker")));
     assert_eq!(claim_lost(&dir).unwrap(), None);
 
-    // start_locked on a lost dir: clears it (job.log stays), spawns once.
     std::fs::write(dir.join(LOG_FILE), "old log\n").unwrap();
     write_json(
         &dir,
@@ -1008,7 +935,6 @@ fn ctx_15_lost_job_classifies_compact_lost() {
         serde_json::from_slice(&std::fs::read(dir.join(SPAWNED_FILE)).unwrap()).unwrap();
     assert_eq!(spawned.pid, 4242, "the new spawn replaces the old file");
 
-    // start_locked on a live dir spawns nothing.
     create_job(&dir, &job("wait-idle")).unwrap();
     write_json(&dir, HEARTBEAT_FILE, &own_heartbeat());
     let started = start_locked(&dir, || {
@@ -1020,12 +946,10 @@ fn ctx_15_lost_job_classifies_compact_lost() {
     assert_eq!(calls.get(), 1);
     assert!(dir.join(JOB_FILE).exists());
 
-    // The child's exit clears its files and keeps the log.
     jobfile::clear_on_exit(&dir);
     assert_eq!(jobfile::liveness(&dir, Utc::now()), JobLiveness::None);
     assert!(dir.join(LOG_FILE).exists());
 
-    // The shared heartbeat's liveness, case by case.
     let now = at("2026-10-02T12:00:30Z");
     let hb = |at: &str| Heartbeat {
         pid: 7,

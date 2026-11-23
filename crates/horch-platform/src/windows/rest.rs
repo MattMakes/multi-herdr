@@ -1,5 +1,3 @@
-//! The concern rest for Windows.
-
 use std::io;
 use std::path::Path;
 use std::process::Command;
@@ -40,8 +38,6 @@ pub(crate) fn replace_process(mut cmd: Command) -> io::Error {
     }
 }
 
-/// Writes `HKCU\Environment` directly rather than using `setx`, which
-/// truncates PATH at 1024 characters.
 pub(crate) fn ensure_user_path(
     dir: &Path,
     prepend: &dyn Fn(&str, &str) -> Option<String>,

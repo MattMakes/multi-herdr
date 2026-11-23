@@ -1,7 +1,3 @@
-//! `horch idea add <text> | -f <file> | --direct <ticket file>`: capture an
-//! idea (`docs/specs/fleetd/design.md`, "Ideas", "Features"). It sends
-//! `idea_add` to fleetd and prints the id of the idea. No AI runs.
-
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -44,7 +40,6 @@ pub struct AddArgs {
     pub json: bool,
 }
 
-/// `horch idea add`.
 pub fn run(ctx: &RuntimeContext, args: AddArgs) -> Result<ExitCode> {
     if args.direct.is_some() {
         if let Some(refused) = super::refuse_inside_fleet_attempt(ctx, "horch idea add --direct") {
@@ -74,8 +69,6 @@ pub fn run(ctx: &RuntimeContext, args: AddArgs) -> Result<ExitCode> {
     })
 }
 
-/// The idea: the text, the text of `-f`, or the `--direct` ticket file with
-/// the sha256 of its bytes now.
 fn input(args: &AddArgs) -> Result<IdeaInput> {
     if let Some(path) = &args.direct {
         let path = std::fs::canonicalize(path)
@@ -102,8 +95,6 @@ fn input(args: &AddArgs) -> Result<IdeaInput> {
     Ok(IdeaInput::Text(text))
 }
 
-/// The feature of the idea: `--to`, else a new feature of the repository
-/// of this command, from its primary branch.
 fn target(ctx: &RuntimeContext, to: Option<String>) -> Result<AddTarget> {
     if let Some(feature) = to {
         return Ok(AddTarget::Join(feature));

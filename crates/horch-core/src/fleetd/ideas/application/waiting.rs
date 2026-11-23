@@ -1,45 +1,3 @@
-//! Waiting on you: the paused lease, the idle stop, the reminders and the
-//! park after the configured days.
-//!
-//! `keep_waits` is the use case of `docs/specs/fleetd/design.md`, "Ideas",
-//! Waiting on you is not a stall (FM-29, PL-4, OR-3;
-//! `docs/tickets/fleetd-p6/29-waiting.md`).
-//!
-//! An idea waits on you in 2 states only:
-//! - `awaiting_approval`: it waits for your approval.
-//! - `clarifying` with a question open: its live sub-orchestrator waits at
-//!   its prompt for your answer. The ledger has no row for an interview
-//!   question, so the caller gives this fact in [`Wait::asking`]: each
-//!   clarifying idea whose live sub-orchestrator pane herdr shows at its
-//!   prompt (agent status `idle` or `done`). After the idle stop no process
-//!   is left to ask, and the wait holds until your answer arrives as a new
-//!   file in `amendments/` (`horch idea amend`).
-//!
-//! In each other state an idle pane is not a wait on you, and the stall
-//! rules apply.
-//!
-//! While an idea waits:
-//! - `waiting_on_you_since` holds the calendar time of the start of the
-//!   wait, and 1 needs-you item of the key [`waiting_key`] is open, so the
-//!   wait is visible at once.
-//! - The lease of its sub-orchestrator attempt is paused. The attempt holds
-//!   no lease row (a lease belongs to a task), so its lease is its last
-//!   activity `active_at` on the fleet clock: the wait sets it to the
-//!   fleet clock of the start of the wait, and nothing renews it.
-//! - After `idle_stop_s` on the fleet clock from that pause, the attempt
-//!   ends with the outcome [`IDLE_STOP`] to free memory, unless its feature
-//!   has work for it (an open worker question or a failed task). I5 stops
-//!   its process; the stops are in [`Waits::stops`]. Ticket 28 starts no
-//!   process for the idea until the wait ends: your approval, your answer
-//!   or a worker question.
-//! - 1 reminder each `reminder_every_s` of calendar time, only inside
-//!   `working_hours` in the zone of [`Wait::now`]: the item of its key is
-//!   written again with the count of reminders, and [`remind`] gives the
-//!   notification of ticket 21.
-//! - After `park_after_days` of calendar time the idea moves to `parked`
-//!   (`park` of ticket 20), and 1 needs-you item of the key [`parked_key`]
-//!   says so. That item is resolved when the idea leaves `parked`.
-
 use std::collections::BTreeSet;
 use std::path::Path;
 
@@ -64,6 +22,7 @@ use crate::fleetd::ideas::adapters::needs_you_folder::Mirrored;
 use crate::fleetd::ideas::adapters::notify::{notify, Notice};
 use crate::fleetd::ideas::adapters::questions_store;
 use crate::fleetd::ideas::application::needs_you::{self, NeedsYouList};
+use crate::fleetd::ideas::application::notes_ingest::{QUESTION_ANSWERED, QUESTION_ASKED};
 use crate::fleetd::ideas::application::park_cancel::{self, PARKED};
 use crate::fleetd::ideas::application::sub_orchestrators::{IDLE_STOP, IN_FLIGHT};
 use crate::fleetd::ideas::domain::needs_you::Write;
@@ -73,57 +32,34 @@ use crate::fleetd::task_execution::application::commands;
 use crate::fleetd::task_execution::domain::task::{AttemptRow, AttemptState, Facts, RowRef, Stop};
 use crate::taskledger::model::{Actor, EventKind, TaskStatus, WorkerStatus};
 use crate::taskledger::{tasks, util, workers};
-use crate::workspace::herdr::Herdr;
+use crate::workspace::PaneHost;
 
-/// The kind of the needs-you item of an idea that waits on you.
 pub const WAITING: &str = "waiting_on_you";
 
-/// The kind of the needs-you item of an idea that the wait parked.
 pub const PARKED_NOTE: &str = "idea_parked";
 
-/// The kind of the row of `pass_cursors` of the waits.
 pub const CURSOR: &str = "waits";
 
-/// The phase of the sub-orchestrator of an idea that waits on you.
 const PHASE: &str = "clarifying";
 
-/// The cause of the event of 1 reminder. Its data holds `at` and `n`.
 const REMINDER: &str = "waiting on you: reminder";
 
-/// The cause of the event of the lease pause of 1 attempt. Its data holds
-/// the attempt and the fleet clock of the pause.
 const PAUSED: &str = "waiting on you: lease paused";
 
-/// The cause of the event of 1 idle stop. Its data holds the count of
-/// amendments at the stop.
 const IDLE_STOPPED: &str = "waiting on you: idle stop";
 
-/// What 1 pass of the waits needs besides the ledger.
 pub struct Wait<'a> {
-    /// The generation of the fleetd that writes.
     pub guard: Option<Generation>,
     pub config: &'a FleetConfig,
-    /// The fleet clock of the pass: the idle stop.
     pub clock: FleetSeconds,
-    /// The calendar time of the pass in the local zone of the machine: the
-    /// reminders, the working hours and the park.
     pub now: DateTime<FixedOffset>,
-    /// The fact that ticket 51 fills: each `clarifying` idea whose live
-    /// sub-orchestrator pane herdr shows at its prompt (`agent_status`
-    /// `idle` or `done`). An idea in another state in it is ignored.
     pub asking: &'a BTreeSet<String>,
-    /// What part 1 of the pass saw of the processes and the herdr panes.
     pub facts: &'a Facts,
-    /// The folder of the idea folders.
     pub ideas: &'a Path,
-    /// The user that owns the ledger and the idea folders.
     pub owner: User,
     pub budget: PassBudget,
 }
 
-/// What 1 pass of the waits did, by idea id; `idle_stopped` by attempt id.
-/// `stops` are the effects to do after the commit, each process before
-/// each pane.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Waits {
     pub started: Vec<String>,
@@ -134,18 +70,14 @@ pub struct Waits {
     pub stops: Vec<Stop>,
 }
 
-/// The key of the needs-you item of `idea` while it waits on you.
 pub fn waiting_key(idea: &str) -> String {
     format!("{WAITING}:{idea}")
 }
 
-/// The key of the needs-you item of `idea` that the wait parked.
 pub fn parked_key(idea: &str) -> String {
     format!("{PARKED_NOTE}:{idea}")
 }
 
-/// The waits for the ideas of the work budget, in the transaction `tx` of
-/// part 2 of a pass. No process stops here: the stops are returned.
 pub fn keep_waits(tx: &Transaction<'_>, ctx: &Wait<'_>) -> Result<Waits> {
     let stamp = clock::stamp(ctx.now.with_timezone(&Utc));
     let keys = idea_ids(tx)?;
@@ -175,9 +107,7 @@ pub fn keep_waits(tx: &Transaction<'_>, ctx: &Wait<'_>) -> Result<Waits> {
     Ok(out)
 }
 
-/// The notification of ticket 21 for `reminded` reminders of 1 pass, with
-/// `open` open items. It reports nothing when `reminded` is 0.
-pub fn remind(herdr: &Herdr, reminded: usize, open: usize, seq: u64) -> Notice {
+pub fn remind(herdr: &PaneHost, reminded: usize, open: usize, seq: u64) -> Notice {
     let mirrored = Mirrored {
         new: reminded,
         open,
@@ -186,8 +116,6 @@ pub fn remind(herdr: &Herdr, reminded: usize, open: usize, seq: u64) -> Notice {
     notify(herdr, &mirrored, seq)
 }
 
-/// The id of each idea that waits, may wait, or has an open park note, in
-/// id order.
 fn idea_ids(conn: &Connection) -> Result<Vec<String>> {
     let mut stmt = conn.prepare(
         "SELECT id FROM ideas
@@ -224,7 +152,11 @@ fn keep_idea(
         .iter()
         .map(|(a, _)| a)
         .find(|a| a.state != AttemptState::Ended);
-    if !waits(tx, ctx, &row, live, &tries)? {
+    let question = match row.state.as_str() {
+        "clarifying" => open_interview_question(tx, ctx, idea)?,
+        _ => None,
+    };
+    if !waits(tx, ctx, &row, live, &tries, question.as_deref())? {
         if row.waiting_on_you_since.is_some() {
             set_waiting(tx, idea, None)?;
             needs_you::resolve(tx, &waiting_key(idea))?;
@@ -254,7 +186,7 @@ fn keep_idea(
             kind: WAITING,
             entity: Entity::Idea.as_str(),
             entity_id: idea,
-            text: &waiting_text(&row.state, idea, &since, n),
+            text: &waiting_text(&row.state, idea, &since, n, question.as_deref()),
         },
     )?;
     if let Some(a) = live {
@@ -263,18 +195,18 @@ fn keep_idea(
     Ok(())
 }
 
-/// Whether `row` waits on you now. `live` is the live attempt of its
-/// sub-orchestrator in [`PHASE`], and `tries` each attempt of that phase.
 fn waits(
     tx: &Connection,
     ctx: &Wait<'_>,
     row: &IdeaRow,
     live: Option<&AttemptRow>,
     tries: &[(AttemptRow, Option<String>)],
+    question: Option<&str>,
 ) -> Result<bool> {
     let last_outcome = tries.last().and_then(|(_, o)| o.as_deref());
     Ok(match row.state.as_str() {
         "awaiting_approval" => true,
+        "clarifying" if question.is_none() => false,
         "clarifying" => match live {
             Some(_) => ctx.asking.contains(&row.id),
             None => {
@@ -287,7 +219,6 @@ fn waits(
     })
 }
 
-/// The lease pause and the idle stop of the live attempt `a` of `row`.
 fn idle_rule(
     tx: &Connection,
     ctx: &Wait<'_>,
@@ -351,8 +282,6 @@ fn idle_rule(
     Ok(())
 }
 
-/// The count of reminders of the wait that started at `since`, after the
-/// reminder of this pass when one is due.
 fn reminders(
     tx: &Connection,
     ctx: &Wait<'_>,
@@ -389,7 +318,6 @@ fn reminders(
     Ok(n)
 }
 
-/// The park of `idea` after `park_after_days` with no answer.
 fn park(tx: &Connection, ctx: &Wait<'_>, idea: &str, out: &mut Waits) -> Result<()> {
     let days = ctx.config.park_after_days;
     let job = JobCtx {
@@ -419,8 +347,7 @@ fn park(tx: &Connection, ctx: &Wait<'_>, idea: &str, out: &mut Waits) -> Result<
     Ok(())
 }
 
-/// The text of the waiting item of `idea` in `state`, after `n` reminders.
-fn waiting_text(state: &str, idea: &str, since: &str, n: u64) -> String {
+fn waiting_text(state: &str, idea: &str, since: &str, n: u64, question: Option<&str>) -> String {
     let mut text = if state == "awaiting_approval" {
         format!(
             "Idea {idea} waits for your approval since {since}. Read it with \
@@ -434,14 +361,15 @@ fn waiting_text(state: &str, idea: &str, since: &str, n: u64) -> String {
              `horch idea amend {idea} \"<answer>\"`."
         )
     };
+    if let Some(q) = question {
+        text.push_str(&format!(" The question of its sub-orchestrator: {q:?}"));
+    }
     if n > 0 {
         text.push_str(&format!(" Reminder {n}."));
     }
     text
 }
 
-/// Each sub-orchestrator attempt of `idea` in [`PHASE`], oldest first,
-/// with its outcome.
 fn phase_attempts(conn: &Connection, idea: &str) -> Result<Vec<(AttemptRow, Option<String>)>> {
     let prefix = format!("{idea}/{PHASE}/");
     Ok(attempts::idea_attempts(conn, idea)?
@@ -450,8 +378,28 @@ fn phase_attempts(conn: &Connection, idea: &str) -> Result<Vec<(AttemptRow, Opti
         .collect())
 }
 
-/// Whether a new amendment of `idea` arrived after the last idle stop of
-/// its sub-orchestrator.
+fn open_interview_question(
+    conn: &Connection,
+    ctx: &Wait<'_>,
+    idea: &str,
+) -> Result<Option<String>> {
+    let facts = facts_of(conn, Entity::Idea, idea, EventKind::Note)?;
+    let Some(at) = facts.iter().rposition(|f| f.cause == QUESTION_ASKED) else {
+        return Ok(None);
+    };
+    if facts[at + 1..].iter().any(|f| f.cause == QUESTION_ANSWERED) {
+        return Ok(None);
+    }
+    let data: serde_json::Value = serde_json::from_str(&facts[at].data_json).unwrap_or_default();
+    let at_ask = data["amendments"].as_u64().unwrap_or(u64::MAX);
+    if u64::try_from(amendments(ctx, idea)?).unwrap_or(0) > at_ask {
+        return Ok(None);
+    }
+    Ok(Some(
+        data["question"].as_str().unwrap_or_default().to_string(),
+    ))
+}
+
 fn answered(conn: &Connection, ctx: &Wait<'_>, idea: &str) -> Result<bool> {
     let Some(data) = last_note(conn, idea, IDLE_STOPPED)? else {
         return Ok(false);
@@ -460,7 +408,6 @@ fn answered(conn: &Connection, ctx: &Wait<'_>, idea: &str) -> Result<bool> {
     Ok(u64::try_from(amendments(ctx, idea)?).unwrap_or(0) > at_stop)
 }
 
-/// The count of amendments of `idea`. No folder is 0.
 fn amendments(ctx: &Wait<'_>, idea: &str) -> Result<usize> {
     let folder = IdeaFolder::new(ctx.ideas, idea, ctx.owner.clone())?;
     match folder.read_amendments() {
@@ -470,8 +417,6 @@ fn amendments(ctx: &Wait<'_>, idea: &str) -> Result<usize> {
     }
 }
 
-/// The time and the count of the last reminder of the wait that started
-/// at `since`.
 fn last_reminder(
     conn: &Connection,
     idea: &str,
@@ -487,7 +432,6 @@ fn last_reminder(
     }
 }
 
-/// The data of the newest note event of `idea` with the cause `cause`.
 fn last_note(conn: &Connection, idea: &str, cause: &str) -> Result<Option<serde_json::Value>> {
     let last = facts_of(conn, Entity::Idea, idea, EventKind::Note)?
         .into_iter()
@@ -496,9 +440,6 @@ fn last_note(conn: &Connection, idea: &str, cause: &str) -> Result<Option<serde_
     Ok(last.and_then(|f| serde_json::from_str(&f.data_json).ok()))
 }
 
-/// Whether the feature has work for its sub-orchestrator: an open worker
-/// question, or a `failed` task, of an idea in flight. Ticket 28 starts
-/// the process again for it, so the idle stop does not stop it.
 fn feature_has_work(conn: &Connection, feature: &str) -> Result<bool> {
     let in_flight: BTreeSet<String> = ideas_store::of_feature(conn, feature)?
         .into_iter()

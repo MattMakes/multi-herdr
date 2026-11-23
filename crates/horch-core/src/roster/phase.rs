@@ -1,11 +1,8 @@
-//! The work phase that selects a worker's portable skill catalog.
-
 use std::fmt;
 use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
-/// Work phase selecting the portable skill catalog for a worker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Phase {

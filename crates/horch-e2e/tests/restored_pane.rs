@@ -1,14 +1,13 @@
-//! #125: herdr resumes agent panes by itself after a server restart. A
-//! resumed worker pane runs its agent without `horch worker`, so it has no
-//! `HORCH_ROLE`, `HORCH_RECORD_ID` or `HORCH_WORKSPACE_ID`. horch finds its
-//! registered identity, and `horch fleet` and `horch doctor` warn that the
-//! restore is on.
 #![cfg(unix)]
 
 use std::process::Output;
 
+use horch_core::execution::legacy::Record;
+use horch_core::execution::records::SessionLedger;
+use horch_core::messaging::brief::Brief;
 use horch_core::messaging::mail::Mail;
-use horch_e2e::harness::{fixtures, wait_for_or, Harness};
+use horch_core::messaging::mailbox::Mailbox;
+use horch_e2e::harness::{fixtures, Harness};
 use serde_json::Value;
 
 fn text(o: &Output) -> String {
@@ -20,9 +19,12 @@ fn text(o: &Output) -> String {
     )
 }
 
-/// Workspace `w1` with its root pane `w1:p1`, as `horch fleet` leaves it.
 fn fleet(name: &str, scenario: &str) -> Harness {
     let mut h = Harness::new(name);
+    h.set(
+        "HORCH_LEDGER_DB",
+        h.state.join("ledger.sqlite3").to_string_lossy(),
+    );
     h.set(
         "HORCH_QUOTA_FILE",
         fixtures().join("quota/all-ok.json").to_string_lossy(),
@@ -42,58 +44,59 @@ fn herdr(h: &Harness, args: &[&str]) {
     assert!(o.status.success(), "{}", text(&o));
 }
 
-fn records(h: &Harness) -> Vec<Value> {
-    let slug: String = h
-        .project
-        .to_string_lossy()
-        .bytes()
-        .map(|b| {
-            if b.is_ascii_alphanumeric() {
-                b as char
-            } else {
-                '-'
-            }
-        })
-        .collect();
-    h.stored_ledger(&slug)
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or_default()
-}
-
 fn record(h: &Harness, id: &str) -> Value {
-    records(h)
-        .into_iter()
-        .find(|r| r["record_id"] == id)
-        .unwrap_or_else(|| panic!("no record {id}"))
-}
-
-/// A spawned codex worker that runs, as `(pane, role, record id)`.
-fn running_worker(h: &Harness) -> (String, String, String) {
-    let o = h.run(&["spawn", "codex-sol", "--from-pane", "w1:p1", "--no-tile"]);
-    assert!(o.status.success(), "{}", text(&o));
-    let pane = String::from_utf8_lossy(&o.stdout)
-        .lines()
-        .last()
+    SessionLedger::for_project(&h.state, &h.project.to_string_lossy())
+        .get(id)
+        .map(|r| serde_json::to_value(r).unwrap())
         .unwrap()
-        .trim()
-        .to_string();
-    let r = records(h).pop().expect("the spawn wrote a record");
-    let id = r["record_id"].as_str().unwrap().to_string();
-    let role = r["role"].as_str().unwrap().to_string();
-    wait_for_or(
-        "the running worker",
-        || {
-            let r = record(h, &id);
-            (r["state"]["state"] == "running" && r["session_id"].is_string()).then_some(())
-        },
-        || format!("{}", record(h, &id)),
-    );
-    (pane, role, id)
 }
 
-/// `horch` as an agent that herdr resumed in `pane` runs it: herdr's pane
-/// id, and none of the variables `horch worker` gives its agent.
+fn running_worker(h: &Harness) -> (String, String, String) {
+    let (role, id) = ("codex-sol-1", "r-restored");
+    let mut split = std::process::Command::new(h.bin.join("herdr"));
+    h.seal(&mut split);
+    let o = split
+        .args(["pane", "split", "w1:p1", "--direction", "right"])
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", text(&o));
+    let reply: Value = serde_json::from_slice(&o.stdout).unwrap();
+    let pane = reply["result"]["pane"]["pane_id"]
+        .as_str()
+        .expect("the reply names the new pane")
+        .to_string();
+
+    let mailbox = Mailbox::under(&h.state, "w1");
+    std::fs::create_dir_all(mailbox.dir()).unwrap();
+    mailbox.register_role(role, &pane).unwrap();
+    let brief: Brief = serde_json::from_value(serde_json::json!({
+        "schema": 2,
+        "role": role,
+        "teammate": "codex-sol",
+        "agent": "codex",
+        "model": "gpt-5.6-sol",
+        "record_id": id,
+        "session_id": "",
+        "resume": false,
+        "project_dir": h.project,
+    }))
+    .unwrap();
+    mailbox.write_brief(&brief).unwrap();
+    h.serve_fleetd();
+    SessionLedger::for_project(&h.state, &h.project.to_string_lossy())
+        .insert(Record {
+            record_id: id.into(),
+            agent: "codex".into(),
+            tier: "codex-sol".into(),
+            model: "gpt-5.6-sol".into(),
+            role: role.into(),
+            task: "work".into(),
+            ..Record::default()
+        })
+        .unwrap();
+    (pane, role.into(), id.into())
+}
+
 fn restored(h: &Harness, pane: &str, args: &[&str]) -> Output {
     h.horch(args)
         .env("HERDR_PANE_ID", pane)
@@ -109,12 +112,42 @@ fn pending(h: &Harness) -> Vec<horch_core::messaging::mail::Message> {
     Mail::under(&h.state, "w1").pending().unwrap_or_default()
 }
 
+fn stop_fleetd_and_jobs(h: &Harness) {
+    use horch_core::procid::{signal_same, start_time};
+    h.stop_fleetd();
+    let marks: Vec<String> = [Some(h.root.clone()), std::fs::canonicalize(&h.root).ok()]
+        .into_iter()
+        .flatten()
+        .map(|root| format!("{}/", root.display()))
+        .collect();
+    let jobs = || -> Vec<(u32, u64)> {
+        horch_e2e::process::commands_with_environment()
+            .into_iter()
+            .filter(|(_, l)| {
+                l.contains(" job run ") && marks.iter().any(|m| l.contains(m.as_str()))
+            })
+            .filter_map(|(pid, _)| Some((pid, start_time(pid)?)))
+            .collect()
+    };
+    let first = std::time::Instant::now();
+    horch_e2e::harness::wait_for("the jobs of fleetd to end", || {
+        let running = jobs();
+        let signal = if first.elapsed() < std::time::Duration::from_secs(10) {
+            15
+        } else {
+            9
+        };
+        for (pid, started) in &running {
+            signal_same(*pid, *started, signal);
+        }
+        running.is_empty().then_some(())
+    });
+}
+
 #[test]
 fn a_restored_worker_pane_tells_as_its_role_peeks_its_inbox_and_finishes() {
     let h = fleet("r125-restored", "exec,stay");
     let (pane, role, id) = running_worker(&h);
-    // herdr resumed the agent: it shows the agent, and the pane is still
-    // registered for the role.
     herdr(
         &h,
         &[
@@ -150,7 +183,6 @@ fn a_restored_worker_pane_tells_as_its_role_peeks_its_inbox_and_finishes() {
 
     let inbox = restored(&h, &pane, &["inbox"]);
     assert!(inbox.status.success(), "{}", text(&inbox));
-    // The open question is listed; the mail itself is not printed.
     assert!(
         !String::from_utf8_lossy(&inbox.stdout).contains(&format!("[{role}] QUESTION")),
         "{}",
@@ -167,6 +199,7 @@ fn a_restored_worker_pane_tells_as_its_role_peeks_its_inbox_and_finishes() {
     let r = record(&h, &id);
     assert_eq!(r["status"], "done", "{r}");
     assert!(r.to_string().contains("finished the work"), "{r}");
+    stop_fleetd_and_jobs(&h);
 }
 
 #[test]
@@ -176,8 +209,6 @@ fn an_operator_shell_on_a_registered_pane_id_stays_the_operator() {
     std::fs::create_dir_all(&mailbox).unwrap();
     std::fs::write(mailbox.join("orchestrator.id"), "w1:p1").unwrap();
     std::fs::write(mailbox.join("sonnet-1.id"), "w1:p1").unwrap();
-    // The orchestrator's pane runs no agent herdr detects: an untagged line
-    // is the operator's, and its inbox acknowledges.
     let tell = restored(&h, "w1:p1", &["tell", "orchestrator", "NOTE: from me"]);
     assert!(tell.status.success(), "{}", text(&tell));
     assert!(
@@ -185,8 +216,6 @@ fn an_operator_shell_on_a_registered_pane_id_stays_the_operator() {
         "{}",
         text(&tell)
     );
-    // FR-7: the operator line waits in mail too, untagged and from the
-    // operator, not from the role of the pane.
     let mail = pending(&h);
     assert_eq!(mail.len(), 1, "{mail:?}");
     assert_eq!(mail[0].from, "operator");
@@ -222,7 +251,6 @@ fn doctor_and_fleet_warn_while_herdr_resumes_agents_on_restore() {
         config.display(),
         horch_core::harness::launch::FORBIDDEN_ENV[0]
     );
-    // No config file: herdr's default resumes.
     assert!(doctor_text(&h).contains(&pinned), "{}", doctor_text(&h));
     std::fs::create_dir_all(config.parent().unwrap()).unwrap();
     std::fs::write(&config, "[session]\nresume_agents_on_restore = true\n").unwrap();
@@ -239,7 +267,6 @@ fn doctor_and_fleet_warn_while_herdr_resumes_agents_on_restore() {
         "{}",
         doctor_text(&h)
     );
-    // HERDR_CONFIG_PATH names another file, as for herdr itself.
     let other = h.root.join("herdr-other.toml");
     std::fs::write(&other, "").unwrap();
     h.set("HERDR_CONFIG_PATH", other.to_string_lossy());

@@ -1,9 +1,4 @@
 #!/usr/bin/env bash
-# Live check, Apple family (U-21, U-54). Proves the MobileBuildMCP tool and
-# workflow names that the Swift skills and teammates use, against the pinned
-# server on this Mac, and checks the Xcode agent-skills export command.
-# Result file: docs/live-checks/apple.md. Needs Xcode, node/npx and network
-# for the first npx download. Starts no model session.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 unset ANTHROPIC_API_KEY 2>/dev/null || true
@@ -16,10 +11,6 @@ pass() { echo "PASS $1"; }
 fail() { echo "FAIL $1: $2"; FAILED=1; }
 skip() { echo "SKIP $1: $2"; }
 
-# MCP stdio client: launch the server exactly as the teammate's mcp_servers
-# line says, with the workflow list replaced by $1 ("-" drops the variable,
-# which gives the server default). Prints one tool name per line. With $2 and
-# $3, it calls tool $2 with the JSON arguments $3 and prints the result JSON.
 cat >"$SCRATCH/mcp.py" <<'PY'
 import json, os, re, subprocess, sys
 teammate, workflows = sys.argv[1], sys.argv[2]
@@ -65,7 +56,6 @@ p.stdin.close(); p.terminate()
 PY
 mcp() { python3 -I "$SCRATCH/mcp.py" "$ROOT/teammates/swift-developer.md" "$@"; }
 
-# 1. Xcode version.
 XCODE_MAJOR=0
 if command -v xcodebuild >/dev/null && XV=$(xcodebuild -version 2>/dev/null); then
   XCODE_MAJOR=$(sed -n 's/^Xcode \([0-9]*\).*/\1/p' <<<"$XV")
@@ -74,7 +64,6 @@ else
   skip "xcode-version" "xcodebuild not found"
 fi
 
-# 2. U-21: launch and list tools.
 if ! command -v npx >/dev/null; then
   skip "mcp-tools" "npx not found"
   skip "mcp-skill-names" "npx not found"
@@ -87,8 +76,6 @@ else
     fail "mcp-tools" "handshake failed: $(cat "$SCRATCH/server.txt")"
   fi
 
-  # Every tool name the Swift skills and teammates cite in backticks. The
-  # snake_case names are tool names; the 4 one-word tools are listed here.
   # shellcheck disable=SC2016 # the backticks in the pattern are literal characters
   NAMES=$( { git grep -h -o -E '`[a-z]+(_[a-z]+)+`' -- skills/ios-simulator-run skills/swift-code-audit \
                teammates/swift-*.md teammates/apple-*.md | tr -d '`'
@@ -100,9 +87,6 @@ else
     fail "mcp-skill-names" "not in tools/list: $MISSING"
   fi
 
-  # Workflow claims: the default is simulator only; simulator carries
-  # snapshot_ui and screenshot; tap needs ui-automation; swift_package_build
-  # needs swift-package.
   mcp - >"$SCRATCH/default.txt" 2>/dev/null
   mcp simulator >"$SCRATCH/sim.txt" 2>/dev/null
   mcp ui-automation >"$SCRATCH/ui.txt" 2>/dev/null
@@ -117,7 +101,6 @@ else
     fail "mcp-workflows" "workflow sets differ from the skill claims; see $SCRATCH/*.txt"
   fi
 
-  # 3. Build a tiny Swift package through swift_package_build (no signing).
   if ! command -v swift >/dev/null; then
     skip "mcp-build" "swift not found"
   else
@@ -140,7 +123,6 @@ SWIFT
   fi
 fi
 
-# 4. U-54: the Xcode 27 agent-skills export. horch doctor runs the same check.
 if [ "$XCODE_MAJOR" -ge 27 ]; then
   if xcrun agent skills export --help >"$SCRATCH/export-help.txt" 2>&1 \
      && grep -q -- '--output-dir' "$SCRATCH/export-help.txt"; then

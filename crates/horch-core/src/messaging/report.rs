@@ -1,33 +1,3 @@
-//! The reports of a `horch_access: report` pane
-//! (`docs/security/sandboxed-pane-horch-access.md`, C1;
-//! `docs/specs/fleetd/design.md`, Migration plan item 7, row 06 S11).
-//!
-//! The sandboxed agent in such a pane reads the ledger and writes only its
-//! task folder. It reaches no state root, relay or herdr socket. The `horch`
-//! CLI in the pane runs 3 commands ([`report`]):
-//! - `horch ledger progress <text>` appends 1 line to `progress.jsonl` of
-//!   the outbox of its own attempt;
-//! - `horch done <summary>` writes `result.json` of that outbox, with the
-//!   status `completed`;
-//! - `horch tell <target> <text>` goes over the report socket ([`ENV`]).
-//!
-//! The outbox writer finds the own attempt by the process chain, never by
-//! the environment, so a pane with no live attempt gets "no live attempt of
-//! this process". No outbox step needs a socket, so a pane on Windows keeps
-//! its reports.
-//!
-//! The report socket: its `horch worker` parent, which runs outside the
-//! sandbox, serves 1 Unix socket for the pane. 1 request per connection.
-//! The client writes 1 JSON line of at most [`MAX_REQUEST`] bytes, then
-//! reads 1 JSON [`Reply`] line. The 1 verb that remains:
-//! - `{"verb":"tell","to":..,"text":..}`: the parent tells the brief's
-//!   controller, or else its report target ([`target`]), tagged with the
-//!   brief's role. Any other `to` is refused.
-//!
-//! `progress` and `done` are refused on the socket: they write the outbox.
-//! Every other verb or key, a line over the limit and an empty text are
-//! refused. The role and record come from the parent, never from the pane.
-
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -48,30 +18,21 @@ use crate::fleetd::task_execution::domain::outbox::LineKind;
 use crate::fleetd::task_execution::domain::result::{ResultFile, ResultStatus};
 use crate::taskledger::store::Store;
 
-/// The variable that puts the `horch` CLI in report mode. Its value is the
-/// socket path.
 pub const ENV: &str = "HORCH_REPORT_SOCKET";
 
-/// The largest request line, in bytes, without its newline: 16 KiB. A
-/// `horch done` summary is 1 paragraph, and a longer `tell` is spooled to a
-/// file by the parent.
 pub const MAX_REQUEST: usize = 16 * 1024;
 
-/// How long the server waits for 1 request line.
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// The socket of the pane whose ledger record is `record_id`.
 pub fn socket_path(state_root: &Path, record_id: &str) -> PathBuf {
     state_root
         .join("report")
         .join(format!("{}.sock", super::file_safe(record_id)))
 }
 
-/// The refusal of `progress` and `done` on the report socket.
 pub const OUTBOX_VERBS: &str =
     "progress and done write the outbox of the attempt; this socket takes only tell";
 
-/// 1 request from the pane.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "verb", rename_all = "lowercase", deny_unknown_fields)]
 pub enum Request {
@@ -90,7 +51,6 @@ impl Request {
     }
 }
 
-/// The server's answer to 1 request.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Reply {
     pub ok: bool,
@@ -107,9 +67,6 @@ impl Reply {
     }
 }
 
-/// The only role a `report` pane may `tell`: the controller that spawned
-/// it under `spawn_only`, else the orchestrator when the brief reports to
-/// it, else none.
 pub fn target(brief: &Brief) -> Option<String> {
     if let Some(controller) = &brief.controller {
         return Some(controller.clone());
@@ -117,11 +74,8 @@ pub fn target(brief: &Brief) -> Option<String> {
     (brief.report_to == ReportTarget::Orchestrator).then(|| "orchestrator".to_string())
 }
 
-/// Carries out a checked request in the parent.
 pub type Executor = dyn Fn(&Request) -> Result<()> + Send + Sync;
 
-/// Check 1 request line and run it. `report_to` is the only role `tell`
-/// may name; `None` refuses every `tell`.
 pub fn handle(line: &[u8], report_to: Option<&str>, exec: &Executor) -> Reply {
     if line.len() > MAX_REQUEST {
         return Reply::refused(format!(
@@ -160,8 +114,6 @@ pub fn handle(line: &[u8], report_to: Option<&str>, exec: &Executor) -> Reply {
     }
 }
 
-/// Read 1 request line of at most [`MAX_REQUEST`] bytes plus its newline.
-/// A longer line comes back longer than the limit, so [`handle`] refuses it.
 fn read_request(stream: &LocalStream) -> std::io::Result<Vec<u8>> {
     let mut line = Vec::new();
     BufReader::new(stream.take(MAX_REQUEST as u64 + 2)).read_until(b'\n', &mut line)?;
@@ -182,7 +134,6 @@ fn serve_one(stream: LocalStream, report_to: Option<&str>, exec: &Executor) {
     let _ = (&stream).write_all(text.as_bytes());
 }
 
-/// The parent's socket server. It stops and removes the socket on drop.
 pub struct Server {
     path: PathBuf,
     stop: Arc<AtomicBool>,
@@ -190,9 +141,6 @@ pub struct Server {
 }
 
 impl Server {
-    /// Bind `path` (mode 0600, in a 0700 folder) and serve it on a thread,
-    /// 1 connection at a time. A host without local sockets refuses
-    /// before it makes the folder.
     pub fn start(path: PathBuf, report_to: Option<String>, exec: Box<Executor>) -> Result<Server> {
         if !horch_platform::ipc::is_supported() {
             bail!("the report socket needs a Unix host");
@@ -232,7 +180,6 @@ impl Server {
 impl Drop for Server {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
-        // Wake the blocked accept, so the thread sees the flag.
         let _ = LocalStream::connect(&self.path);
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
@@ -241,10 +188,6 @@ impl Drop for Server {
     }
 }
 
-/// Run 1 command of a report pane. `progress` and `done` write the outbox
-/// that `outbox` gives, at the time `at`, with no socket call. `tell` goes
-/// over the report socket at `socket` ([`send`]). An empty text is refused
-/// before each step.
 pub fn report(
     socket: &Path,
     request: &Request,
@@ -265,7 +208,6 @@ pub fn report(
     }
 }
 
-/// The `result.json` of `horch done <summary>`.
 fn completed(writer: &OutboxWriter, summary: &str) -> ResultFile {
     ResultFile {
         task: writer.attempt().task_id.clone(),
@@ -277,20 +219,16 @@ fn completed(writer: &OutboxWriter, summary: &str) -> ResultFile {
         acceptance_self_check: Vec::new(),
         notes_for_next: None,
         handoff: None,
+        unlanded: None,
     }
 }
 
-/// The outbox writer of the own attempt of this process: the ledger at
-/// `ledger_db`, opened read-only, and `fleet.toml` of `fleet_root`.
 pub fn own_outbox(ledger_db: &Path, fleet_root: &Path) -> Result<OutboxWriter> {
     let ledger = Store::open_read_only(ledger_db)?;
     let config = config_file::load(fleet_root)?;
     OutboxWriter::of_this_process(fleet_root, ledger.conn(), &config, &PlatformFacts)
 }
 
-/// Send 1 request over the report socket at `path` and read its answer.
-/// On a host without local sockets it refuses with
-/// "the report socket needs a Unix host".
 pub fn send(path: &Path, request: &Request) -> Result<()> {
     if !horch_platform::ipc::is_supported() {
         bail!("the report socket needs a Unix host");
@@ -326,7 +264,6 @@ mod tests {
     use std::os::unix::net::UnixStream;
     use std::sync::{Arc, Mutex};
 
-    /// An executor that records each request it runs.
     fn recorder() -> (Arc<Mutex<Vec<Request>>>, Box<Executor>) {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let log = seen.clone();
@@ -350,9 +287,6 @@ mod tests {
         Brief::from_json(&raw.to_string()).unwrap()
     }
 
-    /// A worker the controller spawned tells only the controller, and is
-    /// refused for the orchestrator. A worker the orchestrator spawned is
-    /// unchanged: it tells only the orchestrator.
     #[test]
     fn the_controller_is_the_only_tell_target_of_its_roles() {
         use crate::execution::ReportTarget;
@@ -475,12 +409,13 @@ mod tests {
         );
     }
 
-    /// A parent that dies during a request answers nothing: the request
-    /// fails.
     #[cfg(unix)]
     #[test]
     fn a_closed_socket_is_an_error() {
-        let tmp = tempfile::Builder::new().tempdir_in("/tmp").unwrap();
+        let tmp = tempfile::Builder::new()
+            .tempdir_in("/tmp")
+            .or_else(|_| tempfile::tempdir())
+            .unwrap();
         let path = tmp.path().join("r.sock");
         let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
         let mute = std::thread::spawn(move || {
@@ -500,12 +435,13 @@ mod tests {
         mute.join().unwrap();
     }
 
-    /// A Unix socket path has a short length limit, so the test folder is
-    /// under `/tmp`, not the long macOS temp folder.
     #[cfg(unix)]
     #[test]
     fn the_server_answers_over_the_socket_and_removes_it_on_drop() {
-        let tmp = tempfile::Builder::new().tempdir_in("/tmp").unwrap();
+        let tmp = tempfile::Builder::new()
+            .tempdir_in("/tmp")
+            .or_else(|_| tempfile::tempdir())
+            .unwrap();
         let path = socket_path(tmp.path(), "r1");
         let (seen, exec) = recorder();
         let server = Server::start(path.clone(), Some("orchestrator".into()), exec).unwrap();
@@ -540,11 +476,9 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("over 16384 bytes"), "{err}");
-        // A raw oversize line is refused by the server too.
         let mut raw = UnixStream::connect(&path).unwrap();
         let mut long = vec![b'x'; MAX_REQUEST + 10];
         long.push(b'\n');
-        // The server stops reading at the limit, so the tail can fail.
         let _ = raw.write_all(&long);
         let mut reply = String::new();
         BufReader::new(raw).read_line(&mut reply).unwrap();

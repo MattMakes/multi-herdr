@@ -44,9 +44,6 @@ NOISE_KINDS = ("spectral", "gesture")
 VARY_SCALE = {"modal": 0.5, "hybrid": 0.5}
 
 
-# ---------------------------------------------------------------- the scoring context
-
-
 class _Ctx:
     """What every candidate is scored against: the original, the stripped signal, the bed, the seeds."""
 
@@ -81,9 +78,6 @@ def load_input(x: Any) -> np.ndarray:
     if X.ndim == 2 and X.shape[1] > 2:
         X = X[:, :2]
     return mono(X) if channels_of(X) == 1 else X
-
-
-# ---------------------------------------------------------------- candidate fits
 
 
 def _fit_candidate(ctx: _Ctx, cand: str) -> dict:
@@ -147,16 +141,13 @@ def _run_candidate(ctx: _Ctx, cand: str, post: bool) -> tuple[dict | None, dict]
             _attach_post(ctx, model, ctx.X, _judge(ctx, True) if ctx.clap else None)
         _set_bed(model, ctx.bed)
         sc, clap, q = _score_on(ctx, model, ctx.seeds)
-    except Exception as exc:  # a failing candidate is recorded and the loop goes on
+    except Exception as exc:
         return None, {"candidate": cand, "score": None, "fit_s": round(time.perf_counter() - t0, 3),
                       "error": f"{type(exc).__name__}: {exc}"}
     row = {"candidate": cand, "score": round(sc, 3), "fit_s": round(time.perf_counter() - t0, 3), "quality": q}
     if ctx.clap:
         row["clap"] = round(clap, 4)
     return model, row
-
-
-# ---------------------------------------------------------------- choice rules
 
 
 def _confirm(ctx: _Ctx, kept: dict, rows: dict, n: int) -> str | None:
@@ -210,9 +201,6 @@ def _choose(ctx: _Ctx, kept: dict, rows: dict, confirm: int) -> str:
     return _clap_margin(ctx, kept, rows, confirmed) if ctx.clap else confirmed
 
 
-# ---------------------------------------------------------------- bed check, space, finish
-
-
 def _bed_check(ctx: _Ctx, model: dict, chosen: str, row: dict, post: bool, seeds: tuple) -> tuple[dict, dict]:
     plain = _Ctx(ctx.X0, None, ctx.seeds, ctx.clap, ctx.name, ctx.fast)
     if chosen == "gesture":
@@ -253,9 +241,6 @@ def _finish_model(model: dict, name: str | None) -> dict:
     if name is not None:
         model["source"] = name
     return model
-
-
-# ---------------------------------------------------------------- fit
 
 
 def _fit_single(X0: np.ndarray, kind: str, layers: tuple | None, fast: bool, name: str | None, post: bool,

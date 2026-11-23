@@ -1,16 +1,3 @@
-//! A stack: a conflicting trial merge puts the younger feature on the older
-//! one, 1 time, with 1 resolver task.
-//!
-//! `docs/specs/fleetd/design.md`, "Between features", "Stack on evidence"
-//! and "Starting values"; `ddd/08-code/integration/design.md`,
-//! `StackPlanner`. The younger feature is the one with the later
-//! `created_at`. A feature has at most 1 lower feature (`stacked_on`), so a
-//! conflict of a feature that is on another feature already waits for the
-//! end of that edge (ticket 38). A resolver task covers at most
-//! `max_lines` changed lines and `max_files` files, else each file is 1
-//! resolver task. The rules here have no I/O.
-
-/// A feature of a conflicting trial merge, as the ledger has it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StackSide<'a> {
     pub id: &'a str,
@@ -18,36 +5,24 @@ pub struct StackSide<'a> {
     pub stacked_on: Option<&'a str>,
 }
 
-/// What the planner decides for 1 conflict of 2 features.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
-    /// Put `upper`, the younger feature, on `lower`, the older one, and
-    /// open its resolver tasks.
     Stack { lower: String, upper: String },
-    /// `upper` is on `lower` already: its resolver tasks exist.
     Stacked { lower: String, upper: String },
-    /// `upper` is on the feature `on`, which is not `lower`. Its conflict
-    /// with `lower` waits for the end of that edge.
     Held { upper: String, on: String },
 }
 
-/// The conflict of 1 file, in `zdiff3` form.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Conflict {
     pub file: String,
     pub zdiff3: String,
 }
 
-/// The first marker of a conflict hunk.
 const OPEN: &str = "<<<<<<<";
-/// The last marker of a conflict hunk.
 const CLOSE: &str = ">>>>>>>";
-/// The markers between the sides of a `zdiff3` hunk.
 const BETWEEN: [&str; 2] = ["|||||||", "======="];
 
 impl Conflict {
-    /// The changed lines of the conflict: each line of each side of each
-    /// hunk, with no marker line.
     pub fn lines(&self) -> u64 {
         let mut inside = false;
         let mut count = 0;
@@ -64,8 +39,6 @@ impl Conflict {
     }
 }
 
-/// The domain service `StackPlanner`, with the size limits of a resolver
-/// task (`resolver_max_lines` and `resolver_max_files` of `fleet.toml`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StackPlanner {
     pub max_lines: u64,
@@ -73,8 +46,6 @@ pub struct StackPlanner {
 }
 
 impl StackPlanner {
-    /// The decision for a conflict of `a` and `b`. The younger is the one
-    /// with the later `created_at`; on the same time, the larger id.
     pub fn decide(&self, a: &StackSide<'_>, b: &StackSide<'_>) -> Decision {
         let (lower, upper) = if (a.created_at, a.id) <= (b.created_at, b.id) {
             (a, b)
@@ -98,8 +69,6 @@ impl StackPlanner {
         }
     }
 
-    /// The resolver tasks of `conflicts`: 1 task with each file when the
-    /// conflict is in the limits, else 1 task for each file.
     pub fn split(&self, conflicts: Vec<Conflict>) -> Vec<Vec<Conflict>> {
         let lines: u64 = conflicts.iter().map(Conflict::lines).sum();
         let files = conflicts.len() as u64;
@@ -111,7 +80,6 @@ impl StackPlanner {
     }
 }
 
-/// 1 requirement of a feature: its idea, its id and its text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Requirement {
     pub idea: String,
@@ -119,18 +87,15 @@ pub struct Requirement {
     pub text: String,
 }
 
-/// 1 feature of a stack edge, as its resolver task shows it.
 #[derive(Debug, Clone, Copy)]
 pub struct ResolverSide<'a> {
     pub feature: &'a str,
     pub branch: &'a str,
     pub tip: &'a str,
     pub requirements: &'a [Requirement],
-    /// The unit test commands of its tasks.
     pub tests: &'a [String],
 }
 
-/// The title of the resolver task of `files`, from `upper` on `lower`.
 pub fn resolver_title(lower: &str, upper: &str, files: &[Conflict]) -> String {
     let names: Vec<&str> = files.iter().map(|c| c.file.as_str()).collect();
     format!(
@@ -139,9 +104,6 @@ pub fn resolver_title(lower: &str, upper: &str, files: &[Conflict]) -> String {
     )
 }
 
-/// The ticket of the resolver task of `conflicts`: `upper` is on `lower`.
-/// It holds the conflict in `zdiff3` form, the requirements and the unit
-/// tests of both features, and the rules of the task.
 pub fn resolver_ticket(
     lower: &ResolverSide<'_>,
     upper: &ResolverSide<'_>,
@@ -200,7 +162,6 @@ pub fn resolver_ticket(
     out
 }
 
-/// A code fence that is longer than each run of backticks in `text`.
 fn fence(text: &str) -> String {
     let mut longest = 0;
     let mut run = 0;

@@ -1,14 +1,3 @@
-//! The ingest of the outbox files of an attempt: `progress.jsonl` from its
-//! recorded offset, the handoff result, and the owner and mode checks of
-//! each file (docs/tickets/fleetd-p5/29-ingest-outbox-files.md).
-//!
-//! `docs/specs/fleetd/design.md`, "Workspace layout and file protocol"
-//! (protocol rules 1, 2 and 7), SR-6, RR-8 and FM-23;
-//! `docs/tickets/fleetd-p5/MAP.md`, Q3 and Q4. Each test uses a temp ledger
-//! and a temp fleet root. Part 1 of a pass reads the outbox files, and
-//! part 2 ingests them in 1 transaction, as the pass does. The owner of the
-//! ledger comes through the `owner` seam, because a test cannot make a file
-//! of another user.
 #![cfg(unix)]
 
 use std::fs::{self, OpenOptions};
@@ -36,11 +25,8 @@ use rusqlite::{params, Connection};
 
 const GUARD: Generation = Generation(1);
 
-/// The fleet clock of the `fleetd` row in each test.
 const CLOCK: i64 = 4242;
 
-/// A temp ledger at generation 1 and fleet clock [`CLOCK`], 1 run and a
-/// fleet root.
 struct World {
     dir: PathBuf,
     _temp: tempfile::TempDir,
@@ -71,7 +57,6 @@ fn world() -> World {
         },
     )
     .unwrap();
-    // FR-12: a task needs an idea in flight of the feature of its run.
     horch_core::taskledger::schema::run_idea(
         &conn,
         &run.run_id,
@@ -95,7 +80,6 @@ impl World {
         self.dir.join("fleet")
     }
 
-    /// A task bound to a worker, with its 1 live push attempt `A1`.
     fn running_task(&self) -> AttemptRef {
         let n: i64 = self
             .conn
@@ -119,12 +103,10 @@ impl World {
         }
     }
 
-    /// The task folder of `a`.
     fn task_dir(&self, a: &AttemptRef) -> PathBuf {
         self.root().join("tasks").join(&a.task_id)
     }
 
-    /// The outbox of `a`, made with mode 0700 as a worker command makes it.
     fn outbox(&self, a: &AttemptRef) -> PathBuf {
         let dir = self.task_dir(a).join("attempts").join("A1").join("outbox");
         fs::create_dir_all(&dir).unwrap();
@@ -136,7 +118,6 @@ impl World {
         self.outbox(a).join("progress.jsonl")
     }
 
-    /// Part 1 of 1 pass for `attempts`.
     fn read(&self, attempts: &[AttemptRef]) -> Vec<OutboxRead> {
         outbox_ingest::read(
             &self.conn,
@@ -148,15 +129,13 @@ impl World {
         .unwrap()
     }
 
-    /// Part 2 of 1 pass, in its own transaction.
     fn ingest(&mut self, reads: &[OutboxRead]) -> Report {
         let tx = self.conn.transaction().unwrap();
-        let report = outbox_ingest::ingest(&tx, Some(GUARD), reads).unwrap();
+        let report = outbox_ingest::ingest(&tx, Some(GUARD), reads, 900).unwrap();
         tx.commit().unwrap();
         report
     }
 
-    /// Part 1 and part 2 of 1 pass for `attempts`.
     fn pass(&mut self, attempts: &[AttemptRef]) -> Report {
         let reads = self.read(attempts);
         self.ingest(&reads)
@@ -166,7 +145,6 @@ impl World {
         tasks::get(&self.conn, &a.task_id).unwrap().status
     }
 
-    /// The `ingested` row of `path`: outcome, reason and log offset.
     fn ingested(&self, path: &Path) -> Option<(String, Option<String>, Option<i64>)> {
         self.conn
             .query_row(
@@ -183,7 +161,6 @@ impl World {
             .unwrap()
     }
 
-    /// The texts of the events of `kind` of the task of `a`, in order.
     fn events(&self, a: &AttemptRef, kind: &str) -> Vec<String> {
         let mut stmt = self
             .conn
@@ -195,7 +172,6 @@ impl World {
             .unwrap()
     }
 
-    /// The state and outcome of the attempt `a`.
     fn attempt(&self, a: &AttemptRef) -> (String, Option<String>, Option<i64>) {
         self.conn
             .query_row(
@@ -206,7 +182,6 @@ impl World {
             .unwrap()
     }
 
-    /// The worker of `a`: its end reason and its handoff path.
     fn worker(&self, a: &AttemptRef) -> (Option<String>, Option<String>) {
         self.conn
             .query_row(
@@ -219,13 +194,11 @@ impl World {
     }
 }
 
-/// Write `text` to `path` with mode 0600, as the outbox writer does.
 fn write_0600(path: &Path, text: &str) {
     fs::write(path, text).unwrap();
     fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
 }
 
-/// Append `text` to `path`, made with mode 0600 when it is missing.
 fn append(path: &Path, text: &str) {
     let mut file = OpenOptions::new()
         .create(true)
@@ -236,7 +209,6 @@ fn append(path: &Path, text: &str) {
     fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
 }
 
-/// 1 line of `progress.jsonl` of task `task` and attempt `attempt`.
 fn line(task: &str, attempt: &str, text: &str) -> String {
     ProgressLine {
         task: task.into(),
@@ -260,6 +232,7 @@ fn result_json(a: &AttemptRef) -> String {
         acceptance_self_check: Vec::new(),
         notes_for_next: None,
         handoff: None,
+        unlanded: None,
     }
     .to_json()
 }
@@ -270,7 +243,6 @@ fn write_result(w: &World, a: &AttemptRef) -> PathBuf {
     path
 }
 
-/// The reason of the rejected row of `path`.
 fn rejected_reason(w: &World, path: &Path) -> String {
     let (outcome, reason, _) = w.ingested(path).expect("an ingested row");
     assert_eq!(outcome, "rejected", "{reason:?}");
@@ -295,8 +267,6 @@ fn progress_lines_are_ingested_once_from_the_recorded_offset() {
     let (outcome, _, offset) = w.ingested(&path).unwrap();
     assert_eq!(outcome, "accepted");
     assert_eq!(offset, Some(first.len() as i64));
-    // The row of `horch ledger progress`: the worker progress and the
-    // activity of the attempt on the fleet clock.
     assert_eq!(w.attempt(&a).2, Some(CLOCK));
 
     let third = line(&a.task_id, "A1", "three");
@@ -355,11 +325,9 @@ fn progress_over_its_limit_is_rejected_and_fleetd_stays_healthy() {
     let reason = rejected_reason(&w, &path);
     assert!(reason.contains("limit of 256 bytes"), "{reason}");
     assert!(w.events(&a, "progress").is_empty());
-    // The other files of the outbox are still ingested.
     assert_eq!(report.to_verifying, vec![a.task_id.clone()]);
     assert_eq!(w.ingested(&result).unwrap().0, "accepted");
 
-    // The rejected path is not read again, even when it is valid now.
     fs::remove_file(&path).unwrap();
     append(&path, &line(&a.task_id, "A1", "late"));
     let report = w.pass(std::slice::from_ref(&a));
@@ -404,7 +372,6 @@ fn pres_04_m5_foreign_owned_outbox_is_refused() {
     let User::Uid(uid) = w.owner else {
         unreachable!("a unix test")
     };
-    // The ledger owner is another user than the owner of the outbox.
     w.owner = User::Uid(uid + 1);
     let a = w.running_task();
     let result = write_result(&w, &a);
@@ -455,11 +422,9 @@ fn symlinked_result_is_rejected() {
     assert!(reason.starts_with("no_link:"), "{reason}");
     assert_eq!(w.status(&a), "running");
 
-    // Not read again.
     assert_eq!(w.pass(std::slice::from_ref(&a)), Report::default());
 }
 
-/// Write the handoff `result.json` of `a` that names `handoff`.
 fn write_handoff(w: &World, a: &AttemptRef, handoff: &Path) -> PathBuf {
     let path = w.outbox(a).join("result.json");
     let file = handoff_result(
@@ -506,13 +471,11 @@ fn handoff_result_ends_the_attempt_handed_off_and_burns_no_attempt() {
         transitions.iter().any(|t| t.contains("handoff")),
         "the event says handoff: {transitions:?}"
     );
-    // The next attempt names the handoff file.
     assert_eq!(
         outbox_ingest::handoff_of(&w.conn, &a.task_id).unwrap(),
         Some(real)
     );
 
-    // A second pass changes nothing.
     assert_eq!(w.pass(std::slice::from_ref(&a)), Report::default());
 }
 
@@ -521,7 +484,6 @@ fn handoff_path_outside_the_attempt_is_not_used() {
     let mut w = world();
     let outside = w.dir.join("outside.md");
     fs::write(&outside, "steal me").unwrap();
-    // A link inside the task folder whose real path is outside it.
     let a = w.running_task();
     let b = w.running_task();
     fs::create_dir_all(w.task_dir(&b)).unwrap();

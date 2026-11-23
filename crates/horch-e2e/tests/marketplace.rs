@@ -1,7 +1,3 @@
-//! End-to-end: `horch skills install` pins a git skill from a local bare
-//! repository, a repeat install changes nothing, `update` follows a moved
-//! branch, and `doctor` verifies the store. Real git runs on temp repos only.
-
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
@@ -33,8 +29,6 @@ fn git(h: &Harness, dir: &Path, args: &[&str]) {
     assert!(out.status.success(), "git {args:?} failed: {}", text(&out));
 }
 
-/// A bare repository `remote.git` on branch `main` with one valid skill
-/// at `skills/demo/`, and the work tree that pushes to it.
 fn fixture(h: &Harness) -> (PathBuf, PathBuf) {
     let bare = h.root.join("remote.git");
     let work = h.root.join("upstream");
@@ -93,7 +87,6 @@ fn mkt_08_e2e_install_update_repeatable() {
     let (bare, work) = fixture(&h);
     let source = format!("file://{}@main", bare.display());
 
-    // Install pins the full commit and names the version after it.
     let first = ok(&h, &["skills", "install", &source, "--path", "skills/demo"]);
     let entry = lock(&h)["skills"][0].clone();
     let commit = entry["resolved_commit"].as_str().unwrap().to_owned();
@@ -104,7 +97,6 @@ fn mkt_08_e2e_install_update_repeatable() {
     assert_eq!(entry["version"], format!("git+{}", &commit[..12]));
     assert!(first.contains(&commit), "{first}");
 
-    // The same spec again is a no-op: same pin, same digest, one version.
     let again = ok(&h, &["skills", "install", &source, "--path", "skills/demo"]);
     assert!(again.starts_with("unchanged demo"), "{again}");
     let repeat = lock(&h)["skills"][0].clone();
@@ -122,7 +114,6 @@ fn mkt_08_e2e_install_update_repeatable() {
         vec![entry["version"].as_str().unwrap()]
     );
 
-    // Moving the branch and running update installs the new commit.
     write_skill(&work, "second body");
     commit_and_push(&h, &work, &bare, "second");
     let updated = ok(&h, &["skills", "update", "demo"]);
@@ -139,7 +130,6 @@ fn mkt_08_e2e_install_update_repeatable() {
         )
     );
 
-    // The store verifies, with no git at all.
     h.set("HORCH_GIT_BIN", "/nonexistent");
     let doctor = ok(&h, &["skills", "doctor"]);
     assert!(
@@ -147,7 +137,6 @@ fn mkt_08_e2e_install_update_repeatable() {
         "{doctor}"
     );
 
-    // A changed file fails doctor with exit 1.
     let installed = h
         .home
         .join(".local/share/horch/skills/demo")

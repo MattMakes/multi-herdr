@@ -1,13 +1,33 @@
-//! `horch ledger legacy`: every subcommand arm of the legacy session ledger,
-//! with a temp state dir.
-
 use std::process::{Command, Output};
 
+use horch_core::fleetd::fleet_runtime::adapters::channel_server::ChannelServer;
+use horch_core::fleetd::fleet_runtime::adapters::test_fleetd::serve_session_records_at;
+
 struct World {
+    _server: ChannelServer,
     tmp: tempfile::TempDir,
 }
 
 impl World {
+    fn new() -> World {
+        let root = if cfg!(unix) {
+            std::path::PathBuf::from("/tmp")
+        } else {
+            std::env::temp_dir()
+        };
+        let tmp = tempfile::Builder::new()
+            .prefix("rl")
+            .tempdir_in(root)
+            .unwrap();
+        let state = tmp.path().join("state");
+        let server =
+            serve_session_records_at(&state.join("ledger.sqlite3"), &state.join("fleet")).unwrap();
+        World {
+            _server: server,
+            tmp,
+        }
+    }
+
     fn run(&self, args: &[&str]) -> Output {
         let root = self.tmp.path();
         Command::new(env!("CARGO_BIN_EXE_horch"))
@@ -15,7 +35,7 @@ impl World {
             .args(args)
             .current_dir(root)
             .env_clear()
-            .env("HOME", root.join("home"))
+            .env(horch_platform::path::HOME_VAR, root.join("home"))
             .env("XDG_DATA_HOME", root.join("data"))
             .env("HORCH_STATE_DIR", root.join("state"))
             .env("HORCH_PROJECT_DIR", "/oracle/project")
@@ -33,9 +53,7 @@ impl World {
 
 #[test]
 fn the_legacy_subcommands_write_read_and_report_a_session() {
-    let w = World {
-        tmp: tempfile::tempdir().unwrap(),
-    };
+    let w = World::new();
     w.ok(&[
         "add",
         "--record-id",
@@ -74,14 +92,14 @@ fn the_legacy_subcommands_write_read_and_report_a_session() {
         list.starts_with("[done] t (dev)  session=s1  record=r1\n"),
         "{list}"
     );
-    // TRF-45: `path` prints 1 path, the task ledger file.
     let path = w.ok(&["path"]);
     assert_eq!(path.lines().count(), 1, "{path}");
     assert_eq!(
         path.trim_end(),
         w.tmp
             .path()
-            .join("state/ledger.sqlite3")
+            .join("state")
+            .join("ledger.sqlite3")
             .display()
             .to_string()
     );
@@ -89,9 +107,7 @@ fn the_legacy_subcommands_write_read_and_report_a_session() {
 
 #[test]
 fn the_legacy_resume_and_assign_arms_run() {
-    let w = World {
-        tmp: tempfile::tempdir().unwrap(),
-    };
+    let w = World::new();
     w.ok(&[
         "add",
         "--record-id",

@@ -1,61 +1,21 @@
-//! The use case that moves a task on a usage limit (RR-11, FM-5): the
-//! rows of [`exit`](crate::fleetd::task_execution::domain::quota::exit)
-//! and [`released`](crate::fleetd::task_execution::domain::quota::released),
-//! and the restart on the fallback after the commit.
-//!
-//! - [`on_quota`]: the pass calls it for each attempt that ended with the
-//!   outcome `quota` (the stall ladder stopped its process). The attempt
-//!   burns nothing: `attempt_floor` goes up by 1, and `tasks.attempts`
-//!   does not change. The task goes `running -> ready` for the fallback of
-//!   another pool, with 1 new worker row and 1 attempt in `launching`, or
-//!   `running -> waiting_quota` with its lease paused.
-//! - [`release_reset_pools`]: the pass calls it for the tasks in
-//!   `waiting_quota`. A task whose pool reset goes to `ready`.
-//! - [`restart`]: part 3 calls it for each attempt that [`is_restart`]
-//!   names. It spawns the fallback worker once, after each process of an
-//!   older attempt of the task is gone.
-//!
-//! The Phase 2 bridge: fleetd writes the worker row first, and
-//! `horch spawn` adopts it ([`ADOPT_WORKER_ENV`]). Phase 4 replaces this
-//! with the push dispatch, which binds the task to a worker before the
-//! pane opens.
-//!
-//! The pool reading comes only from the quota file or the probe result
-//! in a [`QuotaView`] (`preservation-06`, row S13).
-
-use std::path::Path;
-
 use anyhow::{bail, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 
-use crate::fleetd::fleet_runtime::adapters::effects::{self, LaunchRecord};
-use crate::fleetd::fleet_runtime::application::ledger::{created, transition, Cause};
-use crate::fleetd::fleet_runtime::domain::clock::FleetSeconds;
+use crate::fleetd::fleet_runtime::application::ledger::{transition, Cause};
 use crate::fleetd::fleet_runtime::domain::ledger::{Entity, Generation};
 use crate::fleetd::ideas::application::needs_you::NeedsYouList;
-use crate::fleetd::task_execution::adapters::sqlite as store;
 use crate::fleetd::task_execution::domain::quota::{exit, released, Exit, Reading, Window};
 use crate::fleetd::task_execution::domain::retry::Outcome;
-use crate::fleetd::task_execution::domain::task::{AttemptRow, AttemptState, Recorded};
-use crate::fleetd::worker_profiles::application::ports::{LaunchSpec, Launched, ProcessHost};
+use crate::fleetd::task_execution::domain::task::AttemptState;
 use crate::roster::Roster;
 use crate::routing::quota::{model_family, pool_for, QuotaView};
-use crate::taskledger::model::{Actor, TaskStatus, WorkerKind};
-use crate::taskledger::workers::{self, NewWorker};
-use crate::taskledger::{runs, tasks, util};
+use crate::taskledger::model::{Actor, TaskStatus};
+use crate::taskledger::workers;
+use crate::taskledger::{tasks, util};
 
-/// The cause of `running -> ready` on the fallback of another pool.
 pub const USAGE_LIMIT_FALLBACK: &str = "usage_limit_fallback";
-/// The cause of `running -> waiting_quota`.
 pub const USAGE_LIMIT: &str = "usage_limit";
-/// The cause of `waiting_quota -> ready`.
 pub const POOL_RESET: &str = "pool_reset";
-
-/// The variable that names the worker row that fleetd wrote for a restart.
-/// `horch spawn` adopts that row and inserts none. fleetd passes it only
-/// through the launcher. The Phase 2 bridge: Phase 4 replaces it with the
-/// push dispatch.
-pub const ADOPT_WORKER_ENV: &str = "HORCH_ADOPT_WORKER";
 
 fn cause(text: &str) -> Cause<'_> {
     Cause {
@@ -64,8 +24,6 @@ fn cause(text: &str) -> Cause<'_> {
     }
 }
 
-/// The pool readings of the personas: the roster, the quota file or probe
-/// result, and `pool_full_use` of `fleet.toml`.
 pub struct Pools<'a> {
     pub roster: &'a Roster,
     pub quota: &'a QuotaView,
@@ -73,8 +31,6 @@ pub struct Pools<'a> {
 }
 
 impl Pools<'_> {
-    /// The reading of the pool of `persona`, with the windows that limit
-    /// its model. `None` for a persona that is not in the roster.
     pub fn reading(&self, persona: &str) -> Option<Reading> {
         let t = self.roster.get(persona)?;
         let agent = t.agent.as_str();
@@ -108,15 +64,10 @@ impl Pools<'_> {
         })
     }
 
-    /// The calendar time of the readings, in Unix seconds.
     fn now(&self) -> i64 {
         self.quota.now.timestamp()
     }
 
-    /// The fallback of a task of `persona`: the task's own `fallback`
-    /// when it is set, else the first entry of `fallbacks` of the persona
-    /// (`docs/tickets/fleetd-p2/MAP.md`, Q8). A persona with a
-    /// `no_fallback_reason` never restarts on another persona.
     fn fallback(&self, persona: &str, of_task: Option<&str>) -> Option<String> {
         let t = self.roster.get(persona);
         if t.is_some_and(|t| t.no_fallback_reason.is_some()) {
@@ -128,27 +79,12 @@ impl Pools<'_> {
     }
 }
 
-/// Where [`on_quota`] moved a task.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Moved {
-    /// `ready` for the fallback, with the attempt `attempt` in `launching`
-    /// on the new worker row `worker`. Part 3 calls [`restart`].
-    Restart { attempt: String, worker: String },
-    /// `waiting_quota`, with the lease paused.
+    Restart { persona: String },
     Wait,
 }
 
-/// The id of the attempt in `launching` of a restart of `task_id` after
-/// `attempts` attempts. It differs from the id that a claim writes, so a
-/// restart attempt that timed out never blocks the next claim.
-fn restart_attempt_id(task_id: &str, attempts: i64) -> String {
-    format!("{task_id}/A{}{RESTART_SUFFIX}", attempts + 1)
-}
-
-/// The end of the id of a restart attempt.
-const RESTART_SUFFIX: &str = "-fallback";
-
-/// The fields of 1 attempt that the quota rule reads.
 struct Attempt {
     task_id: Option<String>,
     worker_id: String,
@@ -173,9 +109,6 @@ fn attempt(conn: &Connection, id: &str) -> Result<Attempt> {
     .with_context(|| format!("no attempt {id}"))
 }
 
-/// `move-to-fallback` for the attempt `attempt_id`, which ended with the
-/// outcome `quota`, in the open transaction `tx`. `None`: its task already
-/// moved (it is not `running` with the worker of the attempt).
 pub fn on_quota(
     tx: &Connection,
     guard: Option<Generation>,
@@ -201,8 +134,6 @@ pub fn on_quota(
     }
     let old = workers::get(tx, &a.worker_id)?;
     let (decided, own_pool) = decide(&old, &task, pools);
-    // No attempt is burned: the next claim adds 1 to `attempts`, and the
-    // floor moves with it.
     tx.execute(
         "UPDATE tasks SET attempt_floor = attempt_floor + 1, current_worker_id = NULL,
             updated_at = ?2
@@ -212,10 +143,9 @@ pub fn on_quota(
     match decided {
         Exit::Restart { persona: fb } => {
             let why = format!("usage limit of pool {own_pool}");
-            move_to_fallback(tx, guard, &task, &old, fb, &why).map(Some)
+            move_to_fallback(tx, guard, &task, fb, &why).map(Some)
         }
         Exit::Wait => {
-            // The lease stays, and `waiting_quota` pauses it.
             let to = TaskStatus::WaitingQuota.as_str();
             let why = cause(USAGE_LIMIT);
             transition(tx, guard, Entity::Task, &task_id, to, why, &NeedsYouList)?;
@@ -224,8 +154,6 @@ pub fn on_quota(
     }
 }
 
-/// The exit of `task`, whose worker `old` hit a usage limit, and the pool
-/// of `old`.
 fn decide(old: &workers::Worker, task: &tasks::Task, pools: &Pools<'_>) -> (Exit, String) {
     let persona = old.persona.clone().unwrap_or_default();
     let own = pools.reading(&persona);
@@ -243,13 +171,10 @@ fn decide(old: &workers::Worker, task: &tasks::Task, pools: &Pools<'_>) -> (Exit
     (decided, own_pool)
 }
 
-/// `running -> ready` for the fallback persona `fb`, the worker row that
-/// its spawn adopts, and its attempt in `launching`.
 fn move_to_fallback(
     tx: &Connection,
     guard: Option<Generation>,
     task: &tasks::Task,
-    old: &workers::Worker,
     fb: String,
     reason: &str,
 ) -> Result<Moved> {
@@ -262,39 +187,9 @@ fn move_to_fallback(
          WHERE task_id = ?1",
         params![task_id, fb, reason],
     )?;
-    let worker = workers::insert(
-        tx,
-        &NewWorker {
-            run_id: task.run_id.clone(),
-            kind: Some(WorkerKind::Worker),
-            persona: fb,
-            workspace_id: old.workspace_id.clone(),
-            previous_worker_id: Some(old.worker_id.clone()),
-            target_task_id: Some(task_id.clone()),
-            ..Default::default()
-        },
-    )?;
-    let row = AttemptRow {
-        id: restart_attempt_id(task_id, task.attempts),
-        task_id: Some(task_id.clone()),
-        worker_id: worker.clone(),
-        state: AttemptState::Launching,
-        process: None,
-        pane: None,
-    };
-    store::insert_attempt(tx, &row, &util::now())?;
-    created(tx, guard, Entity::Attempt, &row.id, why)?;
-    Ok(Moved::Restart {
-        attempt: row.id,
-        worker,
-    })
+    Ok(Moved::Restart { persona: fb })
 }
 
-/// Move each task in `waiting_quota` whose pool reset to `ready`, in the
-/// open transaction `tx`; `transition()` deletes its lease. The pool is the pool of
-/// the persona that claims the task next (`claimable_by`). A persona that
-/// is not in the roster has no pool to wait on. Returns the ids of the
-/// moved tasks.
 pub fn release_reset_pools(
     tx: &Connection,
     guard: Option<Generation>,
@@ -333,189 +228,28 @@ pub fn release_reset_pools(
     Ok(moved)
 }
 
-/// The attempt `a` is a restart on a fallback: an attempt of a task in
-/// `launching` with the id of [`restart_attempt_id`]. Part 3 launches it
-/// with [`restart`], not with the launch of an attempt of Phase 1. A push
-/// attempt of dispatch has the id of `attempt_id`, so it is not a restart
-/// (`application/launch.rs` launches it).
-pub fn is_restart(a: &AttemptRow) -> bool {
-    a.state == AttemptState::Launching && a.task_id.is_some() && a.id.ends_with(RESTART_SUFFIX)
-}
-
-/// What `horch spawn` needs to start the fallback worker of a restart.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Restart {
-    /// The attempt in `launching`.
-    pub attempt: String,
-    pub task_id: String,
-    /// The worker row that the spawn adopts ([`ADOPT_WORKER_ENV`]).
-    pub worker_id: String,
-    /// The fallback persona.
-    pub persona: String,
-    pub run_slug: String,
-    pub project_root: String,
-    /// The pane to split: the pane of the orchestrator of the run, else
-    /// the pane of the worker that hit the limit.
-    pub from_pane: Option<String>,
-    /// The workspace of the new worker row, else of the run: `horch spawn`
-    /// resolves its mailbox from it, as a detached process has no pane.
-    pub workspace_id: Option<String>,
-}
-
-/// The effects of a restart outside the ledger.
-pub trait Restarts {
-    /// Whether the process `p` of an older attempt is still alive: its
-    /// pid runs with its start time, or its process group has members.
-    fn alive(&self, p: Recorded) -> bool {
-        crate::procid::alive(p.pid, p.pid_start)
-            || p.pid_start
-                .is_some_and(|s| crate::procid::is_same_group(p.pid, s))
-    }
-
-    /// The launch of `horch spawn <persona>` for `r`.
-    fn spec(&self, r: &Restart) -> Result<LaunchSpec>;
-}
-
-/// What [`restart`] did.
-#[derive(Debug)]
-pub enum Restarted {
-    /// The spawn started. The caller reaps its process.
-    Launched(Launched),
-    /// The attempt is not in `launching`, or it has a launch record: the
-    /// spawn ran once already.
-    Done,
-    /// The process `pid` of an older attempt of the task is alive: stops
-    /// come before launches. A later pass tries again.
-    Waiting { pid: u32 },
-}
-
-/// The processes of the attempts of `task_id` other than `attempt_id`. An
-/// attempt with no process of its own has the agent of its worker.
-fn older_processes(conn: &Connection, task_id: &str, attempt_id: &str) -> Result<Vec<Recorded>> {
-    let mut stmt = conn.prepare(
-        "SELECT COALESCE(a.pid, w.agent_pid),
-            CASE WHEN a.pid IS NULL THEN w.agent_started ELSE a.pid_start END
-         FROM attempts a JOIN workers w ON w.worker_id = a.worker_id
-         WHERE a.task_id = ?1 AND a.id <> ?2",
-    )?;
-    let rows = stmt.query_map(params![task_id, attempt_id], |r| {
-        Ok((r.get::<_, Option<i64>>(0)?, r.get::<_, Option<i64>>(1)?))
-    })?;
-    let mut out = Vec::new();
-    for row in rows {
-        let (pid, start) = row?;
-        if let Some(pid) = pid.and_then(|p| u32::try_from(p).ok()).filter(|p| *p > 0) {
-            out.push(Recorded {
-                pid,
-                pid_start: start.and_then(|s| u64::try_from(s).ok()),
-            });
-        }
-    }
-    Ok(out)
-}
-
-/// The [`Restart`] of the attempt `attempt_id`, from its rows.
-fn restart_of(
-    conn: &Connection,
-    attempt_id: &str,
-    task_id: &str,
-    worker_id: &str,
-) -> Result<Restart> {
-    let w = workers::get(conn, worker_id)?;
-    let run = runs::get(conn, &task_id_run(conn, task_id)?)?;
-    let orchestrator_pane = match &run.orchestrator_worker_id {
-        Some(id) => workers::find(conn, id)?.and_then(|o| o.pane_id),
-        None => None,
-    };
-    let previous_pane = match &w.previous_worker_id {
-        Some(id) => workers::find(conn, id)?.and_then(|p| p.pane_id),
-        None => None,
-    };
-    Ok(Restart {
-        attempt: attempt_id.to_string(),
-        task_id: task_id.to_string(),
-        worker_id: w.worker_id.clone(),
-        persona: w.persona.clone().unwrap_or_default(),
-        run_slug: run.slug,
-        project_root: run.project_root,
-        from_pane: orchestrator_pane.or(previous_pane),
-        workspace_id: w.workspace_id.clone().or(run.workspace_id),
-    })
-}
-
-fn task_id_run(conn: &Connection, task_id: &str) -> Result<String> {
-    Ok(tasks::get(conn, task_id)?.run_id)
-}
-
-/// Part 3: spawn the fallback worker of the restart attempt `attempt_id`
-/// at fleet clock `clock`, after the commit of its rows. The launch record
-/// under `fleet_root` is written before the spawn, so the spawn runs at
-/// most once. The record names no process: the spawn is not the agent,
-/// and the attempt goes `live` when the agent of its worker runs or
-/// claims. A spawn that fails ends its worker row `launch_failed`, and the
-/// start timeout ends the attempt.
-pub fn restart(
-    conn: &Connection,
-    fleet_root: &Path,
-    clock: FleetSeconds,
-    attempt_id: &str,
-    host: &dyn ProcessHost,
-    ports: &dyn Restarts,
-) -> Result<Restarted> {
-    let a = attempt(conn, attempt_id)?;
-    let Some(task_id) = a.task_id else {
-        return Ok(Restarted::Done);
-    };
-    if a.state != AttemptState::Launching.as_str()
-        || effects::read_launch(fleet_root, attempt_id)?.is_some()
-    {
-        return Ok(Restarted::Done);
-    }
-    for p in older_processes(conn, &task_id, attempt_id)? {
-        if ports.alive(p) {
-            return Ok(Restarted::Waiting { pid: p.pid });
-        }
-    }
-    let r = restart_of(conn, attempt_id, &task_id, &a.worker_id)?;
-    let record = LaunchRecord {
-        attempt: attempt_id.to_string(),
-        launched_at: clock,
-        process: None,
-    };
-    effects::write_launch(fleet_root, &record)?;
-    let launched = ports
-        .spec(&r)
-        .and_then(|spec| host.launch(&spec).map_err(anyhow::Error::from));
-    match launched {
-        Ok(l) => Ok(Restarted::Launched(l)),
-        Err(e) => {
-            let reason = format!("the restart on fallback {} did not start: {e:#}", r.persona);
-            workers::launch_failed(conn, &r.worker_id, &reason)?;
-            Err(e.context(format!("restart attempt {attempt_id}")))
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use std::cell::{Cell, RefCell};
     use std::collections::BTreeMap;
 
     use chrono::{DateTime, Utc};
 
     use super::*;
+    use crate::fleetd::fleet_runtime::domain::clock::FleetSeconds;
     use crate::fleetd::task_execution::application::{commands, lease};
     use crate::fleetd::task_execution::domain::lease::Limits;
+    use crate::fleetd::task_execution::domain::task::Recorded;
     use crate::fleetd::task_execution::domain::task::{attempt_id, Reap};
     use crate::harness::HarnessKind;
     use crate::roster::Teammate;
     use crate::routing::policy::Policy;
     use crate::routing::quota::{PoolReading, QuotaFile, Window as QuotaWindow};
-    use crate::taskledger::model::WorkerStatus;
     use crate::taskledger::model::WorktreeMode;
+    use crate::taskledger::runs;
     use crate::taskledger::runs::NewRun;
     use crate::taskledger::tasks::NewTask;
     use crate::taskledger::testing::bind_live;
+    use crate::taskledger::workers::NewWorker;
     use crate::taskledger::Store;
 
     const FULL: f64 = 0.98;
@@ -538,8 +272,6 @@ mod tests {
         }
     }
 
-    /// `dev` on claude with the fallback `alt` on codex; `same` on claude;
-    /// `pinned` on claude with a reason for no fallback.
     fn roster() -> Roster {
         let mut r = Roster::builtin().unwrap();
         r.insert_for_test(teammate(
@@ -574,7 +306,6 @@ mod tests {
         }
     }
 
-    /// A quota file with `claude` and `codex` at the used shares given.
     fn quota(claude: PoolReading, codex: PoolReading) -> QuotaView {
         let mut pools = BTreeMap::new();
         pools.insert("claude".to_string(), claude);
@@ -589,15 +320,12 @@ mod tests {
     }
 
     struct Fixture {
-        dir: tempfile::TempDir,
+        _dir: tempfile::TempDir,
         store: Store,
         task: String,
         worker: String,
     }
 
-    /// A run with 1 task of `persona` (with the task fallback `fallback`)
-    /// bound to 1 worker of `persona`. Its attempt then ended with the
-    /// outcome `quota`, as the stall ladder ends it.
     fn fixture(persona: &str, fallback: Option<&str>) -> Fixture {
         let dir = tempfile::tempdir().unwrap();
         let mut store = Store::open(&dir.path().join("ledger.sqlite3")).unwrap();
@@ -611,7 +339,6 @@ mod tests {
                         ..Default::default()
                     },
                 )?;
-                // FR-12: a task needs an idea in flight of the feature of its run.
                 crate::taskledger::schema::run_idea(
                     tx,
                     &run.run_id,
@@ -639,7 +366,7 @@ mod tests {
             })
             .unwrap();
         let mut f = Fixture {
-            dir,
+            _dir: dir,
             store,
             task,
             worker,
@@ -653,7 +380,6 @@ mod tests {
             attempt_id(&self.task, 1)
         }
 
-        /// The stall ladder ends the attempt `quota` and the worker row.
         fn end_with_quota(&mut self) {
             let reap = Reap {
                 attempt: self.first_attempt(),
@@ -739,9 +465,12 @@ mod tests {
         let mut f = fixture("dev", None);
         let before = f.task();
         let moved = f.on_quota(&claude_full());
-        let Some(Moved::Restart { attempt, worker }) = moved else {
-            panic!("{moved:?}");
-        };
+        assert_eq!(
+            moved,
+            Some(Moved::Restart {
+                persona: "alt".into()
+            })
+        );
         let t = f.task();
         assert_eq!(t.status, "ready");
         assert_eq!(t.claimable_by.as_deref(), Some("alt"));
@@ -765,38 +494,27 @@ mod tests {
                 USAGE_LIMIT_FALLBACK.into()
             )
         );
-        // The new worker of the fallback, spawned for the task.
-        let w = workers::get(f.store.conn(), &worker).unwrap();
-        assert_eq!(w.persona.as_deref(), Some("alt"));
-        assert_eq!(w.status, WorkerStatus::Spawning.as_str());
-        assert_eq!(w.target_task_id.as_deref(), Some(f.task.as_str()));
-        assert_eq!(w.previous_worker_id.as_deref(), Some(f.worker.as_str()));
-        let rows = store::attempts_of_worker(f.store.conn(), &worker).unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(
-            (rows[0].id.as_str(), rows[0].state),
-            (attempt.as_str(), AttemptState::Launching)
-        );
-        assert!(is_restart(&rows[0]));
-        // A second report of the same attempt moves nothing.
+        assert_eq!(t.not_before, None, "a usage limit sets no backoff");
+        let attempts: i64 = f
+            .store
+            .conn()
+            .query_row("SELECT count(*) FROM attempts", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(attempts, 1, "only the attempt that hit the limit");
         assert_eq!(f.on_quota(&claude_full()), None);
     }
 
     #[test]
     fn fallback_on_the_same_pool_or_no_fallback_waits() {
-        // The task's own fallback wins over the persona's: `same` is on
-        // claude too.
         let mut f = fixture("dev", Some("same"));
         assert_eq!(f.on_quota(&claude_full()), Some(Moved::Wait));
         assert_eq!(f.task().status, "waiting_quota");
-        // Both pools limited: the task waits.
         let mut f = fixture("dev", None);
         assert_eq!(f.on_quota(&both_full()), Some(Moved::Wait));
     }
 
     #[test]
     fn persona_with_a_no_fallback_reason_waits_in_waiting_quota() {
-        // Even a fallback of the task on another pool does not move it.
         let mut f = fixture("pinned", Some("alt"));
         assert_eq!(f.on_quota(&claude_full()), Some(Moved::Wait));
         let t = f.task();
@@ -819,7 +537,6 @@ mod tests {
             last,
             ("running".into(), "waiting_quota".into(), USAGE_LIMIT.into())
         );
-        // A pass far past the deadline neither expires nor renews it.
         let limits = |_: &str| Limits {
             lease_s: 120,
             stall_after_s: 300,
@@ -840,9 +557,7 @@ mod tests {
         assert!(expired.is_empty());
         assert_eq!(f.lease(), Some(lease));
         assert_eq!(f.task().status, "waiting_quota");
-        // Not reset yet: the task waits.
         assert!(f.release(&claude_full()).is_empty());
-        // The calendar time passes `reset_at`: ready, and the lease goes.
         let after_reset = quota(pool(1.0, Some("2026-11-17T11:00:00Z")), pool(0.1, None));
         assert_eq!(f.release(&after_reset), vec![f.task.clone()]);
         assert_eq!(f.task().status, "ready");
@@ -864,202 +579,8 @@ mod tests {
         assert_eq!(f.release(&ok), vec![f.task.clone()]);
     }
 
-    /// The effects of a restart in a test: which processes live, and each
-    /// spec that the launch got.
-    struct Fake {
-        alive: Cell<bool>,
-        specs: RefCell<Vec<Restart>>,
-        program: std::path::PathBuf,
-    }
-
-    impl Restarts for Fake {
-        fn alive(&self, _p: Recorded) -> bool {
-            self.alive.get()
-        }
-
-        fn spec(&self, r: &Restart) -> Result<LaunchSpec> {
-            self.specs.borrow_mut().push(r.clone());
-            Ok(LaunchSpec {
-                program: self.program.clone(),
-                args: Vec::new(),
-                cwd: None,
-                env_rule: Default::default(),
-                detach: false,
-                output: None,
-            })
-        }
-    }
-
-    /// A host that starts a real `true` process and counts the launches.
-    struct Host {
-        launches: Cell<usize>,
-    }
-
-    impl ProcessHost for Host {
-        fn launch(
-            &self,
-            spec: &LaunchSpec,
-        ) -> std::result::Result<
-            Launched,
-            crate::fleetd::worker_profiles::application::ports::LaunchError,
-        > {
-            self.launches.set(self.launches.get() + 1);
-            let child = std::process::Command::new(&spec.program).spawn()?;
-            Ok(Launched {
-                pid: child.id(),
-                pid_start: None,
-                child,
-            })
-        }
-    }
-
-    fn fake(alive: bool) -> Fake {
-        Fake {
-            alive: Cell::new(alive),
-            specs: RefCell::new(Vec::new()),
-            program: which_true(),
-        }
-    }
-
-    fn which_true() -> std::path::PathBuf {
-        ["/usr/bin/true", "/bin/true"]
-            .into_iter()
-            .map(std::path::PathBuf::from)
-            .find(|p| p.exists())
-            .expect("a true binary")
-    }
-
-    fn host() -> Host {
-        Host {
-            launches: Cell::new(0),
-        }
-    }
-
-    #[test]
-    fn restart_writes_1_launching_attempt_and_spawns_once_after_the_commit() {
-        let mut f = fixture("dev", None);
-        let Some(Moved::Restart { attempt, worker }) = f.on_quota(&claude_full()) else {
-            panic!("no restart");
-        };
-        let launching: i64 = f
-            .store
-            .conn()
-            .query_row(
-                "SELECT COUNT(*) FROM attempts WHERE task_id = ?1 AND state = 'launching'",
-                [&f.task],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(launching, 1);
-        let root = f.dir.path().join("fleet");
-        let (ports, host) = (fake(false), host());
-        let run = |f: &Fixture| {
-            restart(
-                f.store.conn(),
-                &root,
-                FleetSeconds(500),
-                &attempt,
-                &host,
-                &ports,
-            )
-            .unwrap()
-        };
-        let Restarted::Launched(mut l) = run(&f) else {
-            panic!("no launch");
-        };
-        l.child.wait().unwrap();
-        let specs = ports.specs.borrow().clone();
-        assert_eq!(specs.len(), 1);
-        let r = &specs[0];
-        assert_eq!(
-            (r.task_id.as_str(), r.worker_id.as_str()),
-            (f.task.as_str(), worker.as_str())
-        );
-        assert_eq!((r.persona.as_str(), r.run_slug.as_str()), ("alt", "r1"));
-        assert_eq!(r.from_pane.as_deref(), Some("w0:p1"));
-        assert_eq!(r.workspace_id.as_deref(), Some("w0"));
-        let record = effects::read_launch(&root, &attempt).unwrap().unwrap();
-        assert_eq!(
-            record.process, None,
-            "the spawn is not the agent of the attempt"
-        );
-        // The next pass, and a fleetd restart after the commit, spawn nothing.
-        assert!(matches!(run(&f), Restarted::Done));
-        assert_eq!(host.launches.get(), 1);
-    }
-
-    #[test]
-    fn restart_waits_for_the_old_process_to_be_gone() {
-        let mut f = fixture("dev", None);
-        let Some(Moved::Restart { attempt, .. }) = f.on_quota(&claude_full()) else {
-            panic!("no restart");
-        };
-        let root = f.dir.path().join("fleet");
-        let (ports, host) = (fake(true), host());
-        let run = || {
-            restart(
-                f.store.conn(),
-                &root,
-                FleetSeconds(500),
-                &attempt,
-                &host,
-                &ports,
-            )
-            .unwrap()
-        };
-        assert!(matches!(run(), Restarted::Waiting { pid } if pid == AGENT.pid));
-        assert_eq!(host.launches.get(), 0);
-        assert!(effects::read_launch(&root, &attempt).unwrap().is_none());
-        // The stop of part 3 ended the old process: the spawn runs.
-        ports.alive.set(false);
-        let Restarted::Launched(mut l) = run() else {
-            panic!("no launch");
-        };
-        l.child.wait().unwrap();
-        assert_eq!(host.launches.get(), 1);
-    }
-
-    #[test]
-    fn restart_that_does_not_start_ends_its_worker_launch_failed() {
-        let mut f = fixture("dev", None);
-        let Some(Moved::Restart { attempt, worker }) = f.on_quota(&claude_full()) else {
-            panic!("no restart");
-        };
-        let root = f.dir.path().join("fleet");
-        let mut ports = fake(false);
-        ports.program = f.dir.path().join("no-such-program");
-        let host = host();
-        let r = restart(
-            f.store.conn(),
-            &root,
-            FleetSeconds(500),
-            &attempt,
-            &host,
-            &ports,
-        );
-        assert!(r.is_err());
-        let w = workers::get(f.store.conn(), &worker).unwrap();
-        assert_eq!(w.status, WorkerStatus::LaunchFailed.as_str());
-        // The record stays: no second spawn, and the start timeout ends
-        // the attempt.
-        assert!(matches!(
-            restart(
-                f.store.conn(),
-                &root,
-                FleetSeconds(501),
-                &attempt,
-                &host,
-                &ports
-            )
-            .unwrap(),
-            Restarted::Done
-        ));
-    }
-
     #[test]
     fn pres_06_s13_quota_probe_holds_no_credential() {
-        // The reading is the quota file and nothing else: a pool that the
-        // file does not name has no window and no limit.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("quota.json");
         let file = QuotaFile {
@@ -1088,8 +609,6 @@ mod tests {
         assert_eq!(dev.windows[0].used, 1.0);
         let alt = pools.reading("alt").unwrap();
         assert_eq!((alt.pool.as_str(), alt.windows.len()), ("codex", 0));
-        // The code of this module reads no environment, starts no process
-        // and opens no keychain: each reading comes through `QuotaView`.
         let src = include_str!("quota.rs");
         let code: Vec<&str> = src
             .split("#[cfg(test)]")

@@ -24,8 +24,6 @@ _STORE_GUARD = threading.Lock()
 _STORE_COUNTS = {"hits": 0, "misses": 0}
 
 
-# ---------------------------------------------------------------- helpers
-
 def _level_rms(sig: np.ndarray) -> float:
     return float(np.sqrt(np.mean(np.square(sig)))) + 1e-12
 
@@ -109,8 +107,6 @@ def _prime_list(upto: int) -> np.ndarray:
     return np.nonzero(is_prime)[0]
 
 
-# ---------------------------------------------------------------- IR cache
-
 def ir_cache_stats() -> dict:
     """Hits, misses, entries and size in MB of the reverb IR cache."""
     with _STORE_GUARD:
@@ -165,8 +161,6 @@ def ir_grid(rt60: float = 1.6, size: float = 0.6, predelay: float = 0.01, damp: 
     return acc
 
 
-# ---------------------------------------------------------------- early reflections
-
 def _reflection_taps(gen: np.random.Generator, mm: int, t_top: float, n_taps: int, spread_w: float, chan: int) -> np.ndarray:
     tsec = np.sort(np.exp(gen.uniform(np.log(0.003), np.log(t_top), n_taps)))
     if chan == 1:
@@ -198,8 +192,6 @@ def early(x: np.ndarray, r: np.random.Generator, size: float = 0.5, taps: int = 
     n_ch = [_tilt_dark(_reflection_taps(r, mm, t_top, taps, width, chan), damp) for chan in range(2)]
     return np.column_stack([signal.fftconvolve(mono_in, ch) for ch in n_ch])
 
-
-# ---------------------------------------------------------------- FDN reverb
 
 def _line_lengths(gen: np.random.Generator, room_size: float, n_lines: int) -> np.ndarray:
     lo_c = (0.006 + 0.024 * room_size) * SR
@@ -540,8 +532,6 @@ def reverb(x: np.ndarray, r: np.random.Generator, *args: Any, **opts: Any) -> np
 with_signature(reverb, ("x", "r"), REVERB_DEFAULTS)
 
 
-# ---------------------------------------------------------------- dynamics
-
 def _apply_shelf(sig: np.ndarray, kind_s: str, db_v: float, corner: float) -> np.ndarray:
     c_b0, c_b1, tap_b = _shelf_coefs(kind_s, 10 ** (db_v / 20), corner)
     return signal.lfilter([c_b0, c_b1], [1.0, tap_b], sig, axis=0)
@@ -694,8 +684,6 @@ def split(x: np.ndarray, freqs: Any) -> list[np.ndarray]:
     return band_list + [remain]
 
 
-# ---------------------------------------------------------------- EQ match
-
 def _profile_of_array(av: np.ndarray) -> np.ndarray:
     from hark.forge.engine import tone
 
@@ -775,8 +763,6 @@ def eq_match(x: np.ndarray, target: Any, amount: float = 1.0, max_db: float = 12
         res = eq_bands(x, amount * acc_db, phase)
     return res * _level_rms(x) / _level_rms(res)
 
-
-# ---------------------------------------------------------------- motion
 
 def _emit_time(tm: np.ndarray, t_zero: float, vec: float, range_m: float, chan: float) -> np.ndarray:
     bv = tm - t_zero
@@ -895,8 +881,6 @@ def tape_stop(x: np.ndarray, start: float | None = None, seconds: float = 0.6, c
     return res
 
 
-# ---------------------------------------------------------------- glitch and grains
-
 def crush(x: np.ndarray, bits: int | None = 8, rate: float | None = None, mix: float = 1.0) -> np.ndarray:
     """Sample-rate reduction and bit crush, no dither."""
     x = np.asarray(x, dtype=float)
@@ -957,7 +941,6 @@ def _g_keep(seg_len: np.ndarray, cnt: int) -> np.ndarray:
     return seg_len.copy()
 
 
-# Edit by the number of cumulative thresholds at or under u; 0 (repeat) falls back to reverse with no previous slice.
 _GLITCH_OPS = (_g_reverse, _g_reverse, _g_drop, _up_octave, _g_crush, _g_keep)
 
 

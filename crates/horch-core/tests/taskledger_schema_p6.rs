@@ -1,10 +1,3 @@
-//! The schema step of Phase 6 (docs/specs/fleetd/design.md, "Ledger" and
-//! "Migration plan" item 8; docs/tickets/fleetd-p6/02-schema.md): the tables
-//! `ideas`, `requirements`, `task_covers` and `trial_merges`, the idea of
-//! each task (FR-12), `tasks.fix_rounds` (RR-3), `attempts.idea_id`, and the
-//! release backfill that gives each run in flight 1 idea (MAP.md of
-//! fleetd-p6, Q5, Q6 and Q11).
-
 use std::path::Path;
 
 use horch_core::taskledger::model::Actor;
@@ -14,17 +7,8 @@ use horch_core::taskledger::tasks::{self, NewTask};
 use horch_core::taskledger::Store;
 use rusqlite::Connection;
 
-/// The version before the Phase 6 step.
 const BEFORE: i64 = schema::PHASE_6_VERSION - 1;
 
-/// A ledger at [`BEFORE`] at `path`, built by the real steps, with:
-/// - run 1 `alpha` with its feature `F-0001`: 1 running task, 1 done task,
-///   and 1 open question that the orchestrator of the run owns.
-/// - run 2 `beta` with its feature `F-0002`: 1 done and 1 cancelled task.
-/// - run 3 `gamma` with no run branch and no feature: 1 ready task.
-/// - run 4 `delta` with no run branch and no feature: 1 done task.
-/// - run 5 `alpha` with a run branch and no feature (a run of today's flow,
-///   made after the Phase 4 release): 1 running task.
 fn phase_5_file(path: &Path) {
     let mut conn = Connection::open(path).unwrap();
     schema::migrate_to(&mut conn, BEFORE).unwrap();
@@ -59,9 +43,6 @@ fn user_version(conn: &Connection) -> i64 {
         .unwrap()
 }
 
-/// A [`phase_5_file`] ledger, migrated to the Phase 6 step with foreign
-/// keys on, as `Store::open` sets them: its folder (kept alive) and a
-/// connection.
 fn migrated() -> (tempfile::TempDir, Connection) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("ledger.sqlite3");
@@ -72,7 +53,6 @@ fn migrated() -> (tempfile::TempDir, Connection) {
     (dir, conn)
 }
 
-/// The text columns of each row of `sql`, in order.
 fn rows(conn: &Connection, sql: &str) -> Vec<Vec<Option<String>>> {
     let mut stmt = conn.prepare(sql).unwrap();
     let n = stmt.column_count();
@@ -409,9 +389,6 @@ fn newer_schema_is_still_refused() {
     assert!(schema::backups_in(dir.path()).is_empty());
 }
 
-/// Until ticket 47 retires `horch ledger add`, `tasks::add` gives each new
-/// task the idea of its run, and writes the feature and the idea of a run
-/// that has none.
 #[test]
 fn ledger_add_in_a_new_run_gives_the_task_the_idea_of_its_run() {
     let dir = tempfile::tempdir().unwrap();
@@ -427,7 +404,6 @@ fn ledger_add_in_a_new_run_gives_the_task_the_idea_of_its_run() {
                     ..Default::default()
                 },
             )?;
-            // FR-12: a task needs an idea in flight of the feature of its run.
             horch_core::taskledger::schema::run_idea(
                 tx,
                 &run.run_id,

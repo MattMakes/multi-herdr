@@ -6,11 +6,7 @@ use crate::workspace::testing::FakeWorkspace;
 
 const DAY: Duration = Duration::from_secs(24 * 60 * 60);
 
-/// A state root and a temp root in one temp dir, and a fake herdr with 1
-/// workspace (`w1`) and 1 pane (`p1`) in it.
 struct World {
-    /// The fleetd of the session records, which the sweep writes (T-884).
-    /// Declared first, so it drops before the folder.
     _fleetd: crate::fleetd::fleet_runtime::adapters::channel_server::ChannelServer,
     tmp: tempfile::TempDir,
     herdr: FakeWorkspace,
@@ -51,7 +47,6 @@ impl World {
         SessionLedger::for_project(self.state(), "/proj")
     }
 
-    /// A working record of `role` in `ws`, in pane `pane`.
     fn record(&self, id: &str, role: &str, ws: &str, pane: &str) {
         self.ledger()
             .insert(Record {
@@ -76,7 +71,6 @@ impl World {
         self.ledger().get(id).unwrap().execution_status()
     }
 
-    /// Sweep with herdr's real answer, as if `ahead` had passed.
     fn sweep(&self, ahead: Duration) -> Applied {
         let listed = self.herdr.server_reachable().then(|| self.listed());
         self.sweep_with(listed, ahead)
@@ -98,8 +92,6 @@ impl World {
     }
 
     fn listed(&self) -> BTreeSet<String> {
-        // The fake has no workspace list: its open workspaces are the ones
-        // that still have a pane.
         let mut listed = BTreeSet::new();
         for ws in ["w1", "w2", "w3"] {
             if !self.herdr.pane_list(ws).unwrap().is_empty() {
@@ -121,7 +113,6 @@ fn set_age(path: &Path, age: Duration) {
     file.set_modified(SystemTime::now() - age).unwrap();
 }
 
-/// A pid that no process has: a child that ran and was reaped.
 fn dead_pid() -> u32 {
     let mut child = std::process::Command::new("true").spawn().unwrap();
     let pid = child.id();
@@ -266,8 +257,6 @@ fn the_bundle_of_a_done_record_goes_and_a_live_or_unknown_one_stays() {
     assert_eq!(applied.removed.get(&Kind::Bundle), Some(&1));
 }
 
-/// A private codex home as the codex harness leaves it: links, `rules/`,
-/// and the cache codex writes at its top.
 #[cfg(unix)]
 fn codex_home(state: &Path, role: &str, target: &Path) -> PathBuf {
     let dir = state
@@ -484,12 +473,9 @@ fn temp_names_give_their_pid() {
     );
 }
 
-/// A context whose state root is `<dir>/state` and whose herdr is a warmed
-/// script that lists workspace `w1` with pane `p1`.
 #[cfg(unix)]
 fn script_ctx(dir: &Path) -> RuntimeContext {
     let herdr = dir.join("herdr");
-    // macOS scans a new executable at its first exec: warm it.
     let warm = crate::test_support::write_warmed(
         &herdr,
         "#!/bin/sh\ncase \"$1 $2\" in\n\
@@ -507,9 +493,6 @@ fn script_ctx(dir: &Path) -> RuntimeContext {
     RuntimeContext::from_env(&env).unwrap()
 }
 
-/// What `horch fleet` and `horch spawn` run: on old state, 1 run leaves
-/// bundles only for live records, and a 2nd run within the hour reads
-/// nothing.
 #[cfg(unix)]
 #[test]
 fn run_due_leaves_bundles_only_for_live_records_once_an_hour() {
@@ -550,9 +533,6 @@ fn run_due_leaves_bundles_only_for_live_records_once_an_hour() {
     );
 }
 
-/// TRF-45: the sweep reads the session records, not a JSON ledger. A
-/// working record in the table whose pane closed ends there, an old JSON
-/// ledger's record ends in the table, and no JSON file is written.
 #[test]
 fn trf_45_the_sweep_ends_session_records_and_writes_no_json() {
     let w = World::new();
@@ -587,4 +567,204 @@ fn trf_45_the_sweep_ends_session_records_and_writes_no_json() {
         .filter(|n| n.ends_with(".json"))
         .collect();
     assert_eq!(files, ["-old.json"]);
+}
+
+fn record_with_backend(
+    state: &Path,
+    id: &str,
+    role: &str,
+    ws: &str,
+    pane: &str,
+    backend: crate::runtime::Backend,
+) {
+    SessionLedger::for_project(state, "/proj")
+        .insert(Record {
+            record_id: id.into(),
+            role: role.into(),
+            agent: "codex".into(),
+            workspace_id: Some(ws.into()),
+            pane_id: Some(pane.into()),
+            backend,
+            ..Record::default()
+        })
+        .unwrap();
+}
+
+#[test]
+fn hcb_10_sweep_keeps_an_hc_workspace_when_only_herdr_answers() {
+    let w = World::new();
+    record_with_backend(
+        &w.state(),
+        "hc-rec-1",
+        "sonnet-1",
+        "sp1",
+        "t2",
+        crate::runtime::Backend::Hc,
+    );
+    let reg = w.state().join("herdr-orchestration-sp1");
+    touch(&reg.join("orchestrator.id"));
+
+    let hc_fake = FakeWorkspace::new();
+    let hosts = SweepHosts {
+        hosts: vec![
+            HostView {
+                backend: crate::runtime::Backend::Herdr,
+                listed: Some(BTreeSet::from(["w1".to_string()])),
+                client: &w.herdr,
+            },
+            HostView {
+                backend: crate::runtime::Backend::Hc,
+                listed: None,
+                client: &hc_fake,
+            },
+        ],
+        all_installed_answer: false,
+    };
+    let scope = Scope {
+        state_root: &w.state(),
+        temp_root: None,
+    };
+    let plan = scan_hosts(
+        scope,
+        &hosts,
+        SystemTime::now() + 3 * DAY,
+        Instant::now() + Duration::from_secs(60),
+    );
+    assert!(plan.counts().is_empty(), "{:?}", plan.counts());
+    assert!(reg.exists());
+    assert_eq!(w.status("hc-rec-1"), ExecutionStatus::Running);
+
+    record_with_backend(
+        &w.state(),
+        "herdr-dead-1",
+        "sonnet-2",
+        "w9",
+        "w9:p2",
+        crate::runtime::Backend::Herdr,
+    );
+    let plan2 = scan_hosts(
+        scope,
+        &hosts,
+        SystemTime::now() + 3 * DAY,
+        Instant::now() + Duration::from_secs(60),
+    );
+    assert_eq!(
+        plan2.counts().get(&Kind::Record),
+        Some(&1),
+        "herdr-owned dead record must be planned while hc-owned stays: {:?}",
+        plan2.counts()
+    );
+}
+
+#[test]
+fn hcb_10_sweep_removes_an_hc_workspace_its_own_host_no_longer_lists() {
+    let w = World::new();
+    record_with_backend(
+        &w.state(),
+        "hc-gone-1",
+        "sonnet-1",
+        "sp9",
+        "t4",
+        crate::runtime::Backend::Hc,
+    );
+    let reg = w.state().join("herdr-orchestration-sp9");
+    touch(&reg.join("orchestrator.id"));
+    let mail = w.state().join("mail/sp9");
+    std::fs::create_dir_all(&mail).unwrap();
+
+    let hc_fake = FakeWorkspace::new();
+    let hosts = SweepHosts {
+        hosts: vec![
+            HostView {
+                backend: crate::runtime::Backend::Herdr,
+                listed: None,
+                client: &w.herdr,
+            },
+            HostView {
+                backend: crate::runtime::Backend::Hc,
+                listed: Some(BTreeSet::from(["sp1".to_string()])),
+                client: &hc_fake,
+            },
+        ],
+        all_installed_answer: false,
+    };
+    let scope = Scope {
+        state_root: &w.state(),
+        temp_root: None,
+    };
+    let plan = scan_hosts(
+        scope,
+        &hosts,
+        SystemTime::now() + 3 * DAY,
+        Instant::now() + Duration::from_secs(60),
+    );
+    assert_eq!(plan.counts().get(&Kind::Record), Some(&1));
+    assert_eq!(plan.counts().get(&Kind::Registry), Some(&1));
+    assert_eq!(plan.counts().get(&Kind::Mail), Some(&1));
+}
+
+#[test]
+fn hcb_10_sweep_keeps_an_unrecorded_folder_while_a_host_is_down() {
+    let w = World::new();
+    let reg = w.state().join("herdr-orchestration-sp_unrecorded");
+    touch(&reg.join("orchestrator.id"));
+
+    let hosts = SweepHosts {
+        hosts: vec![HostView {
+            backend: crate::runtime::Backend::Herdr,
+            listed: Some(BTreeSet::from(["w1".to_string()])),
+            client: &w.herdr,
+        }],
+        all_installed_answer: false,
+    };
+    let scope = Scope {
+        state_root: &w.state(),
+        temp_root: None,
+    };
+    let plan = scan_hosts(
+        scope,
+        &hosts,
+        SystemTime::now() + 3 * DAY,
+        Instant::now() + Duration::from_secs(60),
+    );
+    assert!(
+        plan.counts().is_empty(),
+        "unrecorded folder must stay while any installed host is down: {:?}",
+        plan.counts()
+    );
+}
+
+#[test]
+fn hcb_10_sweep_removes_an_unrecorded_folder_no_host_lists() {
+    let w = World::new();
+    let reg = w.state().join("herdr-orchestration-sp_unrecorded");
+    touch(&reg.join("orchestrator.id"));
+
+    let hc_fake = FakeWorkspace::new();
+    let hosts = SweepHosts {
+        hosts: vec![
+            HostView {
+                backend: crate::runtime::Backend::Herdr,
+                listed: Some(BTreeSet::from(["w1".to_string()])),
+                client: &w.herdr,
+            },
+            HostView {
+                backend: crate::runtime::Backend::Hc,
+                listed: Some(BTreeSet::from(["sp1".to_string()])),
+                client: &hc_fake,
+            },
+        ],
+        all_installed_answer: true,
+    };
+    let scope = Scope {
+        state_root: &w.state(),
+        temp_root: None,
+    };
+    let plan = scan_hosts(
+        scope,
+        &hosts,
+        SystemTime::now() + 3 * DAY,
+        Instant::now() + Duration::from_secs(60),
+    );
+    assert_eq!(plan.counts().get(&Kind::Registry), Some(&1));
 }

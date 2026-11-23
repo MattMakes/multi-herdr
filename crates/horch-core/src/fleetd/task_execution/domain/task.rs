@@ -1,48 +1,18 @@
-//! The task and its reap path (FM-4, FM-22): the process part of I1, I4
-//! and I5 (`docs/specs/fleetd/design.md`, "Ledger").
-//!
-//! Facts in, decisions out. The facts are the rows of the ledger and what
-//! part 1 of a pass saw of their processes and panes. No I/O.
-//!
-//! - I1, process part: a live attempt whose process is dead ends, and the
-//!   task that its worker holds is queued again or held ([`dead_attempts`]).
-//! - I2: a `pending` task whose `after:` and `judges:` dependencies are
-//!   all met is promotable ([`promotable_deps`]).
-//! - I4: a worker never gets a second attempt ([`held_attempt`]).
-//! - I5: a process or pane that an ended row names, and that no live
-//!   attempt and no live worker row owns, is an orphan to stop
-//!   ([`orphans`]). A live worker row owns its processes and pane in
-//!   Phase 1, because `horch spawn` writes no attempt before the claim.
-//!
-//! The orchestrator row is never stopped (`preservation-04-behavior.md`,
-//! S8), and a row of another host is never judged: its PIDs mean nothing
-//! here. A pane is closed only when a second fact proves that it is the
-//! pane of the row: the process in the pane is a recorded process of the
-//! row. Else the pane is kept, and the caller puts it on the needs-you
-//! list ([`KeptPane`]).
-
 use std::collections::{BTreeMap, BTreeSet};
 
-/// A process as a row records it. A pid alone can name a later program, so
-/// a stop needs the start time (S8).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Recorded {
     pub pid: u32,
     pub pid_start: Option<u64>,
 }
 
-/// What part 1 of a pass saw of a recorded process.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Seen {
-    /// A process has the pid and, when one is recorded, the start time.
     Alive,
-    /// No process has the pid, or a process with another start time has it.
     Dead,
-    /// The pass did not read it, or could not tell.
     Unknown,
 }
 
-/// The state of an attempt row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AttemptState {
     Launching,
@@ -51,14 +21,12 @@ pub enum AttemptState {
 }
 
 impl AttemptState {
-    /// Every state, in the order of the table.
     pub const ALL: [AttemptState; 3] = [
         AttemptState::Launching,
         AttemptState::Live,
         AttemptState::Ended,
     ];
 
-    /// The word of `attempts.state`.
     pub fn as_str(self) -> &'static str {
         match self {
             AttemptState::Launching => "launching",
@@ -67,48 +35,35 @@ impl AttemptState {
         }
     }
 
-    /// The state of an `attempts.state` word.
     pub fn parse(word: &str) -> Option<AttemptState> {
         Self::ALL.into_iter().find(|s| s.as_str() == word)
     }
 
-    /// Whether an attempt in this state holds its worker, its processes and
-    /// its pane.
     pub fn holds(self) -> bool {
         self != AttemptState::Ended
     }
 }
 
-/// The id of attempt `n` of task `task_id`, as the schema v8 backfill
-/// writes it.
 pub fn attempt_id(task_id: &str, n: i64) -> String {
     format!("{task_id}/A{n}")
 }
 
-/// 1 attempt row.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AttemptRow {
     pub id: String,
-    /// `None` for an attempt of the orchestrator.
     pub task_id: Option<String>,
     pub worker_id: String,
     pub state: AttemptState,
-    /// The agent process.
     pub process: Option<Recorded>,
-    /// The pane of the attempt, else the pane of its worker.
     pub pane: Option<String>,
 }
 
-/// 1 worker row.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkerRow {
     pub id: String,
-    /// The `workers.status` word.
     pub status: String,
-    /// Whether the status is a live one.
     pub live: bool,
     pub orchestrator: bool,
-    /// The row has the host of this machine, or no host.
     pub here: bool,
     pub agent: Option<Recorded>,
     pub supervisor: Option<Recorded>,
@@ -116,8 +71,6 @@ pub struct WorkerRow {
 }
 
 impl WorkerRow {
-    /// Whether I1 and I5 may judge the row: a row of this host that is not
-    /// the orchestrator.
     fn judged(&self) -> bool {
         self.here && !self.orchestrator
     }
@@ -127,20 +80,14 @@ impl WorkerRow {
     }
 }
 
-/// The facts of 1 task that a failed attempt needs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TaskRow {
     pub id: String,
-    /// The worker of a `running` or `landing` task.
     pub held_by: Option<String>,
-    /// The attempts since the last operator requeue: `attempts - attempt_floor`.
     pub used: i64,
-    /// The `max_attempts` of the run.
     pub max_attempts: i64,
 }
 
-/// I2 with `after:` dependencies only: [`promotable_deps`] with each pair
-/// of `deps` an [`DepKind::After`] dependency.
 pub fn promotable(
     statuses: &BTreeMap<String, String>,
     deps: &[(String, String)],
@@ -157,19 +104,12 @@ pub fn promotable(
     promotable_deps(statuses, &deps, landed, &BTreeSet::new())
 }
 
-/// The 2 kinds of dependency of I2.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DepKind {
-    /// `after:`: met when its task is `done` and, if it has a task branch
-    /// row, its branch is `landed`.
     After,
-    /// `judges:`, the dependency of a judge task on the task it judges:
-    /// met when the judged task is `verifying` and its structural check
-    /// passed. The judge reads the result before it lands.
     Judges,
 }
 
-/// `task` waits for `on`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Dep {
     pub task: String,
@@ -177,21 +117,10 @@ pub struct Dep {
     pub kind: DepKind,
 }
 
-/// The task that a task judges: a task of kind `work` with a parent task
-/// is a judge task, and its parent is the judged task. A review task has
-/// kind `review`, and it is never a judge task. Each caller that asks
-/// "is this a judge task" uses this function.
 pub fn judged_task<'a>(kind: &str, parent_task_id: Option<&'a str>) -> Option<&'a str> {
     parent_task_id.filter(|_| kind == "work")
 }
 
-/// I2: the `pending` tasks whose dependencies are all met, in id order.
-/// `statuses` maps each task id to its status. `landed` maps each task
-/// with a task branch row to whether that branch is `landed`; a task with
-/// no branch row (a claim attempt or a shared-checkout task) keeps the
-/// rule `done` for an `after:` dependency. `structural_passed` holds each
-/// task whose structural check passed for its current result. A
-/// dependency with no task row is not met.
 pub fn promotable_deps(
     statuses: &BTreeMap<String, String>,
     deps: &[Dep],
@@ -213,18 +142,14 @@ pub fn promotable_deps(
         .collect()
 }
 
-/// The rows of the reap path.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Rows {
     pub attempts: Vec<AttemptRow>,
     pub workers: BTreeMap<String, WorkerRow>,
-    /// The tasks of the live attempts.
     pub tasks: BTreeMap<String, TaskRow>,
 }
 
 impl Rows {
-    /// Each process that a row of this host names: what part 1 of a pass
-    /// reads into [`Facts::processes`].
     pub fn named_processes(&self) -> BTreeSet<Recorded> {
         let workers = self
             .workers
@@ -239,7 +164,6 @@ impl Rows {
         workers.chain(attempts).collect()
     }
 
-    /// Whether I1 and I5 may judge the attempt `a`.
     fn judged(&self, a: &AttemptRow) -> bool {
         self.workers
             .get(&a.worker_id)
@@ -247,47 +171,39 @@ impl Rows {
     }
 }
 
-/// What part 1 of a pass saw.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Facts {
-    /// The recorded processes that the pass read. A process that is not in
-    /// the map is [`Seen::Unknown`].
     pub processes: BTreeMap<Recorded, Seen>,
-    /// The panes of the herdr snapshot, each with what herdr reports of the
-    /// process in it. `None` when the pass has no snapshot.
     pub panes: Option<BTreeMap<String, InPane>>,
-    /// The records of the polite stops whose processes are gone.
     pub stopped: Vec<Stopped>,
 }
 
-/// What herdr reports of the process in a pane.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InPane {
-    /// herdr names no process, or the pass cannot tell whether it runs. It
-    /// never proves a pane.
     Unknown,
-    /// herdr names this process, and it runs with this start time.
     Runs { pid: u32, pid_start: u64 },
-    /// herdr names this pid, and no process has it now.
     Gone(u32),
 }
 
-/// The record of the polite stop of a process that is gone.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Stopped {
-    /// The process, with its start time.
     pub process: Recorded,
     pub proof: PaneProof,
+    pub group: GroupLeft,
 }
 
-/// What the record of a polite stop says of a pane.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum GroupLeft {
+    #[default]
+    None,
+    Members,
+    NewLeader,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PaneProof {
-    /// No pane: no pane stop waited for the process.
     None,
-    /// At the polite stop, the process was the process in this pane.
     Pane(String),
-    /// The record does not parse: it proves nothing.
     Unreadable,
 }
 
@@ -296,18 +212,14 @@ impl Facts {
         self.processes.get(&p).copied().unwrap_or(Seen::Unknown)
     }
 
-    /// Whether the snapshot has `pane`. `None` with no snapshot.
     fn has_pane(&self, pane: &str) -> Option<bool> {
         self.panes.as_ref().map(|p| p.contains_key(pane))
     }
 
-    /// What the snapshot reports of the process in `pane`.
     fn in_pane(&self, pane: &str) -> Option<InPane> {
         self.panes.as_ref().and_then(|p| p.get(pane)).copied()
     }
 
-    /// The process in `pane` when it is 1 of `recorded`, by pid and start
-    /// time: the second fact that proves the pane is the pane of the row.
     fn pane_runs(&self, pane: &str, recorded: &[Recorded]) -> Option<Recorded> {
         let Some(InPane::Runs { pid, pid_start }) = self.in_pane(pane) else {
             return None;
@@ -319,25 +231,17 @@ impl Facts {
         recorded.contains(&p).then_some(p)
     }
 
-    /// Whether herdr still names the pid of `shell`, and no process has it:
-    /// the pane is the pane that `shell` ran in, and `shell` ended.
     fn pane_names_gone(&self, pane: &str, shell: Recorded) -> bool {
         self.in_pane(pane) == Some(InPane::Gone(shell.pid)) && self.process(shell) == Seen::Dead
     }
 }
 
-/// What a failed attempt does to its task (`preservation-04-behavior.md`,
-/// L4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AfterFailure {
-    /// `ScheduleRetry`: queued again, first in line.
     Retry,
-    /// `EscalateTask`: held for the operator.
     Escalate,
 }
 
-/// The rule of L4: at `max_attempts` attempts since the last operator
-/// requeue, the task is held; else it runs again.
 pub fn after_failure(used: i64, max_attempts: i64) -> AfterFailure {
     if used >= max_attempts {
         AfterFailure::Escalate
@@ -346,72 +250,58 @@ pub fn after_failure(used: i64, max_attempts: i64) -> AfterFailure {
     }
 }
 
-/// The row that names a process or a pane: the key of a stop.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RowRef {
     Worker(String),
     Attempt(String),
 }
 
-/// Which processes the stop of a recorded process reaches.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProcessScope {
-    /// The process alone.
     Alone,
-    /// Each process of the group of the process, but only while the
-    /// process leads that group with its recorded start time at the time
-    /// of the stop (FM-22). Else the process alone.
     LeaderGroup,
+    OrphanGroup,
 }
 
-/// What a stop ends.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Target {
-    /// Stop the process only while it has its pid and start time, in the
-    /// scope `scope`.
     Process {
         pid: u32,
         pid_start: u64,
         scope: ProcessScope,
     },
-    /// Close the exact pane `pane`. `shell` is the process in the pane, by
-    /// pid and start time, that proves the pane is the pane of the row. A
-    /// polite stop of `shell` records the pane with it, so a later pass can
-    /// close the pane when `shell` ended on that stop.
-    Pane { pane: String, shell: Recorded },
+    Pane {
+        pane: String,
+        shell: Recorded,
+    },
 }
 
-/// 1 effect to do after the commit.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Stop {
     pub row: RowRef,
     pub target: Target,
 }
 
-/// A pane that is not closed: no fact proves that it is the pane of its
-/// row, and herdr can give an old pane id to a pane outside the fleet.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KeptPane {
     pub pane: String,
     pub row: RowRef,
 }
 
-/// The stops and the kept panes of the rows that a pass acts on. Each
-/// process stop comes before each pane (S8).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KeptGroup {
+    pub group: u32,
+    pub row: RowRef,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Cleanup {
     pub stops: Vec<Stop>,
     pub kept: Vec<KeptPane>,
+    pub kept_groups: Vec<KeptGroup>,
 }
 
 impl Cleanup {
-    /// Add the stops and kept panes of 1 more row, with these rules:
-    /// - 1 stop for each target: the first row that names a process or a
-    ///   pane keeps its stop, and a later row adds none.
-    /// - 1 kept pane for each pane id, and none for a pane that a stop of
-    ///   any row closes: a row that proves the pane wins.
-    /// - Each process stop comes before each pane stop (S8), and each kind
-    ///   keeps its order.
     fn merge_row(&mut self, other: Cleanup) {
         for s in other.stops {
             if !self.stops.iter().any(|m| m.target == s.target) {
@@ -421,6 +311,11 @@ impl Cleanup {
         for k in other.kept {
             if !self.kept.iter().any(|m| m.pane == k.pane) {
                 self.kept.push(k);
+            }
+        }
+        for g in other.kept_groups {
+            if !self.kept_groups.iter().any(|m| m.group == g.group) {
+                self.kept_groups.push(g);
             }
         }
         let stops = &self.stops;
@@ -434,25 +329,16 @@ impl Cleanup {
     }
 }
 
-/// I1, process part: 1 live attempt whose process is dead.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Reap {
     pub attempt: String,
     pub worker: String,
-    /// The outcome of the attempt: `no_result` when its worker row is
-    /// live, else the end status of the worker row.
     pub outcome: String,
-    /// The worker row is live: it ends `incomplete`.
     pub end_worker: bool,
-    /// The task that the worker holds, and what happens to it.
     pub task: Option<(String, AfterFailure)>,
-    /// The rest of the row: its live processes, then its pane.
     pub cleanup: Cleanup,
 }
 
-/// I1, process part: each live attempt of this host whose process is
-/// dead. An attempt with no recorded process is judged by its pane, and an
-/// attempt with neither is dead: no process or pane can hold it.
 pub fn dead_attempts(rows: &Rows, facts: &Facts) -> Vec<Reap> {
     let dead: Vec<&AttemptRow> = rows
         .attempts
@@ -467,8 +353,6 @@ pub fn dead_attempts(rows: &Rows, facts: &Facts) -> Vec<Reap> {
         .collect()
 }
 
-/// The [`Reap`] of the dead attempt `a`; `owned` is what the rows own
-/// after the reaps.
 fn reap(rows: &Rows, facts: &Facts, owned: &Owned, a: &AttemptRow) -> Reap {
     let w = &rows.workers[&a.worker_id];
     let task = a
@@ -498,8 +382,6 @@ fn reap(rows: &Rows, facts: &Facts, owned: &Owned, a: &AttemptRow) -> Reap {
     }
 }
 
-/// The rows as they are after `dead` end: each attempt `ended`, and each
-/// worker of one not live.
 fn ended(rows: &Rows, dead: &[&AttemptRow]) -> Rows {
     let mut after = rows.clone();
     for a in dead {
@@ -513,10 +395,6 @@ fn ended(rows: &Rows, dead: &[&AttemptRow]) -> Rows {
     after
 }
 
-/// I5: the processes and panes that ended rows of this host name, and that
-/// no live attempt and no live worker row owns. A pane is looked at only
-/// for a row with a process to stop: an ended row whose processes are
-/// gone names a pane id that herdr can have given to another pane.
 pub fn orphans(rows: &Rows, facts: &Facts) -> Cleanup {
     let owned = Owned::of(rows);
     let mut out = Cleanup::default();
@@ -544,13 +422,38 @@ pub fn orphans(rows: &Rows, facts: &Facts) -> Cleanup {
     }
     let naming = naming(rows, &facts.stopped);
     for s in &facts.stopped {
-        out.merge_row(after_polite_stop(&naming[&s.process], facts, &owned, s));
+        let named = &naming[&s.process];
+        out.merge_row(group_left(named, &owned, s));
+        out.merge_row(after_polite_stop(named, facts, &owned, s));
     }
     out
 }
 
-/// The rows of this host that name each process of `stopped`, in 1 scan
-/// of the rows.
+fn group_left(named: &[Named], owned: &Owned, s: &Stopped) -> Cleanup {
+    let mut out = Cleanup::default();
+    let (Some(pid_start), false) = (s.process.pid_start, owned.has(s.process)) else {
+        return out;
+    };
+    for n in named {
+        match s.group {
+            GroupLeft::None => {}
+            GroupLeft::Members => out.stops.push(Stop {
+                row: n.row.clone(),
+                target: Target::Process {
+                    pid: s.process.pid,
+                    pid_start,
+                    scope: ProcessScope::OrphanGroup,
+                },
+            }),
+            GroupLeft::NewLeader => out.kept_groups.push(KeptGroup {
+                group: s.process.pid,
+                row: n.row.clone(),
+            }),
+        }
+    }
+    out
+}
+
 fn naming(rows: &Rows, stopped: &[Stopped]) -> BTreeMap<Recorded, Vec<Named>> {
     let mut by: BTreeMap<Recorded, Vec<Named>> =
         stopped.iter().map(|s| (s.process, Vec::new())).collect();
@@ -574,9 +477,6 @@ fn naming(rows: &Rows, stopped: &[Stopped]) -> BTreeMap<Recorded, Vec<Named>> {
     by
 }
 
-/// The processes of `stopped` whose records wait for a pass with a herdr
-/// snapshot: a row names the process and a pane, and no pane can be judged
-/// without one.
 pub fn needs_snapshot(rows: &Rows, stopped: &[Stopped]) -> BTreeSet<Recorded> {
     naming(rows, stopped)
         .into_iter()
@@ -585,14 +485,6 @@ pub fn needs_snapshot(rows: &Rows, stopped: &[Stopped]) -> BTreeSet<Recorded> {
         .collect()
 }
 
-/// The pane of a row whose process `s` ended on its polite stop. The pane
-/// is closed only when the record proves it: the process was in the pane
-/// at the polite stop, and herdr still names its pid in the pane, which no
-/// process has now. herdr gives no identity of its server, so a pane that
-/// names another process, or none, can be a foreign pane with an old id:
-/// it is kept. A record that does not parse keeps the pane of each row
-/// that names the process. A record with no pane keeps the pane of a row
-/// whose processes are all gone: no pane stop waits for that pane.
 fn after_polite_stop(named: &[Named], facts: &Facts, owned: &Owned, s: &Stopped) -> Cleanup {
     let mut out = Cleanup::default();
     for n in named {
@@ -627,15 +519,12 @@ fn after_polite_stop(named: &[Named], facts: &Facts, owned: &Owned, s: &Stopped)
     out
 }
 
-/// I4: the attempt that holds worker `worker_id`, if one does. A worker
-/// with one gets no second attempt.
 pub fn held_attempt<'a>(worker_id: &str, attempts: &'a [AttemptRow]) -> Option<&'a AttemptRow> {
     attempts
         .iter()
         .find(|a| a.worker_id == worker_id && a.state.holds())
 }
 
-/// Whether the process or the pane of `a` is alive.
 fn attempt_seen(a: &AttemptRow, facts: &Facts) -> Seen {
     match (a.process, &a.pane) {
         (Some(p), _) => facts.process(p),
@@ -648,7 +537,6 @@ fn attempt_seen(a: &AttemptRow, facts: &Facts) -> Seen {
     }
 }
 
-/// What 1 row names.
 #[derive(Clone)]
 struct Named {
     row: RowRef,
@@ -672,7 +560,6 @@ fn named_by_attempt(a: &AttemptRow) -> Named {
     }
 }
 
-/// The processes and panes that live rows of this host own.
 struct Owned {
     pids: BTreeSet<u32>,
     processes: BTreeSet<Recorded>,
@@ -680,10 +567,6 @@ struct Owned {
 }
 
 impl Owned {
-    /// What each attempt that holds and each live worker row of this host
-    /// owns, the orchestrator row too. The worker of an attempt that holds
-    /// owns its processes and pane too. A row of another host owns nothing
-    /// here: its PIDs and pane ids name nothing on this machine.
     fn of(rows: &Rows) -> Owned {
         let mut owned = Owned {
             pids: BTreeSet::new(),
@@ -706,8 +589,6 @@ impl Owned {
         for p in &n.processes {
             match p.pid_start {
                 Some(_) => self.processes.insert(*p),
-                // A pid with no start time can be any process with that
-                // pid: each one stays.
                 None => self.pids.insert(p.pid),
             };
         }
@@ -719,22 +600,12 @@ impl Owned {
     }
 }
 
-/// When [`clean_row`] looks at the pane of a row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PaneCheck {
-    /// Always: the pass ends this row now (I1).
     Always,
-    /// Only when a process of the row is stopped (I5). An ended row whose
-    /// processes are gone names a pane id that herdr can have given to
-    /// another pane.
     AfterProcessStop,
 }
 
-/// The stops and kept pane of the row `n`. A process is stopped when it is
-/// alive with its recorded start time and no live row owns it. `check`
-/// says when the pane is looked at. A pane that is looked at is closed
-/// when the process in it is a recorded process of the row, else it is
-/// kept.
 fn clean_row(facts: &Facts, owned: &Owned, n: &Named, check: PaneCheck) -> Cleanup {
     let mut out = Cleanup::default();
     for p in &n.processes {
@@ -830,7 +701,6 @@ mod tests {
         }
     }
 
-    /// `p` runs in a pane.
     fn runs(p: Recorded) -> InPane {
         InPane::Runs {
             pid: p.pid,
@@ -879,7 +749,6 @@ mod tests {
             ("T-5", "ready"),
         ]);
         let deps = deps(&[("T-3", "T-1"), ("T-3", "T-2"), ("T-5", "T-1")]);
-        // T-4 has no dependency: each of its 0 dependencies is met.
         assert_eq!(
             promotable(&tasks, &deps, &BTreeMap::new()),
             vec!["T-3", "T-4"]
@@ -919,7 +788,6 @@ mod tests {
             ("T-6", "pending"),
         ]);
         let deps = deps(&[("T-4", "T-1"), ("T-5", "T-2"), ("T-6", "T-3")]);
-        // T-1 has an unlanded branch, T-2 a landed one, T-3 no branch row.
         let landed = BTreeMap::from([("T-1".to_string(), false), ("T-2".to_string(), true)]);
         assert_eq!(promotable(&tasks, &deps, &landed), vec!["T-5", "T-6"]);
     }
@@ -1079,8 +947,6 @@ mod tests {
             Some(attempt(AttemptState::Ended)),
             None,
         );
-        // The pane runs the supervisor: the worker row proves it, the
-        // attempt row, which names only the agent, does not.
         let f = facts(
             &[(AGENT, Seen::Alive), (SUPERVISOR, Seen::Alive)],
             &[("w0:p1", runs(SUPERVISOR))],
@@ -1168,9 +1034,6 @@ mod tests {
         assert_eq!(attempt_id("T-1", 2), "T-1/A2");
     }
 
-    /// A worker row that ended, whose supervisor ended on its polite stop,
-    /// and the facts of a later pass with the record `proof` and the pane
-    /// `w0:p1` with the process `inside`.
     fn after_stop(proof: PaneProof, inside: InPane) -> (Rows, Facts) {
         let r = rows(worker("W", "stopped", false), None, None);
         let mut f = facts(
@@ -1180,12 +1043,57 @@ mod tests {
         f.stopped = vec![Stopped {
             process: SUPERVISOR,
             proof,
+            group: GroupLeft::None,
         }];
         (r, f)
     }
 
-    /// herdr names the pid of the supervisor in the pane, and no process
-    /// has that pid.
+    fn group_after_stop(group: GroupLeft) -> (Rows, Facts) {
+        let (r, mut f) = after_stop(PaneProof::None, InPane::Unknown);
+        f.stopped[0].group = group;
+        (r, f)
+    }
+
+    #[test]
+    fn a_group_whose_leader_is_gone_is_stopped_by_its_id() {
+        let (r, f) = group_after_stop(GroupLeft::Members);
+        let out = orphans(&r, &f);
+        assert_eq!(
+            out.stops,
+            [Stop {
+                row: RowRef::Worker("W".into()),
+                target: Target::Process {
+                    pid: SUPERVISOR.pid,
+                    pid_start: SUPERVISOR.pid_start.unwrap(),
+                    scope: ProcessScope::OrphanGroup,
+                },
+            }]
+        );
+        assert!(out.kept_groups.is_empty());
+    }
+
+    #[test]
+    fn a_new_leader_with_the_pid_of_the_gone_leader_keeps_its_group() {
+        let (r, f) = group_after_stop(GroupLeft::NewLeader);
+        let out = orphans(&r, &f);
+        assert!(out.stops.is_empty(), "{:?}", out.stops);
+        assert_eq!(
+            out.kept_groups,
+            [KeptGroup {
+                group: SUPERVISOR.pid,
+                row: RowRef::Worker("W".into()),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_gone_leader_with_no_group_left_gets_no_stop() {
+        let (r, f) = group_after_stop(GroupLeft::None);
+        let out = orphans(&r, &f);
+        assert!(out.stops.is_empty(), "{:?}", out.stops);
+        assert!(out.kept_groups.is_empty(), "{:?}", out.kept_groups);
+    }
+
     const GONE: InPane = InPane::Gone(101);
 
     fn kept_pane() -> Cleanup {
@@ -1195,6 +1103,7 @@ mod tests {
                 pane: "w0:p1".into(),
                 row: RowRef::Worker("W".into()),
             }],
+            kept_groups: vec![],
         }
     }
 
@@ -1245,7 +1154,6 @@ mod tests {
     fn a_record_with_no_pane_keeps_the_pane_once_each_process_of_the_row_is_gone() {
         let (r, f) = after_stop(PaneProof::None, GONE);
         assert_eq!(orphans(&r, &f), kept_pane());
-        // The scan did not reach the agent: the pane waits for its end.
         let (r, mut f) = after_stop(PaneProof::None, GONE);
         f.processes.insert(AGENT, Seen::Unknown);
         assert_eq!(orphans(&r, &f), Cleanup::default());
@@ -1267,7 +1175,6 @@ mod tests {
         assert_eq!(orphans(&r, &f), Cleanup::default());
         f.panes = None;
         assert_eq!(orphans(&r, &f), Cleanup::default());
-        // A live worker row now has the pane.
         let (mut r, f) = after_stop(proof(), GONE);
         let mut other = worker("V", "working", true);
         other.agent = None;

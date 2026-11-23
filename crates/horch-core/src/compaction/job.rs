@@ -1,16 +1,3 @@
-//! The compaction job's state machine (CTX-13, CTX-15, CTX-22, CTX-23).
-//!
-//! [`run`] waits for the pane to be idle, types the compact line, confirms
-//! the compaction by the transcript marker, waits for idle again, puts a
-//! switched pane back in its launch mode, types the resume line, and
-//! reports. A failure line that the harness prints in the
-//! pane after the send stops the job at once. Every effect goes through [`JobPorts`], so a
-//! fake runs the whole job in a test with a fake clock.
-//!
-//! Every end records 1 event and sends 1 report: `compacted` and the
-//! `reported` line on success, `compact-failed` and the `failed` line on a
-//! failure. Their own errors go to the log only.
-
 use std::time::Duration;
 
 use anyhow::Result;
@@ -20,36 +7,21 @@ use crate::telemetry::context::{CompactionMark, Reading};
 use crate::telemetry::readers::Unreadable;
 use crate::workspace::model::at_prompt;
 
-/// Everything the job does to the world.
 pub trait JobPorts {
-    /// The pane's agent status (`idle`, `done`, `working`, ...). None: no
-    /// status.
     fn pane_status(&self) -> Result<Option<String>>;
-    /// Type 1 line into the target pane.
     fn send(&self, line: &str) -> Result<()>;
-    /// The target pane's recent output, 1 terminal line per text line.
     fn pane_text(&self) -> Result<String>;
-    /// The target session's current context.
     fn reading(&self) -> Result<Reading, Unreadable>;
-    /// Record a ledger event on the target record.
     fn record_event(&self, event: &str, text: &str) -> Result<()>;
-    /// Send 1 untagged line to the orchestrator pane.
     fn report(&self, line: &str) -> Result<()>;
-    /// Put the pane back in its launch mode before the resume line: a Codex
-    /// pane with `permission_mode: plan` that `--request` switched to write
-    /// (X6). `None`: nothing to restore.
     fn restore_mode(&self) -> Option<Result<()>> {
         None
     }
-    /// Append 1 line to `job.log`.
     fn log(&self, step: Step, text: &str);
     fn sleep(&self, d: Duration);
-    /// Time since the job started (the test clock in tests).
     fn elapsed(&self) -> Duration;
 }
 
-/// What 1 job does. The CLI renders every placeholder of the templates
-/// except `{pre}`, `{post}`, `{step}` and `{reason}`, which the job fills.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JobPlan {
     pub compact_line: String,
@@ -57,33 +29,20 @@ pub struct JobPlan {
     pub resume_line: String,
     pub reported_tmpl: String,
     pub failed_tmpl: String,
-    /// The handoff path, as the `compacted` event names it.
     pub handoff: String,
     pub role: String,
-    /// The harness name in a failure reason (`pi said "..."`).
     pub harness: String,
-    /// The harness's compaction failure lines, as substrings
-    /// ([`CompactionCaps::failure_lines`](crate::harness::capabilities::CompactionCaps::failure_lines)).
     pub failure_lines: Vec<String>,
     pub log_path: String,
-    /// Between 2 polls: 2 s.
     pub poll: Duration,
-    /// Idle polls in a row that count as idle: 2.
     pub idle_polls: u8,
-    /// The wait for idle before a send (`--timeout`, default 1800 s).
     pub idle_timeout: Duration,
-    /// With more sends allowed: send again after this with no marker (30 s).
     pub resend_after: Duration,
-    /// The wait for the marker after the first send (600 s).
     pub marker_timeout: Duration,
-    /// The wait for idle after the marker (600 s).
     pub settle_timeout: Duration,
-    /// The wait for a reading that is not pending (180 s).
     pub reading_timeout: Duration,
 }
 
-/// The steps of the job. `Start`: the job did not start, or the child
-/// refused before its first job step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Step {
     Start,
@@ -97,8 +56,6 @@ pub enum Step {
     Report,
 }
 
-/// [`Step::as_str`] by variant order. The `step_names_are_kebab_case_in_order`
-/// test pins it.
 const STEP_NAMES: [&str; 9] = [
     "start",
     "wait-idle",
@@ -112,7 +69,6 @@ const STEP_NAMES: [&str; 9] = [
 ];
 
 impl Step {
-    /// The kebab-case name in `job.json`, the log and the event text.
     pub fn as_str(self) -> &'static str {
         STEP_NAMES[self as usize]
     }
@@ -124,14 +80,12 @@ impl std::fmt::Display for Step {
     }
 }
 
-/// Why the job stopped.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JobFailure {
     pub step: Step,
     pub reason: String,
 }
 
-/// A confirmed compaction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JobOutcome {
     pub pre: Option<u64>,
@@ -139,7 +93,6 @@ pub struct JobOutcome {
     pub mark: CompactionMark,
 }
 
-/// Run the job. On failure the event and the report are already sent.
 pub fn run(ports: &dyn JobPorts, plan: &JobPlan) -> Result<JobOutcome, JobFailure> {
     let mut pre = None;
     let result = steps(ports, plan, &mut pre);
@@ -176,9 +129,6 @@ fn steps(
         .map_err(|e| failed(Step::Start, format!("no reading of the session: {e}")))?;
     let pre = first.tokens;
     *pre_out = pre;
-    // A marker at or after `start` is new. Every marker already in the
-    // file is at or before the newest one, so 1 past it is enough, and the
-    // job reads no file itself.
     let start = first.last_compaction.as_ref().map_or(0, |m| m.offset + 1);
 
     let mark = send_until_marker(ports, plan, start)?;
@@ -196,32 +146,22 @@ fn failed(step: Step, reason: String) -> JobFailure {
     JobFailure { step, reason }
 }
 
-/// One send of the compact line, and what the wait for its marker needs.
 struct Sent {
-    /// The pane text before the send.
     before: Option<String>,
-    /// The first byte offset of a new marker.
     start: u64,
-    /// When the first send happened.
     first: Duration,
-    /// When this send happened.
     at: Duration,
-    /// This send's number, from 1.
     n: u8,
     max: u8,
 }
 
-/// What 1 poll of the wait for the marker found.
 enum Poll {
     Marked(CompactionMark),
     Failed(JobFailure),
-    /// No marker after `resend_after`, and more sends are allowed.
     Resend,
     Wait,
 }
 
-/// Send the compact line, and send it again when no marker comes within
-/// `resend_after` and more sends are allowed.
 fn send_until_marker(
     ports: &dyn JobPorts,
     plan: &JobPlan,
@@ -257,7 +197,6 @@ fn send_until_marker(
     }
 }
 
-/// Poll until a marker, a failure, or the time for a resend.
 fn await_marker(ports: &dyn JobPorts, plan: &JobPlan, sent: &Sent) -> Poll {
     loop {
         let poll = poll_marker(ports, plan, sent);
@@ -288,8 +227,6 @@ fn poll_marker(ports: &dyn JobPorts, plan: &JobPlan, sent: &Sent) -> Poll {
     }
 }
 
-/// The poll of a wait with no marker and no failure line: the timeout, the
-/// resend, or on.
 fn poll_clock(ports: &dyn JobPorts, plan: &JobPlan, sent: &Sent) -> Poll {
     let now = ports.elapsed();
     if now.saturating_sub(sent.first) >= plan.marker_timeout {
@@ -302,11 +239,8 @@ fn poll_clock(ports: &dyn JobPorts, plan: &JobPlan, sent: &Sent) -> Poll {
     }
 }
 
-/// Wait for idle, put a switched pane back in its launch mode, and type the
-/// resume line.
 fn resume(ports: &dyn JobPorts, plan: &JobPlan) -> Result<(), JobFailure> {
     wait_idle(ports, plan, Step::WaitIdleAfter, plan.settle_timeout)?;
-    // Before the resume line: the switch needs the pane at its prompt.
     if let Some(restored) = ports.restore_mode() {
         ports.log(Step::RestoreMode, "back to the launch mode");
         restored.map_err(|e| failed(Step::RestoreMode, format!("{e:#}")))?;
@@ -317,8 +251,6 @@ fn resume(ports: &dyn JobPorts, plan: &JobPlan) -> Result<(), JobFailure> {
         .map_err(|e| failed(Step::Resume, format!("{e:#}")))
 }
 
-/// The token count of the first reading that is not pending, or None at
-/// `reading_timeout`.
 fn wait_post_tokens(ports: &dyn JobPorts, plan: &JobPlan) -> Option<u64> {
     ports.log(Step::WaitReading, "waiting for a response after the marker");
     let begin = ports.elapsed();
@@ -333,9 +265,6 @@ fn wait_post_tokens(ports: &dyn JobPorts, plan: &JobPlan) -> Option<u64> {
     }
 }
 
-/// Wait for `idle_polls` polls in a row whose status is at the prompt
-/// ([`at_prompt`]: `idle` or `done`). Any other status, none, or a failed
-/// poll starts the count again.
 fn wait_idle(
     ports: &dyn JobPorts,
     plan: &JobPlan,
@@ -361,9 +290,6 @@ fn wait_idle(
     }
 }
 
-/// The pane text right before a send, so that only lines after the send
-/// count. None: no failure lines, or the pane did not read (then the job
-/// waits for the marker only).
 fn pane_before(ports: &dyn JobPorts, plan: &JobPlan) -> Option<String> {
     if plan.failure_lines.is_empty() {
         return None;
@@ -380,9 +306,6 @@ fn pane_before(ports: &dyn JobPorts, plan: &JobPlan) -> Option<String> {
     }
 }
 
-/// The first failure line that the pane shows more often now than in
-/// `before`. A count, not a position: a TUI redraws its screen, and old
-/// lines leave the scrollback, so neither makes an old line new.
 fn new_failure(ports: &dyn JobPorts, plan: &JobPlan, before: &str) -> Option<String> {
     let now = ports.pane_text().ok()?;
     let failure = |l: &&str| plan.failure_lines.iter().any(|f| l.contains(f.as_str()));
@@ -394,7 +317,6 @@ fn new_failure(ports: &dyn JobPorts, plan: &JobPlan, before: &str) -> Option<Str
         .map(|line| line.chars().take(MAX_LINE_CHARS).collect())
 }
 
-/// The longest harness line that a report quotes.
 const MAX_LINE_CHARS: usize = 200;
 
 fn best_effort(ports: &dyn JobPorts, step: Step, result: Result<()>) {
@@ -403,13 +325,10 @@ fn best_effort(ports: &dyn JobPorts, step: Step, result: Result<()>) {
     }
 }
 
-/// A token count, or `unknown`.
 fn number(n: Option<u64>) -> String {
     n.map_or_else(|| "unknown".into(), |n| n.to_string())
 }
 
-/// Fill the 4 tokens the job knows. Every other placeholder was rendered
-/// by the CLI.
 fn fill(tmpl: &str, pre: Option<u64>, post: Option<u64>, step: Step, reason: &str) -> String {
     tmpl.replace("{pre}", &number(pre))
         .replace("{post}", &number(post))
@@ -424,19 +343,15 @@ mod tests {
 
     use super::*;
 
-    /// A pane that is always idle and compacts on the first send. Every
-    /// effect is 1 entry in `trail`.
     struct Fake {
         trail: RefCell<Vec<String>>,
         sent: Cell<u8>,
         clock: Cell<Duration>,
         restore: Option<Result<(), String>>,
-        /// The marker shows from this send on; 0: never.
         marker_on_send: u8,
         idle: bool,
         pending: bool,
         tokens_after: u64,
-        /// The pane text per `pane_text` call; the last one repeats.
         texts: RefCell<Vec<String>>,
     }
 
@@ -549,8 +464,6 @@ mod tests {
         }
     }
 
-    /// X6: a plan pane goes back to read-only after the marker and idle,
-    /// before the resume line, so the worker resumes read-only.
     #[test]
     fn a_plan_pane_is_restored_before_the_resume_line() {
         let fake = Fake::new(Some(Ok(())));
@@ -561,8 +474,6 @@ mod tests {
         );
     }
 
-    /// A failed restore fails the job at `restore-mode`: 1 event, 1
-    /// report, and no resume line.
     #[test]
     fn a_failed_restore_stops_the_job_before_the_resume_line() {
         let fake = Fake::new(Some(Err("the menu did not open".into())));
@@ -579,8 +490,6 @@ mod tests {
         );
     }
 
-    /// Without a mode to restore, the job goes from the marker to the
-    /// resume line.
     #[test]
     fn no_restore_without_a_mode_to_restore() {
         let fake = Fake::new(None);
@@ -588,8 +497,6 @@ mod tests {
         assert_eq!(fake.trail()[..2], ["send /compact", "send resume"]);
     }
 
-    /// With more sends allowed, a send with no marker is repeated after
-    /// `resend_after`, and the marker of the second send ends the wait.
     #[test]
     fn a_missing_marker_sends_the_line_again_after_the_resend_wait() {
         let mut fake = Fake::new(None);
@@ -603,7 +510,6 @@ mod tests {
         );
     }
 
-    /// With 1 send allowed, no marker fails the job at `wait-marker`.
     #[test]
     fn no_marker_fails_the_job_at_wait_marker_after_the_timeout() {
         let mut fake = Fake::new(None);
@@ -618,12 +524,9 @@ mod tests {
                 .count(),
             1
         );
-        // 1 s to idle (2 polls), then the 60 s marker wait.
         assert_eq!(fake.elapsed(), Duration::from_secs(61));
     }
 
-    /// A failure line that is new after the send stops the job at once and
-    /// names the harness.
     #[test]
     fn a_new_failure_line_stops_the_wait_for_the_marker() {
         let mut fake = Fake::new(None);
@@ -634,11 +537,9 @@ mod tests {
         let fail = run(&fake, &p).unwrap_err();
         assert_eq!(fail.step, Step::WaitMarker);
         assert_eq!(fail.reason, "codex said \"boom: no room\"");
-        // Only the 1 s to idle: the first marker poll sees the failure.
         assert_eq!(fake.elapsed(), Duration::from_secs(1));
     }
 
-    /// A failure line that was in the pane before the send is not new.
     #[test]
     fn an_old_failure_line_does_not_stop_the_job() {
         let fake = Fake::new(None);
@@ -668,8 +569,6 @@ mod tests {
         assert_eq!(fake.trail().last().unwrap(), "report ok 100 -> 7");
     }
 
-    /// A reading that stays pending past `reading_timeout` falls back to the
-    /// marker's own post count.
     #[test]
     fn a_pending_reading_falls_back_to_the_marker_post_tokens() {
         let mut fake = Fake::new(None);
@@ -677,7 +576,6 @@ mod tests {
         fake.tokens_after = 7;
         let done = run(&fake, &plan()).unwrap();
         assert_eq!(done.post, Some(5));
-        // 1 s to idle before the send, 1 s after the marker, 10 s reading wait.
         assert_eq!(fake.elapsed(), Duration::from_secs(12));
     }
 

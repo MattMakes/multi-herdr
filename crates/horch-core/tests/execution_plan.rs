@@ -1,7 +1,3 @@
-//! ARC-15, ARC-16, ARC-18: spawn planning is pure, the service applies a
-//! plan in a fixed order and leaves no phantom live record, and the worker
-//! runs in a fixed order and records its agent's exit.
-
 use std::cell::RefCell;
 use std::path::Path;
 
@@ -37,7 +33,6 @@ fn core_dir() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
 }
 
-/// The repo roster without reading `HOME` or `HORCH_TEAMMATES_DIR`.
 fn roster() -> Roster {
     let mut r = Roster::builtin().unwrap();
     r.overlay(&core_dir().join("../../teammates")).unwrap();
@@ -74,7 +69,6 @@ fn resume(key: &str, task: &str) -> SpawnRequest {
     r
 }
 
-/// A finished worker record, as a ledger holds it.
 fn record(tier: &str, agent: &str, model: &str) -> LedgerRecordV1 {
     LedgerRecordV1 {
         record_id: "rec-1".into(),
@@ -93,8 +87,6 @@ fn record(tier: &str, agent: &str, model: &str) -> LedgerRecordV1 {
     }
 }
 
-/// The bundled catalog, no host skills read: what planning sees for a
-/// teammate without operator or plugin skills.
 fn bundled_skills() -> SkillResolution {
     SkillResolution::read(
         SkillCatalog::bundled().unwrap(),
@@ -105,8 +97,6 @@ fn bundled_skills() -> SkillResolution {
     .unwrap()
 }
 
-/// Plan `req` against a quota fixture, reading the gate inputs only when the
-/// shell would.
 fn plan(
     req: &SpawnRequest,
     fixture: &str,
@@ -130,8 +120,6 @@ fn plan(
     };
     plan_launch(req, &inputs)
 }
-
-// ─── ARC-15 ─────────────────────────────────────────────────────────────────
 
 #[test]
 fn arc_15_plan_deterministic() {
@@ -159,7 +147,6 @@ fn arc_15_plan_deterministic() {
     }
 }
 
-/// One row: what a request plans to, in short.
 #[derive(Debug, PartialEq)]
 struct Row {
     decision: String,
@@ -222,7 +209,7 @@ fn row(result: Result<ExecutionPlan, PlanError>) -> Row {
     }
 }
 
-#[allow(clippy::too_many_arguments)] // test row builder: the arguments are the row columns
+#[allow(clippy::too_many_arguments)]
 fn ok(
     decision: &str,
     teammate: &str,
@@ -259,7 +246,6 @@ fn err(kind: &str) -> Row {
 fn arc_15_plan_table() {
     let research = ["brainstorm", "handoff", "research-codebase", "trace"];
     let implementation = ["check", "debug", "execute", "handoff", "tdd"];
-    // opus and codex-sol also name codebase-design under available_skills.
     let builder = [
         "check",
         "codebase-design",
@@ -514,8 +500,6 @@ fn arc_15_plan_table() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
-/// The plan's record: Planned, idle placeholder, the spawn history and the
-/// gate's line; `finish_plan` names the role.
 #[test]
 fn arc_15_plan_record_and_finish() {
     let p = plan(&req("researcher", ""), "claude-exhausted-codex-ok", None).unwrap();
@@ -544,7 +528,6 @@ fn arc_15_plan_record_and_finish() {
     assert_eq!(r.kind, "worker");
 }
 
-/// A skill catalog the teammate cannot load fails before any side effect.
 #[test]
 fn invalid_selection_is_refused_before_spawn_side_effects() {
     let mut roster = roster();
@@ -571,9 +554,6 @@ fn invalid_selection_is_refused_before_spawn_side_effects() {
     assert!(e.to_string().contains("missing-bundle"), "{e}");
 }
 
-/// `roster()` with `name` changed to a teammate whose only skill is the
-/// operator skill `mine` under `ops`: no phase, no `skills:`, no
-/// `available_skills:`.
 fn operator_only(name: &str, ops: &Path) -> Roster {
     let dir = ops.join("mine");
     std::fs::create_dir_all(&dir).unwrap();
@@ -597,7 +577,6 @@ fn operator_only(name: &str, ops: &Path) -> Roster {
     roster
 }
 
-/// Plan a spawn of `name` from `roster`, its skills resolved with `supported`.
 fn plan_skills_of(
     roster: &Roster,
     name: &str,
@@ -627,9 +606,6 @@ fn plan_skills_of(
     plan_launch(&req(name, "x"), &inputs)
 }
 
-/// SKL-12: the spawn plan applies the launch's support rule. An operator
-/// skill alone activates a skill, so an agent that cannot load skills fails
-/// the plan, before a record exists, as the launch would fail.
 #[test]
 fn skl_12_spawn_plan_rejects_an_operator_only_teammate_the_launch_rejects() {
     let tmp = tempfile::tempdir().unwrap();
@@ -639,13 +615,10 @@ fn skl_12_spawn_plan_rejects_an_operator_only_teammate_the_launch_rejects() {
     assert!(matches!(e, PlanError::SkillUnsupported(_)), "{e}");
     assert!(e.to_string().contains("cannot load skills here"), "{e}");
 
-    // An agent that loads skills plans the operator skill.
     let plan = plan_skills_of(&roster, "sonnet", harness_support).unwrap();
     assert_eq!(plan.skills.activated_ids(), ["mine"]);
 }
 
-/// SKL-12 with the real adapter: Codex on Windows cannot load skills, so
-/// an operator-only Codex teammate fails the plan, not the launch.
 #[cfg(windows)]
 #[test]
 fn skl_12_codex_on_windows_rejects_an_operator_only_teammate_at_the_plan() {
@@ -656,10 +629,6 @@ fn skl_12_codex_on_windows_rejects_an_operator_only_teammate_at_the_plan() {
     assert!(e.to_string().contains("CODEX_HOME"), "{e}");
 }
 
-// ─── ARC-17 (conversion) ────────────────────────────────────────────────────
-
-/// Every record of every legacy ledger oracle converts to an `Execution` and
-/// back to the same bytes.
 #[test]
 fn arc_17_execution_conversion_lossless() {
     let dir = core_dir().join("tests/oracles/ledgers");
@@ -676,7 +645,6 @@ fn arc_17_execution_conversion_lossless() {
             "{name} round-trips"
         );
     }
-    // The new kinds and states round-trip through their legacy keys.
     let mut e = to_execution(&record("sonnet", "claude", "sonnet")).unwrap();
     for kind in [
         ExecutionKind::Candidate {
@@ -703,11 +671,7 @@ fn arc_17_execution_conversion_lossless() {
     assert_eq!(e.idempotency_key(), None);
 }
 
-// ─── ARC-16 ─────────────────────────────────────────────────────────────────
-
 struct World {
-    /// The fleetd of the session records (T-884). Declared first, so it
-    /// drops before the folder.
     _fleetd: horch_core::fleetd::fleet_runtime::adapters::channel_server::ChannelServer,
     _tmp: tempfile::TempDir,
     ctx: RuntimeContext,
@@ -716,8 +680,6 @@ struct World {
     fake: FakeWorkspace,
 }
 
-/// A temp state root, project and mailbox, and a fake workspace `w1` whose
-/// root pane is `p1`.
 fn world(faults: Option<&str>) -> World {
     let tmp = tempfile::tempdir().unwrap();
     let project = tmp.path().join("project");
@@ -763,6 +725,7 @@ impl World {
             workspace: &self.fake,
             mailbox: &self.mailbox,
             tile: &tile,
+            open_pane: None,
             ledger_worker: None,
             task_yaml: None,
         };
@@ -810,8 +773,6 @@ fn arc_16_service_apply_order() {
     );
 }
 
-/// A relative `FLEET_ROOT` is relative to the spawner's cwd. The brief
-/// carries it absolute, so the worker accepts it.
 #[test]
 fn the_brief_carries_a_relative_fleet_root_as_absolute() {
     let mut w = world(None);
@@ -893,9 +854,6 @@ fn arc_16_run_failure_closes_pane() {
     }
 }
 
-/// A workspace whose `pane_run` also acts out a fast worker: before the
-/// spawner gets the call's answer, the worker sets its record to `worker`.
-/// A loaded machine can schedule the spawner that late (cmp_05, D18).
 struct FastWorker<'a> {
     inner: &'a FakeWorkspace,
     store: &'a ExecutionStore,
@@ -949,11 +907,6 @@ impl WorkspaceClient for FastWorker<'_> {
     }
 }
 
-/// The worker runs once `pane_run` answers, and the spawner records the
-/// pane after that. What the worker recorded in between stays: `Starting`
-/// never takes a record back from `Running`, `Done` or `Failed`. Before
-/// D18 a `Done` became `Starting` again, and the dataset coordinator
-/// recorded the finished candidate as `pane_vanished`.
 #[test]
 fn arc_16_mark_starting_keeps_what_the_worker_recorded() {
     for worker in [
@@ -977,6 +930,7 @@ fn arc_16_mark_starting_keeps_what_the_worker_recorded() {
             workspace: &fast,
             mailbox: &w.mailbox,
             tile: &|_, _| {},
+            open_pane: None,
             ledger_worker: None,
             task_yaml: None,
         };
@@ -991,10 +945,6 @@ fn arc_16_mark_starting_keeps_what_the_worker_recorded() {
     }
 }
 
-/// The other writers that could take a record back (D18):
-/// `mark_running` (the worker) keeps an end the coordinator wrote while the
-/// worker started, and `end_live` (a timeout, cancel or launch failure)
-/// keeps an end the worker wrote after the caller's look.
 #[test]
 fn arc_16_guarded_writers_keep_an_end() {
     let failed = ExecutionStatus::Failed {
@@ -1004,7 +954,6 @@ fn arc_16_guarded_writers_keep_an_end() {
         stage: LaunchStage::Split,
         reason: "abandoned".into(),
     };
-    // (before, after mark_running)
     for (before, after) in [
         (ExecutionStatus::Planned, ExecutionStatus::Running),
         (ExecutionStatus::Starting, ExecutionStatus::Running),
@@ -1023,7 +972,6 @@ fn arc_16_guarded_writers_keep_an_end() {
             assert!(r.finished_at.is_none(), "{before:?}");
         }
     }
-    // (before, state end_live returns and leaves)
     for (before, after) in [
         (ExecutionStatus::Planned, failed.clone()),
         (ExecutionStatus::Starting, failed.clone()),
@@ -1054,10 +1002,6 @@ fn arc_16_guarded_writers_keep_an_end() {
     assert!(store.end_live("nope", failed).is_err());
 }
 
-/// The recovery rule: a `Planned` record with no pane is never live, and
-/// once [`ABANDONED_AFTER`] has passed, the next spawn closes it as
-/// `LaunchFailed` and frees its role. A younger one is left alone: its
-/// spawner may still be on its way to a pane.
 #[test]
 fn arc_16_planned_record_recovery() {
     let w = world(None);
@@ -1089,8 +1033,6 @@ fn arc_16_planned_record_recovery() {
     assert_eq!(r.status, "done");
 }
 
-// ─── ARC-18 ─────────────────────────────────────────────────────────────────
-
 fn brief(record_id: &str) -> Brief {
     Brief {
         schema: SCHEMA,
@@ -1115,10 +1057,10 @@ fn brief(record_id: &str) -> Brief {
         fleet_root: None,
         controller: None,
         task_yaml: None,
+        backend: Default::default(),
     }
 }
 
-/// Records each step; the agent exits with `exit`, or fails to start.
 struct Steps<'a> {
     calls: Vec<String>,
     exit: Result<Option<i32>, &'static str>,
@@ -1181,7 +1123,6 @@ fn arc_18_worker_startup_order() {
         ]
     );
 
-    // An agent that cannot start is still recorded, then the error returns.
     let mut steps = Steps {
         calls: Vec::new(),
         exit: Err("agent CLI 'claude' not found on PATH"),
@@ -1194,7 +1135,6 @@ fn arc_18_worker_startup_order() {
 
 fn store_with(record: LedgerRecordV1) -> (tempfile::TempDir, ExecutionStore) {
     let tmp = tempfile::tempdir().unwrap();
-    // A test of the store writes with the writer of fleetd (T-884).
     let store = ExecutionStore::for_project(tmp.path(), "/p").with_writer(std::sync::Arc::new(
         horch_core::taskledger::store::LedgerWriter::fleetd(),
     ));
@@ -1202,7 +1142,6 @@ fn store_with(record: LedgerRecordV1) -> (tempfile::TempDir, ExecutionStore) {
     (tmp, store)
 }
 
-/// Fails at `fail_at` (`enter_context` or `register`); records each step.
 struct FailingSteps<'a> {
     calls: Vec<String>,
     fail_at: &'static str,
@@ -1243,10 +1182,7 @@ impl WorkerSteps for FailingSteps<'_> {
     }
 }
 
-/// A worker that fails at `fail_at` ends its `Starting` record at once and
-/// never launches the agent; the original error returns.
 fn startup_failure_records_failed(fail_at: &'static str) {
-    // As a spawn leaves it: inserted `Planned`, then given its pane.
     let mut live = record("sonnet", "claude", "sonnet");
     live.set_state(ExecutionStatus::Planned);
     let (_tmp, store) = store_with(live);
@@ -1284,9 +1220,6 @@ fn arc_18_enter_context_failure_records_failed() {
     startup_failure_records_failed("enter_context");
 }
 
-/// W2: `record_exit` says when it ended a live record (the agent left
-/// without `horch done`), and the worker then writes an `exited` event. A
-/// record that `horch done` ended is not ended again.
 #[test]
 fn w2_agent_exit_before_done_leaves_an_exited_event() {
     let mut live = record("sonnet", "claude", "sonnet");
@@ -1327,7 +1260,6 @@ fn arc_18_agent_exit_recorded() {
     let mut live = record("sonnet", "claude", "sonnet");
     live.status = "working".into();
 
-    // A worker whose agent exits 3: Failed(AgentExited{3}), exit code 3.
     let (_tmp, store) = store_with(live.clone());
     let mut steps = Steps {
         calls: Vec::new(),
@@ -1346,7 +1278,6 @@ fn arc_18_agent_exit_recorded() {
     assert_eq!(r.status, "done");
     assert!(r.finished_at.is_some());
 
-    // Exit 0 ends the execution as Done.
     let (_tmp, store) = store_with(live.clone());
     let mut steps = Steps {
         calls: Vec::new(),
@@ -1359,7 +1290,6 @@ fn arc_18_agent_exit_recorded() {
         ExecutionStatus::Done
     );
 
-    // A signal: no code, exit 1.
     let (_tmp, store) = store_with(live.clone());
     let mut steps = Steps {
         calls: Vec::new(),
@@ -1374,7 +1304,6 @@ fn arc_18_agent_exit_recorded() {
         }
     );
 
-    // `horch done` ran first: the state stays Done, the code is recorded.
     let mut finished = live.clone();
     finished.status = "done".into();
     let (_tmp, store) = store_with(finished);
@@ -1383,7 +1312,6 @@ fn arc_18_agent_exit_recorded() {
     assert_eq!(r.execution_status(), ExecutionStatus::Done);
     assert_eq!(r.exit_code, Some(3));
 
-    // An orchestrator keeps its state.
     let mut orch = live;
     orch.kind = KIND_ORCHESTRATOR.into();
     let (_tmp, store) = store_with(orch);
@@ -1391,18 +1319,26 @@ fn arc_18_agent_exit_recorded() {
     assert!(store.get("rec-1").unwrap().execution_status().is_live());
 }
 
-// ─── horch spawn --model ────────────────────────────────────────────────────
-
-/// `req` with the operator's `--model`.
 fn with_model(mut r: SpawnRequest, model: &str) -> SpawnRequest {
     r.model = Some(model.to_string());
     r
 }
 
-/// The `claude` command line the plan's launch teammate builds.
+fn stub_sandbox_tools(bin: &Path) {
+    std::fs::create_dir_all(bin).unwrap();
+    for tool in ["bwrap", "socat"] {
+        let path = bin.join(tool);
+        std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+        horch_platform::fs::make_executable(&path).unwrap();
+    }
+}
+
 fn launch_args(p: &ExecutionPlan) -> Vec<String> {
     let w = world(None);
-    let env = horch_core::harness::launch::LaunchEnv::from_context(&w.ctx);
+    let mut env = horch_core::harness::launch::LaunchEnv::from_context(&w.ctx);
+    let bin = tempfile::tempdir().unwrap();
+    stub_sandbox_tools(bin.path());
+    env.path = Some(bin.path().as_os_str().to_owned());
     let session = horch_core::harness::launch::session_for(
         p.launch.teammate.agent.capabilities(),
         &p.launch.session,
@@ -1425,8 +1361,6 @@ fn has_model_flag(args: &[String], model: &str) -> bool {
     args.windows(2).any(|w| w[0] == "--model" && w[1] == model)
 }
 
-/// The operator's `--model fable` starts an ordinary Claude teammate on
-/// Fable: the launch, the record and the plan all name it.
 #[test]
 fn spawn_model_fable_is_allowed_for_an_ordinary_claude_teammate() {
     for model in ["fable", "claude-fable-5-2"] {
@@ -1443,8 +1377,6 @@ fn spawn_model_fable_is_allowed_for_an_ordinary_claude_teammate() {
     }
 }
 
-/// A teammate file that says `model: fable` is still refused: only the
-/// operator's flag opens the reserved tier.
 #[test]
 fn a_teammate_file_on_fable_is_still_refused_without_the_flag() {
     let mut r = roster();
@@ -1474,8 +1406,6 @@ fn a_teammate_file_on_fable_is_still_refused_without_the_flag() {
     assert!(e.to_string().contains("reserved"), "{e}");
 }
 
-/// A Claude model on a Codex teammate is refused, and the message says to
-/// pick a Claude teammate. A Codex model on a Claude teammate is refused too.
 #[test]
 fn spawn_model_must_suit_the_teammates_agent() {
     let e = plan(&with_model(req("codex-sol", "x"), "fable"), "all-ok", None).unwrap_err();
@@ -1492,8 +1422,6 @@ fn spawn_model_must_suit_the_teammates_agent() {
     assert!(matches!(e, PlanError::BadModel(_)), "{e}");
 }
 
-/// With `--model`, the gate never substitutes a fallback: it refuses
-/// instead, and `--force` spawns the chosen model on the chosen teammate.
 #[test]
 fn spawn_model_never_substitutes_a_fallback() {
     let plain = plan(
@@ -1518,8 +1446,6 @@ fn spawn_model_never_substitutes_a_fallback() {
     assert_eq!(p.launch.teammate.model.as_deref(), Some("fable"));
 }
 
-/// A resume of an override record starts the same model again. A record
-/// with a reserved model and no override flag is still refused.
 #[test]
 fn resume_keeps_an_override_and_refuses_a_hand_edited_record() {
     let mut rec = record("sonnet", "claude", "fable");

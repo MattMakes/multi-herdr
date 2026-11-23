@@ -1,31 +1,3 @@
-//! The release test of Phase 7 (`docs/specs/fleetd/design.md`, "What a
-//! release does to a run in flight", row Phase 7; R1 of
-//! `docs/tickets/fleetd-p7/MAP.md`).
-//!
-//! An interactive worker starts on Phase 6. After the update, it ends as
-//! before, and the next attempt of its task runs in exec mode. The update
-//! changes no ledger row, and the new attempt gets the window 256000.
-//!
-//! The Phase 6 ledger is built by the real migration steps up to
-//! [`schema::PHASE_6_VERSION`], the run and its idea in flight by the real
-//! functions, then the rows of a run in flight are written as a Phase 6
-//! binary left them: 1 task `running` with its live interactive push
-//! attempt, its worker, its lease and its task folder, and the `fleetd` row
-//! of the Phase 6 fleetd. The attempt folder has no exec stream
-//! ([`TRANSCRIPT_JSONL`]), so the attempt is interactive.
-//!
-//! The interactive worker is a stand-in: a `sh` process, recorded as the
-//! agent of the attempt. It waits on its stdin, then runs
-//! `horch ledger handoff` as its child, so its attempt is in the process
-//! chain of the command, and exits as the pane of a handed-off worker
-//! does. The old fleetd is a stand-in too: a `sleep` process that the
-//! `fleetd` row names.
-//!
-//! The update: the test stops the old fleetd, migrates the ledger to
-//! [`schema::PHASE_7_VERSION`] and starts `horch fleetd` of this branch,
-//! with the fake herdr and the fake agents. Each process uses the temporary
-//! folders of its harness.
-
 #![cfg(unix)]
 
 use std::collections::BTreeMap;
@@ -47,38 +19,23 @@ use horch_e2e::harness::{fixtures, wait_for_or, Harness};
 use rusqlite::Connection;
 use serde_json::Value;
 
-/// The fleet clock of the Phase 6 `fleetd` row at the update.
 const CLOCK: i64 = 6000;
-/// The lease of the live attempt ends 1 day of the fleet clock after the
-/// update: no lease ends in a test.
 const LEASE_END: i64 = CLOCK + 86_400;
 
-/// The persona of the task. Its file names no mode, and its CLI, Claude
-/// Code, has an exec adapter: a new attempt runs exec. Its fake agent is
-/// `fake-claude`.
 const PERSONA: &str = "opus";
-/// The worker of the live interactive attempt.
 const WORKER: &str = "w-interactive";
 
-/// The `fleet.toml` of each test: 1 pass each second.
 const FLEET_TOML: &str = "pass_period_s = 1\n";
 
-/// The guard of [`Flight::wait_claude_conformance`] against a hang. A
-/// conformance run ends long before it on any host.
 const HANG_GUARD: Duration = Duration::from_secs(1200);
 
-/// The window of a new attempt (FR-9; `teammates/_base/context-windows.md`).
 const WINDOW: &str = "256000";
 
-/// The script of the interactive worker. `$1` is the `horch` binary, `$2`
-/// the handoff file and `$3` the folder of the outputs. It waits for 1
-/// line, runs `horch ledger handoff`, writes its exit code, and exits.
 const INTERACTIVE_WORKER: &str = r#"read go
 "$1" ledger handoff "$2" >"$3/handoff.out" 2>&1
 echo $? >"$3/handoff.code"
 "#;
 
-/// A `sleep` process: the old fleetd. Killed at the end of the test.
 struct OldFleetd {
     child: Child,
     started: u64,
@@ -91,7 +48,6 @@ impl OldFleetd {
         OldFleetd { child, started }
     }
 
-    /// Stop it, and wait until it is gone.
     fn stop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
@@ -104,13 +60,10 @@ impl Drop for OldFleetd {
     }
 }
 
-/// The interactive worker: the `sh` process of [`INTERACTIVE_WORKER`],
-/// started before the update. Killed at the end of the test.
 struct InteractiveWorker {
     child: Child,
     stdin: Option<ChildStdin>,
     started: u64,
-    /// The folder of its outputs.
     out: PathBuf,
 }
 
@@ -150,8 +103,6 @@ impl InteractiveWorker {
         procid::alive(self.pid(), Some(self.started))
     }
 
-    /// Run `horch ledger handoff`. It must pass. Gives the exit status of
-    /// the worker, which exits after the command.
     fn hand_off(&mut self) -> ExitStatus {
         let stdin = self.stdin.as_mut().expect("the stdin of the worker");
         stdin.write_all(b"go\n").unwrap();
@@ -179,10 +130,6 @@ impl Drop for InteractiveWorker {
     }
 }
 
-/// The run in flight on Phase 6: the ledger, the old fleetd, the
-/// interactive worker and fleetd of this branch after the update. The
-/// fields drop in this order: each process stops before the teardown of
-/// the harness checks that none is left.
 struct Flight {
     fleetds: Fleetds,
     worker: InteractiveWorker,
@@ -192,8 +139,6 @@ struct Flight {
 }
 
 impl Flight {
-    /// The Phase 6 run of the test `name`, with its interactive worker and
-    /// the old fleetd. fleetd of this branch does not run yet.
     fn on_phase_6(name: &str) -> Flight {
         let h = world(name);
         let old_fleetd = OldFleetd::start();
@@ -213,31 +158,24 @@ impl Flight {
         }
     }
 
-    /// The update of the ledger: stop the old fleetd and migrate the
-    /// ledger to the schema of Phase 7.
     fn migrate(&mut self) {
         self.old_fleetd.stop();
         let mut conn = read(&self.h);
         schema::migrate_to(&mut conn, schema::PHASE_7_VERSION).unwrap();
     }
 
-    /// The whole update: [`Flight::migrate`], then start fleetd of this
-    /// branch and wait for 2 passes.
     fn update(&mut self) {
         self.migrate();
         self.fleetds.start(&self.h, "fleetd");
         self.wait_passes(2);
     }
 
-    /// The `at` of the heartbeat of fleetd: it changes at the end of each
-    /// pass.
     fn heartbeat_at(&self) -> Option<String> {
         let path = self.h.fleet_root().join("run").join("heartbeat.json");
         let hb: Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
         hb["at"].as_str().map(str::to_string)
     }
 
-    /// Wait for the end of `n` passes of fleetd after this call.
     fn wait_passes(&self, n: usize) {
         for _ in 0..n {
             let before = self.heartbeat_at();
@@ -252,7 +190,6 @@ impl Flight {
         }
     }
 
-    /// Each docs job of the ledger: its kind, subject, state and result.
     fn docs_jobs(&self) -> Vec<String> {
         let conn = read(&self.h);
         let mut stmt = conn
@@ -269,8 +206,6 @@ impl Flight {
         rows
     }
 
-    /// The conformance runs of Claude Code, the CLI of [`PERSONA`]: how
-    /// many are queued or running, and how many have a result.
     fn claude_conformance(&self) -> (i64, i64) {
         read(&self.h)
             .query_row(
@@ -284,16 +219,6 @@ impl Flight {
             .unwrap()
     }
 
-    /// Wait until the conformance run of Claude Code that the update queued
-    /// has a result, and for 1 more pass, so the health of [`PERSONA`] is
-    /// known before the next attempt is due. The run must pass: a failed
-    /// run marks [`PERSONA`] unhealthy, and dispatch holds its task (FM-19;
-    /// MAP.md Q15).
-    ///
-    /// The run is 9 launches of the fake CLI, and its time depends on the
-    /// host. So this waits for the event, the result of the job, while the
-    /// job is queued or running: the time limit of the job in fleetd bounds
-    /// the wait. [`HANG_GUARD`] only stops a test that hangs.
     fn wait_claude_conformance(&self) {
         let until = Instant::now() + HANG_GUARD;
         loop {
@@ -326,21 +251,16 @@ impl Flight {
         );
     }
 
-    /// The id of attempt `n` of the task.
     fn attempt(&self, n: u32) -> String {
         format!("{}/A{n}", self.task)
     }
 
-    /// Whether attempt `n` runs in exec mode: its attempt folder holds the
-    /// exec stream, which the wrapper opens before it starts the CLI
-    /// (`workers::attempt_mode`).
     fn is_exec(&self, n: u32) -> bool {
         attempt_dir(&self.h.fleet_root(), &self.task, &format!("A{n}"))
             .join(TRANSCRIPT_JSONL)
             .exists()
     }
 
-    /// The state and the outcome of attempt `n`. `None` while no row exists.
     fn attempt_row(&self, n: u32) -> Option<(String, Option<String>)> {
         read(&self.h)
             .query_row(
@@ -351,7 +271,6 @@ impl Flight {
             .ok()
     }
 
-    /// Hand off the interactive attempt, and wait until fleetd ends it.
     fn hand_off(&mut self) -> ExitStatus {
         let status = self.worker.hand_off();
         wait_for_or(
@@ -366,9 +285,6 @@ impl Flight {
         status
     }
 
-    /// The call of `fake-claude` that ran in exec mode with `START.md` of
-    /// attempt `A2`: the agent of the next attempt, started by fleetd
-    /// through the wrapper. A conformance run of the update is not it.
     fn exec_call(&self) -> Value {
         let outbox = format!("{}/attempts/A2/outbox", self.task);
         wait_for_or(
@@ -384,8 +300,6 @@ impl Flight {
         )
     }
 
-    /// What a failed wait shows: the calls of the fakes, the output of
-    /// fleetd, the attempts and the events of the task.
     fn diagnostics(&self) -> String {
         let calls: Vec<String> = self
             .h
@@ -416,11 +330,6 @@ impl Flight {
     }
 }
 
-/// A harness with its own ledger, fleet root, data folder and git
-/// repository, no watchdog, a healthy quota, the workspace `w1` of the
-/// fake herdr, whose panes run their commands, and an empty local folder as
-/// the docs pages of the `docs_sync` runs that the update queues: no test
-/// uses the network.
 fn world(name: &str) -> Harness {
     let mut h = Harness::new(name).with_git();
     let fleet = h.root.join("fleet");
@@ -444,15 +353,11 @@ fn world(name: &str) -> Harness {
     std::fs::create_dir_all(&docs).unwrap();
     h.set("HORCH_TEST_DOCS_FIXTURE", docs.to_string_lossy());
     declare_gates(&h);
-    // The workspace of the project, as `horch fleet` names it: a push
-    // launch finds its pane there.
     let ws = h.fleet_workspace();
     assert_eq!(ws, "w1", "the seed of the run names w1");
     h
 }
 
-/// The project declares its gates and commits the file, so no hold of a
-/// missing fast gate stops the dispatch (Phase 4, Q-C).
 fn declare_gates(h: &Harness) {
     std::fs::write(
         h.project.join("fleet.toml"),
@@ -468,19 +373,14 @@ fn declare_gates(h: &Harness) {
     }
 }
 
-/// A connection of the test to the ledger.
 fn read(h: &Harness) -> Connection {
     Connection::open(h.ledger_db()).unwrap()
 }
 
-/// The task folder of `task`.
 fn task_dir(h: &Harness, task: &str) -> PathBuf {
     h.fleet_root().join("tasks").join(task)
 }
 
-/// The Phase 6 ledger of `h` with the run `r1`, its idea in flight
-/// (FR-12), its orchestrator seat in the pane `w1:p1`, and 1 task. Gives
-/// the task id.
 fn phase_6_run(h: &Harness) -> String {
     let mut conn = read(h);
     schema::migrate_to(&mut conn, schema::PHASE_6_VERSION).unwrap();
@@ -522,10 +422,6 @@ fn phase_6_run(h: &Harness) -> String {
         .task_id
 }
 
-/// The rows of the live interactive attempt `A1` of `task`, as a Phase 6
-/// binary left them: the task `running`, the worker of `agent` `working`,
-/// the attempt `live` by push, its lease, and the `fleetd` row that names
-/// `old` with the fleet clock at [`CLOCK`].
 fn phase_6_attempt(h: &Harness, task: &str, old: &OldFleetd, agent: &InteractiveWorker) {
     let conn = read(h);
     let now = util::now();
@@ -582,9 +478,6 @@ fn phase_6_attempt(h: &Harness, task: &str, old: &OldFleetd, agent: &Interactive
     .unwrap();
 }
 
-/// The task folder and the outbox of the interactive attempt, as the
-/// launch of Phase 6 made them: `task.yaml`, `START.md` and an empty outbox
-/// with mode 0700. No exec stream: the attempt is interactive.
 fn phase_6_task_folder(h: &Harness, task: &str) {
     use std::os::unix::fs::PermissionsExt;
     let dir = task_dir(h, task);
@@ -608,7 +501,6 @@ fn phase_6_task_folder(h: &Harness, task: &str) {
     std::fs::write(dir.join("START.md"), "# T1\n").unwrap();
 }
 
-/// Each row of each table of the ledger, as SQL text, by table.
 fn all_rows(conn: &Connection) -> BTreeMap<String, Vec<String>> {
     let tables: Vec<String> = conn
         .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
@@ -649,7 +541,6 @@ fn interactive_worker_live_at_the_update_ends_as_before() {
     let mut f = Flight::on_phase_6("p7r-ends");
     f.update();
 
-    // fleetd of Phase 7 does not end the live interactive attempt.
     assert!(f.worker.alive(), "fleetd stops no live interactive worker");
     assert_eq!(
         f.attempt_row(1),
@@ -660,8 +551,6 @@ fn interactive_worker_live_at_the_update_ends_as_before() {
     assert!(!f.is_exec(1), "the live attempt stays interactive");
     assert_eq!(f.attempt_row(2), None, "no 2nd attempt while A1 is live");
 
-    // It ends as before: the old worker command hands off, and the worker
-    // exits by itself.
     let status = f.hand_off();
     assert!(status.success(), "the worker exits by itself: {status:?}");
     assert_eq!(

@@ -1,12 +1,3 @@
-//! The Codex adapter in exec mode (fleetd-p7 ticket 14; FR-9, RR-11,
-//! FM-18): the launch of 1 exec attempt is `codex exec --json` with
-//! `-a never` and `model_auto_compact_token_limit=256000`, and
-//! `codex::read_event` reads its JSON Lines stream into liveness, result
-//! and usage-limit events.
-//!
-//! The real `codex` never runs here. The tests read the argv of the built
-//! command and the stream forms of `fixtures/streams/codex-exec.jsonl`.
-
 #![cfg(unix)]
 
 use std::path::PathBuf;
@@ -16,8 +7,6 @@ use horch_core::harness::{HarnessKind, LaunchEnv, PrepareRequest};
 use horch_core::roster::{PermissionMode, Roster, Teammate};
 use horch_core::runtime::{MapEnv, RuntimeContext};
 
-/// A test fleet: a home with a codex home, a state root, a task folder and
-/// a worktree, all in 1 temporary folder.
 struct Fleet {
     root: tempfile::TempDir,
     task_dir: PathBuf,
@@ -49,9 +38,6 @@ impl Fleet {
         RuntimeContext::from_env(&env).unwrap()
     }
 
-    /// The argv of the exec launch of `teammate`, built as the launcher
-    /// builds it: `prepare`, its extra args on the teammate, then the
-    /// command.
     fn exec_argv(&self, teammate: &Teammate) -> Vec<String> {
         let ctx = self.ctx();
         let prepared = HarnessKind::Codex
@@ -91,7 +77,6 @@ fn sol() -> Teammate {
         .clone()
 }
 
-/// The values after each `flag` in `argv`.
 fn values_of<'a>(argv: &'a [String], flag: &str) -> Vec<&'a str> {
     argv.windows(2)
         .filter(|w| w[0] == flag)
@@ -99,7 +84,6 @@ fn values_of<'a>(argv: &'a [String], flag: &str) -> Vec<&'a str> {
         .collect()
 }
 
-/// The `kind` word of an event, as the fixture names it.
 fn kind(event: &ExecEvent) -> &'static str {
     match event {
         ExecEvent::Activity => "activity",
@@ -110,8 +94,6 @@ fn kind(event: &ExecEvent) -> &'static str {
     }
 }
 
-/// Each stream form of the fixture: its doc page, the event it gives, and
-/// the line as Codex prints it.
 fn forms() -> Vec<(String, String, String)> {
     let text = include_str!("fixtures/streams/codex-exec.jsonl");
     text.lines()
@@ -126,8 +108,6 @@ fn forms() -> Vec<(String, String, String)> {
         .collect()
 }
 
-/// The design: `codex exec --json`, the subcommand first and its global
-/// flags after it, the model of the teammate and the prompt last.
 #[test]
 fn codex_exec_launch_has_the_flags_of_the_design() {
     let fleet = fleet();
@@ -141,9 +121,6 @@ fn codex_exec_launch_has_the_flags_of_the_design() {
     assert!(!argv.iter().any(|a| a == "resume"), "{argv:?}");
 }
 
-/// FM-18: an exec attempt never waits on an approval. It has 1 `-a never`
-/// and no other approval policy, also for a plan teammate, whose
-/// interactive launch asks on request.
 #[test]
 fn codex_exec_never_waits_on_an_approval() {
     let fleet = fleet();
@@ -156,8 +133,6 @@ fn codex_exec_never_waits_on_an_approval() {
     }
 }
 
-/// An approval policy of the teammate's own args would make the attempt
-/// wait, so the exec launch refuses it.
 #[test]
 fn codex_exec_refuses_an_approval_policy_of_the_teammate() {
     let fleet = fleet();
@@ -170,8 +145,6 @@ fn codex_exec_refuses_an_approval_policy_of_the_teammate() {
     assert!(err.to_string().contains("approval"), "{err}");
 }
 
-/// FR-9: with no fleet window decision, the exec launch sets
-/// `model_auto_compact_token_limit=256000`.
 #[test]
 fn codex_exec_config_sets_the_256000_limit() {
     let fleet = fleet();
@@ -192,9 +165,6 @@ fn codex_exec_config_sets_the_256000_limit() {
     assert_eq!(window, Some(256_000));
 }
 
-/// RR-11: each usage-limit form of the fixture gives `usage_limited`, so
-/// the wrapper ends the attempt with the outcome `quota`. A failure that
-/// is not a usage limit does not.
 #[test]
 fn codex_stream_usage_limit_is_quota() {
     let forms = forms();
@@ -210,9 +180,6 @@ fn codex_stream_usage_limit_is_quota() {
     }
 }
 
-/// Each `thread.*`, `turn.started` and `item.*` line is activity, a
-/// `turn.completed` line is the result, and a line that is not JSON or has
-/// an unknown type is other.
 #[test]
 fn codex_stream_items_are_activity() {
     for (doc, event, line) in forms() {

@@ -18,12 +18,10 @@ from scipy import ndimage
 
 from hark.core.audio import AudioError, file_id, probe
 
-# Size of the grey thumbnail that the change signal is computed on.
 _THUMB_W = 96
 _THUMB_H = 54
 _THUMB_PIXELS = _THUMB_W * _THUMB_H
 
-# Bump a version when its cached result format or meaning changes.
 DIFF_VERSION = 1
 SCENE_VERSION = 1
 
@@ -32,8 +30,6 @@ _PTS_RE = re.compile(r"pts_time:\s*([0-9.]+)")
 
 __all__ = ["info", "has_video", "frame_diff", "diff_events", "cuts", "frame", "frames"]
 
-
-# ---------------------------------------------------------------- cache plumbing
 
 def _store_root() -> str:
     explicit = os.environ.get("HARK_HOME")
@@ -83,8 +79,6 @@ def _broken(what: str, path: str, why) -> AudioError:
     return AudioError(f"cannot {what} {path}: {why}")
 
 
-# ---------------------------------------------------------------- stream facts
-
 def info(path: str) -> dict:
     """Duration, rate, size and which streams exist, from the core probe."""
     meta = probe(path)
@@ -100,8 +94,6 @@ def info(path: str) -> dict:
 def has_video(path: str) -> bool:
     return bool(probe(path).get("has_video"))
 
-
-# ---------------------------------------------------------------- change signal
 
 def _grey_bytes(path: str) -> bytes:
     shrink = f"scale={_THUMB_W}:{_THUMB_H}:flags=area,format=gray"
@@ -172,8 +164,6 @@ def diff_events(d, fps: float, ratio: float = 4.0, floor: float = 0.012, big: fl
     return _merge_close([int(h) for h in hits if h > 0], signal, gap * fps)
 
 
-# ---------------------------------------------------------------- cuts
-
 def _scan_scenes(path: str, threshold: float, min_gap: float) -> list[float]:
     chain = f"scale=320:-2,select='gt(scene,{threshold})',showinfo"
     try:
@@ -219,8 +209,6 @@ def cuts(path: str, method: str = "diff", threshold: float = 0.3, min_gap: float
     rate, signal = frame_diff(path, cache=cache)
     return [round(n / rate, 3) for n in diff_events(signal, rate)]
 
-
-# ---------------------------------------------------------------- stills
 
 def frame(path: str, t: float, width: int = 320):
     """An RGB PIL image of the picture near ``t`` seconds; None on any failure."""

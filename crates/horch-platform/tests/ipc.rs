@@ -1,5 +1,3 @@
-//! The concern ipc: a local stream socket and its listener.
-
 #[cfg(unix)]
 mod unix {
     use std::io::{BufRead, BufReader, ErrorKind, Write};
@@ -8,7 +6,6 @@ mod unix {
 
     use horch_platform::ipc::{LocalListener, LocalStream};
 
-    /// A short socket path: `sun_path` holds about 104 bytes on macOS.
     fn socket_in(dir: &tempfile::TempDir) -> PathBuf {
         dir.path().join("s.sock")
     }
@@ -63,7 +60,6 @@ mod unix {
         let wait = Duration::from_millis(300);
         let start = Instant::now();
         let mut stream = LocalStream::connect_by(&path, start + wait).unwrap();
-        // The silent peer: accepted, never written to, kept open.
         let _peer = listener.accept().unwrap();
         let error = stream.read_line_by(start + wait, 64 * 1024).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::TimedOut);
@@ -73,8 +69,6 @@ mod unix {
             elapsed < wait + Duration::from_secs(1),
             "too late: {elapsed:?}"
         );
-        // Deadlines between 2 whole milliseconds: a wait that truncates the
-        // time left wakes before them.
         for _ in 0..20 {
             let deadline = Instant::now() + Duration::from_micros(1_950);
             let error = stream.read_line_by(deadline, 64 * 1024).unwrap_err();
@@ -88,7 +82,6 @@ mod unix {
         }
     }
 
-    /// A listener whose peer writes `bytes` at once, then stays open.
     fn peer_that_writes(bytes: &'static [u8]) -> (tempfile::TempDir, PathBuf) {
         let dir = short_dir();
         let path = socket_in(&dir);
@@ -96,7 +89,6 @@ mod unix {
         std::thread::spawn(move || {
             let mut stream = listener.accept().unwrap();
             stream.write_all(bytes).unwrap();
-            // Keep the stream open until the reader is done.
             std::thread::sleep(Duration::from_secs(5));
         });
         (dir, path)
@@ -121,8 +113,6 @@ mod unix {
         assert_eq!(stream.read_line_by(deadline, 1024).unwrap(), "ij\n");
     }
 
-    /// Linux answers a nonblocking connect to a full backlog with `EAGAIN`.
-    /// `connect_by` waits for room until the deadline.
     #[cfg(target_os = "linux")]
     #[test]
     fn connect_by_waits_while_the_backlog_is_full() {
@@ -143,7 +133,6 @@ mod unix {
         assert_eq!(error.kind(), ErrorKind::TimedOut, "{error:?}");
         assert!(Instant::now() >= deadline, "returned before the deadline");
 
-        // Accept the first connection later, and keep the listener open.
         let accept = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(100));
             let accepted = listener.accept().unwrap();
@@ -171,8 +160,6 @@ mod unix {
         let path = socket_in(&dir);
         std::fs::write(&path, b"").unwrap();
         let error = LocalStream::connect(&path).unwrap_err();
-        // Linux refuses a connect to a plain file (`ECONNREFUSED`); macOS
-        // answers `ENOTSOCK`.
         #[cfg(target_os = "linux")]
         assert_eq!(error.kind(), ErrorKind::ConnectionRefused, "{error:?}");
         #[cfg(not(target_os = "linux"))]
@@ -204,7 +191,6 @@ fn local_sockets_are_not_supported_on_windows() {
     }
 }
 
-/// macOS and Linux have local sockets, and Windows has none.
 #[test]
 fn local_sockets_are_supported_only_on_unix() {
     assert_eq!(horch_platform::ipc::is_supported(), cfg!(unix));

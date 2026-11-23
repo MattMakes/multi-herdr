@@ -1,14 +1,3 @@
-//! The rows of the integration tables: `features`, `branches`, `bundles`,
-//! `bundle_members`, `gate_runs` and `remote_tips`.
-//!
-//! No other code writes these tables. A new feature, task branch or bundle
-//! and its event go through `created()` of the 1 door. A state change is
-//! not a function of this store: the use cases call `transition()`
-//! (`docs/specs/fleetd/design.md`, "Ledger", rule 1 "One door"). Each write
-//! of a fact that is not a state records 1 event with its entity (OR-2).
-//! A feature branch row has no landing state, so it is not a task branch:
-//! the event of its row is an event of its feature.
-
 use anyhow::{bail, Result};
 use rusqlite::types::Value;
 use rusqlite::{params, Connection, OptionalExtension, Row};
@@ -20,12 +9,10 @@ use crate::fleetd::fleet_runtime::domain::ledger::{Entity, Generation};
 use crate::taskledger::model::EventKind;
 use crate::taskledger::util;
 
-/// The first state of a feature and of a task branch, and of a bundle.
 const FEATURE_FIRST: &str = "open";
 const BRANCH_FIRST: &str = "building";
 const BUNDLE_FIRST: &str = "building";
 
-/// 1 row of `features`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FeatureRow {
     pub id: String,
@@ -37,15 +24,12 @@ pub struct FeatureRow {
     pub pr: Option<String>,
     pub push_state: Option<String>,
     pub push_failures: i64,
-    /// Fleet clock seconds.
     pub push_not_before: Option<i64>,
     pub pr_state: String,
     pub created_at: String,
     pub updated_at: String,
 }
 
-/// 1 row of `branches`: a task branch, or the branch of a feature
-/// (`task_id` and `landing_state` are null).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BranchRow {
     pub name: String,
@@ -53,7 +37,6 @@ pub struct BranchRow {
     pub task_id: Option<String>,
     pub landing_state: Option<String>,
     pub owner: String,
-    /// Fleet clock seconds.
     pub due_at: i64,
     pub queue_seq: Option<i64>,
     pub repair_attempts: i64,
@@ -63,7 +46,6 @@ pub struct BranchRow {
     pub orphan: bool,
 }
 
-/// 1 row of `bundles`, with its members in queue order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BundleRow {
     pub id: i64,
@@ -74,14 +56,12 @@ pub struct BundleRow {
     pub parent_id: Option<i64>,
     pub state: String,
     pub job_id: Option<i64>,
-    /// Fleet clock seconds.
     pub due_at: i64,
     pub result: Option<String>,
     pub at: String,
     pub members: Vec<String>,
 }
 
-/// 1 row of `gate_runs`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GateRunRow {
     pub id: i64,
@@ -94,7 +74,6 @@ pub struct GateRunRow {
     pub at: String,
 }
 
-/// 1 row of `remote_tips`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteTipRow {
     pub repo: String,
@@ -104,7 +83,6 @@ pub struct RemoteTipRow {
     pub stale_since: Option<String>,
 }
 
-/// A new feature. It starts `open`.
 #[derive(Debug, Clone, Copy)]
 pub struct NewFeature<'a> {
     pub id: &'a str,
@@ -113,31 +91,24 @@ pub struct NewFeature<'a> {
     pub primary_branch: &'a str,
 }
 
-/// A new branch row. A row with a task is a task branch, and it starts
-/// `building`. A row with no task is the branch of its feature.
 #[derive(Debug, Clone, Copy)]
 pub struct NewBranch<'a> {
     pub name: &'a str,
     pub feature_id: &'a str,
     pub task_id: Option<&'a str>,
     pub owner: &'a str,
-    /// Fleet clock seconds.
     pub due_at: i64,
 }
 
-/// A new bundle of 1 or more task branches, in queue order. It starts
-/// `building`.
 #[derive(Debug, Clone, Copy)]
 pub struct NewBundle<'a> {
     pub feature_id: &'a str,
     pub base_tip: &'a str,
     pub parent_id: Option<i64>,
     pub members: &'a [&'a str],
-    /// Fleet clock seconds.
     pub due_at: i64,
 }
 
-/// A new run of a gate: `fast` or `full`.
 #[derive(Debug, Clone, Copy)]
 pub struct NewGateRun<'a> {
     pub feature_id: &'a str,
@@ -147,20 +118,15 @@ pub struct NewGateRun<'a> {
     pub job_id: i64,
 }
 
-/// A fact of a branch row that is not its state.
 #[derive(Debug, Clone, Copy)]
 pub enum BranchFact<'a> {
     SeenTip(&'a str),
     SeenRemoteTip(&'a str),
     QueueSeq(Option<i64>),
     RepairAttempts(i64),
-    /// Fleet clock seconds.
     DueAt(i64),
-    /// The last rescue ref of the branch (ticket 24).
     RescueRef(&'a str),
-    /// The owner of its landing state (ticket 25).
     Owner(&'a str),
-    /// Found in git with no row, and adopted (I11, ticket 44).
     Orphan,
 }
 
@@ -179,15 +145,11 @@ impl BranchFact<'_> {
     }
 }
 
-/// A fact of a bundle that is not its state.
 #[derive(Debug, Clone, Copy)]
 pub enum BundleFact<'a> {
-    /// `None` when the deletion of the ref is verified.
     CandidateRef(Option<&'a str>),
     CandidateTip(&'a str),
-    /// The build job, then the fast gate job.
     JobId(i64),
-    /// Fleet clock seconds.
     DueAt(i64),
 }
 
@@ -202,21 +164,14 @@ impl BundleFact<'_> {
     }
 }
 
-/// A fact of a feature that is not its state.
 #[derive(Debug, Clone, Copy)]
 pub enum FeatureFact<'a> {
-    /// `ok` or `failed`.
     PushState(&'a str),
     PushFailures(i64),
-    /// Fleet clock seconds.
     PushNotBefore(Option<i64>),
-    /// The pull request or the compare URL (ticket 39).
     Pr(&'a str),
-    /// `none`, `open` or `closed`.
     PrState(&'a str),
-    /// The kebab-case name, checked by fleetd (ticket 15 of fleetd-p6).
     Name(&'a str),
-    /// The feature branch, written before git has it (ticket 15 of fleetd-p6).
     Branch(&'a str),
 }
 
@@ -242,8 +197,6 @@ fn int(n: Option<i64>) -> Value {
     n.map_or(Value::Null, Value::Integer)
 }
 
-/// The `data_json` of the event of a fact: its column and value, and the
-/// branch of a branch row.
 fn fact_data(branch: Option<&str>, column: &str, value: &Value) -> serde_json::Value {
     let mut data = serde_json::Map::new();
     if let Some(name) = branch {
@@ -258,16 +211,12 @@ fn fact_data(branch: Option<&str>, column: &str, value: &Value) -> serde_json::V
     serde_json::Value::Object(data)
 }
 
-// ─── inserts ────────────────────────────────────────────────────────────
-
-/// Insert the `open` feature `new`, with its event, in `tx`.
 pub fn insert_feature(
     tx: &Connection,
     guard: Option<Generation>,
     new: &NewFeature<'_>,
     cause: Cause<'_>,
 ) -> Result<()> {
-    // `created()` checks this too, but after the insert.
     check_writable(tx, guard)?;
     let now = util::now();
     tx.execute(
@@ -286,8 +235,6 @@ pub fn insert_feature(
     Ok(())
 }
 
-/// Insert the branch row `new`, with its event, in `tx`: a task branch in
-/// `building`, or the branch of a feature with no landing state.
 pub fn insert_branch(
     tx: &Connection,
     guard: Option<Generation>,
@@ -325,11 +272,6 @@ pub fn insert_branch(
     Ok(())
 }
 
-/// Insert the `building` bundle `new` and its members, with its event, in
-/// `tx`. The bundle row, its members and its event are written together or
-/// not at all, so the caller's transaction goes on after an error: a member
-/// with no row, or a member of another bundle that is not ended (I12).
-/// Gives the id of the bundle.
 pub fn insert_bundle(
     tx: &Connection,
     guard: Option<Generation>,
@@ -382,8 +324,6 @@ fn bundle_rows(
     Ok(id)
 }
 
-/// Insert the gate run `new`, with 1 event of its feature, in `tx`. Gives
-/// its id.
 pub fn insert_gate_run(
     tx: &Connection,
     guard: Option<Generation>,
@@ -417,9 +357,6 @@ pub fn insert_gate_run(
     Ok(id)
 }
 
-/// Write the fetched tip `tip` of `branch` in `repo`, in `tx`: a passed
-/// fetch, so the row is not stale. A remote tip is not a row of an entity,
-/// and each fetch period writes it, so it has no event.
 pub fn put_remote_tip(
     tx: &Connection,
     guard: Option<Generation>,
@@ -436,9 +373,6 @@ pub fn put_remote_tip(
     Ok(())
 }
 
-/// Mark the remote tips of `repo` stale, in `tx`: a failed fetch sets
-/// `stale_since` of each row where it is not set yet, so it keeps the time
-/// of the first failure. `stale` false clears it: a passed fetch.
 pub fn set_remote_stale(
     tx: &Connection,
     guard: Option<Generation>,
@@ -460,11 +394,6 @@ pub fn set_remote_stale(
     Ok(())
 }
 
-// ─── facts ──────────────────────────────────────────────────────────────
-
-/// Write `fact` of the branch row `name`, with 1 event, in `tx`. The event
-/// of a task branch is an event of the task branch; the event of a feature
-/// branch is an event of its feature.
 pub fn set_branch_fact(
     tx: &Connection,
     guard: Option<Generation>,
@@ -490,7 +419,6 @@ pub fn set_branch_fact(
     Ok(())
 }
 
-/// Write `fact` of the bundle `id`, with 1 event, in `tx`.
 pub fn set_bundle_fact(
     tx: &Connection,
     guard: Option<Generation>,
@@ -521,7 +449,6 @@ pub fn set_bundle_fact(
     Ok(())
 }
 
-/// Write `fact` of the feature `id`, with 1 event, in `tx`.
 pub fn set_feature_fact(
     tx: &Connection,
     guard: Option<Generation>,
@@ -551,9 +478,6 @@ pub fn set_feature_fact(
     Ok(())
 }
 
-// ─── reads ──────────────────────────────────────────────────────────────
-
-/// The feature `id`.
 pub fn feature(conn: &Connection, id: &str) -> Result<Option<FeatureRow>> {
     let row = |r: &Row<'_>| {
         Ok(FeatureRow {
@@ -583,7 +507,6 @@ pub fn feature(conn: &Connection, id: &str) -> Result<Option<FeatureRow>> {
         .optional()?)
 }
 
-/// The feature with the name `name`.
 pub fn feature_named(conn: &Connection, name: &str) -> Result<Option<FeatureRow>> {
     let id: Option<String> = conn
         .query_row("SELECT id FROM features WHERE name = ?1", [name], |r| {
@@ -596,8 +519,6 @@ pub fn feature_named(conn: &Connection, name: &str) -> Result<Option<FeatureRow>
     }
 }
 
-/// Whether a feature has the name `name` or the branch `branch`, or a
-/// branch row has the name `branch`.
 pub fn name_taken(conn: &Connection, name: &str, branch: &str) -> Result<bool> {
     Ok(conn.query_row(
         "SELECT EXISTS (SELECT 1 FROM features WHERE name = ?1 OR branch = ?2)
@@ -607,8 +528,22 @@ pub fn name_taken(conn: &Connection, name: &str, branch: &str) -> Result<bool> {
     )?)
 }
 
-/// The ids of the features, by id; with `live`, only the `open` and
-/// `ready` features.
+pub fn feature_states<'a>(
+    conn: &Connection,
+    ids: impl IntoIterator<Item = &'a str>,
+) -> Result<std::collections::BTreeMap<String, String>> {
+    let ids: Vec<&str> = ids.into_iter().collect();
+    let sql = format!(
+        "SELECT id, state FROM features WHERE id IN ({})",
+        crate::taskledger::sql_words::marks(1, ids.len())
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(ids), |r| {
+        Ok((r.get(0)?, r.get(1)?))
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
 pub fn feature_ids(conn: &Connection, live: bool) -> Result<Vec<String>> {
     let sql = if live {
         "SELECT id FROM features WHERE state IN ('open', 'ready') ORDER BY id"
@@ -620,9 +555,6 @@ pub fn feature_ids(conn: &Connection, live: bool) -> Result<Vec<String>> {
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// The ids of the bundles that a pass follows: each bundle that is not
-/// ended, and each ended bundle whose candidate ref is not verified as
-/// deleted, by id.
 pub fn bundles_to_follow(conn: &Connection) -> Result<Vec<i64>> {
     let mut stmt = conn.prepare(
         "SELECT id FROM bundles
@@ -633,9 +565,6 @@ pub fn bundles_to_follow(conn: &Connection) -> Result<Vec<i64>> {
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// Each `dropped` bundle with no recorded candidate and with a job, as
-/// (bundle id, job id), by bundle id. Its build job can have written the
-/// candidate ref after the drop.
 pub fn dropped_without_candidate(conn: &Connection) -> Result<Vec<(i64, i64)>> {
     let mut stmt = conn.prepare(
         "SELECT id, job_id FROM bundles
@@ -646,9 +575,6 @@ pub fn dropped_without_candidate(conn: &Connection) -> Result<Vec<(i64, i64)>> {
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// The branch of each `open` or `ready` feature that has its branch row,
-/// with the `seen_tip` of that row, as (feature id, branch, seen tip), by
-/// feature id.
 pub fn live_feature_branches(conn: &Connection) -> Result<Vec<(String, String, String)>> {
     let mut stmt = conn.prepare(
         "SELECT f.id, f.branch, b.seen_tip FROM features f
@@ -662,8 +588,6 @@ pub fn live_feature_branches(conn: &Connection) -> Result<Vec<(String, String, S
     Ok(rows)
 }
 
-/// Each task with a task branch row, and whether 1 of its task branches
-/// is `landed` (I2).
 pub fn tasks_landed(conn: &Connection) -> Result<std::collections::BTreeMap<String, bool>> {
     let mut stmt = conn.prepare(
         "SELECT task_id, max(landing_state = 'landed') FROM branches
@@ -673,7 +597,6 @@ pub fn tasks_landed(conn: &Connection) -> Result<std::collections::BTreeMap<Stri
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// The branch row `name`.
 pub fn branch(conn: &Connection, name: &str) -> Result<Option<BranchRow>> {
     let row = |r: &Row<'_>| {
         Ok(BranchRow {
@@ -702,7 +625,6 @@ pub fn branch(conn: &Connection, name: &str) -> Result<Option<BranchRow>> {
         .optional()?)
 }
 
-/// The landing state of each branch row of the task `task_id`.
 pub fn landing_states_of_task(conn: &Connection, task_id: &str) -> Result<Vec<Option<String>>> {
     let mut stmt =
         conn.prepare("SELECT landing_state FROM branches WHERE task_id = ?1 ORDER BY name")?;
@@ -710,15 +632,29 @@ pub fn landing_states_of_task(conn: &Connection, task_id: &str) -> Result<Vec<Op
     Ok(states.collect::<rusqlite::Result<_>>()?)
 }
 
-/// The name of each branch row, sorted.
+pub fn task_branch_landing_states<'a>(
+    conn: &Connection,
+    names: impl IntoIterator<Item = &'a str>,
+) -> Result<std::collections::BTreeMap<String, Option<String>>> {
+    let names: Vec<&str> = names.into_iter().collect();
+    let sql = format!(
+        "SELECT name, landing_state FROM branches
+         WHERE task_id IS NOT NULL AND name IN ({})",
+        crate::taskledger::sql_words::marks(1, names.len())
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(names), |r| {
+        Ok((r.get(0)?, r.get(1)?))
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
 pub fn branch_names(conn: &Connection) -> Result<Vec<String>> {
     let mut stmt = conn.prepare("SELECT name FROM branches ORDER BY name")?;
     let names = stmt.query_map([], |r| r.get(0))?;
     Ok(names.collect::<rusqlite::Result<_>>()?)
 }
 
-/// The name and the task of each branch row of a task in `state`, sorted
-/// by name (the repair attempts of ticket 33).
 pub fn task_branches_in(conn: &Connection, state: &str) -> Result<Vec<(String, String)>> {
     let mut stmt = conn.prepare(
         "SELECT name, task_id FROM branches
@@ -728,8 +664,6 @@ pub fn task_branches_in(conn: &Connection, state: &str) -> Result<Vec<(String, S
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// The id and the job of each bundle in `state` that holds the branch
-/// `branch`, newest first (the conflict of a resolver attempt, ticket 33).
 pub fn bundle_jobs_of_branch(
     conn: &Connection,
     branch: &str,
@@ -744,7 +678,6 @@ pub fn bundle_jobs_of_branch(
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// The bundle `id`, with its members in queue order.
 pub fn bundle(conn: &Connection, id: i64) -> Result<Option<BundleRow>> {
     let row = |r: &Row<'_>| {
         Ok(BundleRow {
@@ -795,7 +728,6 @@ fn gate_run_row(r: &Row<'_>) -> rusqlite::Result<GateRunRow> {
     })
 }
 
-/// The gate run `id`.
 pub fn gate_run(conn: &Connection, id: i64) -> Result<Option<GateRunRow>> {
     Ok(conn
         .query_row(
@@ -807,8 +739,6 @@ pub fn gate_run(conn: &Connection, id: i64) -> Result<Option<GateRunRow>> {
         .optional()?)
 }
 
-/// The newest gate run of `gate` of the feature `feature_id` on `tip` over
-/// `base_tip`.
 pub fn gate_run_of(
     conn: &Connection,
     feature_id: &str,
@@ -827,8 +757,6 @@ pub fn gate_run_of(
         .optional()?)
 }
 
-/// Write the result `result` (`pass` or `fail`) of the gate run `id` and
-/// its last job run `job_id`, with 1 event of its feature, in `tx`.
 pub fn set_gate_result(
     tx: &Connection,
     guard: Option<Generation>,
@@ -861,7 +789,6 @@ pub fn set_gate_result(
     Ok(())
 }
 
-/// The fetched tip of `branch` in `repo`.
 pub fn remote_tip(conn: &Connection, repo: &str, branch: &str) -> Result<Option<RemoteTipRow>> {
     let row = |r: &Row<'_>| {
         Ok(RemoteTipRow {

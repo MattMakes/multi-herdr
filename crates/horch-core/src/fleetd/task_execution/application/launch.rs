@@ -1,25 +1,3 @@
-//! fleetd launches each push attempt that it bound (ticket 10).
-//!
-//! `docs/specs/fleetd/design.md`, "The reconcile pass" (the row first,
-//! then the effect, then the observation; stops come before launches),
-//! FM-11, RR-8, SR-7, and "The task state machine" (`leased`).
-//!
-//! - [`decide`]: the rule for 1 push attempt in `launching`, pure on its
-//!   facts. A failed `worktree_add` job ends the attempt. A live process
-//!   of an older attempt of the task is stopped first. A `reserved` tree
-//!   waits for its job. Else the attempt launches.
-//! - [`plan`]: part 2. It reads the rows of each push attempt in
-//!   `launching` and the process facts, writes the end of each attempt
-//!   whose tree failed (`crashed`, rung 6), and gives the stops and the
-//!   launches to do after the commit.
-//! - [`launch`]: part 3, after the commit. It decides again on the rows
-//!   of now, writes the launch record, then starts `horch spawn <persona>
-//!   --attempt <id>` through the launcher ([`Launches::spec`]). The record
-//!   comes first, so a crash of fleetd after it never gives a second
-//!   launch, and an attempt with no record is launched by the next pass.
-//!   The record names no process: the spawn opens the pane and exits, and
-//!   the agent of the attempt is not the spawn.
-
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
@@ -31,6 +9,8 @@ use crate::fleetd::fleet_runtime::application::ledger::{transition, Cause};
 use crate::fleetd::fleet_runtime::domain::clock::FleetSeconds;
 use crate::fleetd::fleet_runtime::domain::jobs::{Kind, State};
 use crate::fleetd::fleet_runtime::domain::ledger::{Entity, Generation};
+use crate::fleetd::fleet_runtime::domain::pass::START_TIMEOUT_S;
+use crate::fleetd::ideas::adapters::questions_store;
 use crate::fleetd::ideas::application::needs_you::NeedsYouList;
 use crate::fleetd::task_execution::adapters::sqlite as store;
 use crate::fleetd::task_execution::application::commands;
@@ -40,43 +20,27 @@ use crate::fleetd::task_execution::domain::task::{
 };
 use crate::fleetd::worker_profiles::application::ports::{LaunchSpec, Launched, ProcessHost};
 use crate::fleetd::worktree_custody::adapters::sqlite::{self as trees, WorktreeState};
-use crate::taskledger::model::Actor;
+use crate::taskledger::model::{Actor, ProgressSource, TaskStatus};
 use crate::taskledger::sql_words::WORKTREES_GONE;
 use crate::taskledger::{runs, tasks, util, workers};
 
-/// The tree of a push attempt, as its rows give it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TreeFact {
-    /// The task works in the shared checkout, or its tree exists.
     Ready,
-    /// The tree is `reserved`, and its `worktree_add` job did not fail.
     Adding,
-    /// The `worktree_add` job of the tree failed: the `reserved` row is
-    /// dropped, or its last run ended `failed`.
     AddFailed,
 }
 
-/// What fleetd does with 1 push attempt in `launching`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Decision {
-    /// Launch it in part 3.
     Launch,
-    /// Its tree is `reserved`: wait for the `worktree_add` job.
     WaitTree,
-    /// These processes of older attempts of the task are alive: stop them,
-    /// and launch only when each is gone.
     Stop(Vec<Recorded>),
-    /// End the attempt `crashed` (rung 6), for this reason.
     Crash(String),
 }
 
-/// The cause of the end of an attempt whose tree failed.
 const TREE_FAILED: &str = "its worktree_add job failed, so its tree does not exist";
 
-/// The decision for 1 push attempt in `launching` with no launch record:
-/// `tree` is its tree, and `older_alive` the live processes of the older
-/// attempts of its task. A failed tree ends the attempt, whatever runs. A
-/// live older process comes next: stops come before launches.
 pub fn decide(tree: TreeFact, older_alive: &[Recorded]) -> Decision {
     match tree {
         TreeFact::AddFailed => Decision::Crash(TREE_FAILED.to_string()),
@@ -86,26 +50,19 @@ pub fn decide(tree: TreeFact, older_alive: &[Recorded]) -> Decision {
     }
 }
 
-/// What part 2 decided for the push attempts in `launching`.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Plan {
-    /// The attempts to launch in part 3, in the order of their rows.
     pub launches: Vec<String>,
-    /// The stops of the live processes of older attempts, to do in part 3
-    /// before each launch.
     pub stops: Vec<Stop>,
-    /// The attempts that this transaction ended `crashed`.
     pub crashed: Vec<String>,
 }
 
-/// 1 push attempt in `launching`.
 struct Pending {
     id: String,
     task_id: String,
     worker_id: String,
 }
 
-/// The push attempts in `launching`, in the order of their rows.
 fn pending(conn: &Connection) -> Result<Vec<Pending>> {
     let mut stmt = conn.prepare(
         "SELECT id, task_id, worker_id FROM attempts
@@ -122,7 +79,6 @@ fn pending(conn: &Connection) -> Result<Vec<Pending>> {
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// The push attempt `id` in `launching`, if it is one.
 fn pending_one(conn: &Connection, id: &str) -> Result<Option<Pending>> {
     let row = conn.query_row(
         "SELECT id, task_id, worker_id FROM attempts
@@ -139,13 +95,10 @@ fn pending_one(conn: &Connection, id: &str) -> Result<Option<Pending>> {
     Ok(row.optional()?)
 }
 
-/// The tree of the task `task_id`, as its rows give it.
 fn tree_fact(conn: &Connection, task_id: &str) -> Result<TreeFact> {
     if !tasks::get(conn, task_id)?.uses_worktree() {
         return Ok(TreeFact::Ready);
     }
-    // The bind names a tree for each attempt of a task with a tree. Only
-    // the observation of a failed `worktree_add` job deletes the row.
     let Some(row) = trees::of_task(conn, task_id)?.filter(|r| !WORKTREES_GONE.contains(&r.status))
     else {
         return Ok(TreeFact::AddFailed);
@@ -160,9 +113,6 @@ fn tree_fact(conn: &Connection, task_id: &str) -> Result<TreeFact> {
     })
 }
 
-/// The processes of the attempts of `task_id` other than `attempt_id`,
-/// each with its attempt. An attempt with no process of its own has the
-/// agent of its worker.
 fn older_processes(
     conn: &Connection,
     task_id: &str,
@@ -193,7 +143,6 @@ fn older_processes(
     Ok(out)
 }
 
-/// The live processes of the older attempts of `p`, by `alive`.
 fn older_alive(
     conn: &Connection,
     p: &Pending,
@@ -205,8 +154,6 @@ fn older_alive(
         .collect())
 }
 
-/// The decision for `p` on the rows of `conn` and the process facts of
-/// `alive`. Gives the live older processes with it, for their stops.
 fn decision_of(
     conn: &Connection,
     p: &Pending,
@@ -217,9 +164,6 @@ fn decision_of(
     Ok((decide(tree_fact(conn, &p.task_id)?, &live), older))
 }
 
-/// The stop of the process `r` of the older attempt `attempt`. A process
-/// with no recorded start time gets no stop: its pid alone can name
-/// another process. The launch waits for it to end.
 fn stop_of(attempt: &str, r: Recorded) -> Option<Stop> {
     Some(Stop {
         row: RowRef::Attempt(attempt.to_string()),
@@ -238,9 +182,6 @@ fn by_fleetd(text: &str) -> Cause<'_> {
     }
 }
 
-/// End the attempt `p` `crashed` for `why` in `tx`: the attempt and its
-/// worker, which never started, end, and rung 6 queues the task again or
-/// fails it.
 fn crash(tx: &Connection, guard: Option<Generation>, p: &Pending, why: &str) -> Result<()> {
     let outcome = Outcome::Crashed.as_str();
     store::set_ended(tx, &p.id, outcome, &util::now())?;
@@ -258,11 +199,23 @@ fn crash(tx: &Connection, guard: Option<Generation>, p: &Pending, why: &str) -> 
     commands::schedule_retry(tx, &p.task_id, why)
 }
 
-/// Part 2 of a pass, in the open transaction `tx` of the fleetd of
-/// generation `guard`: the decision for each push attempt in `launching`,
-/// with `alive` as the process facts of part 1. It ends each attempt whose
-/// tree failed, and gives the stops and the launches of part 3. A launch
-/// that part 3 already did is not known here: [`launch`] reads its record.
+pub fn end_failed_spawn(
+    tx: &Connection,
+    guard: Option<Generation>,
+    worker_id: &str,
+    why: &str,
+) -> Result<Vec<String>> {
+    let mut ended = Vec::new();
+    for p in pending(tx)?
+        .into_iter()
+        .filter(|p| p.worker_id == worker_id)
+    {
+        crash(tx, guard, &p, why)?;
+        ended.push(p.id);
+    }
+    Ok(ended)
+}
+
 pub fn plan(
     tx: &Connection,
     guard: Option<Generation>,
@@ -291,25 +244,18 @@ pub fn plan(
     Ok(out)
 }
 
-/// What `horch spawn --attempt` needs to open the pane of 1 push attempt.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PushLaunch {
-    /// The attempt in `launching` that the spawn opens (`--attempt`).
     pub attempt: String,
     pub task_id: String,
-    /// The worker row of the bind.
     pub worker_id: String,
     pub persona: String,
     pub run_slug: String,
     pub project_root: String,
-    /// The pane to split: the pane of the orchestrator of the run.
     pub from_pane: Option<String>,
-    /// The workspace of the run, else of the worker row: `horch spawn`
-    /// resolves its mailbox from it, as a detached process has no pane.
     pub workspace_id: Option<String>,
 }
 
-/// The [`PushLaunch`] of `p`, from its rows.
 fn push_launch(conn: &Connection, p: &Pending) -> Result<PushLaunch> {
     let w = workers::get(conn, &p.worker_id)?;
     let run = runs::get(conn, &tasks::get(conn, &p.task_id)?.run_id)?;
@@ -329,38 +275,139 @@ fn push_launch(conn: &Connection, p: &Pending) -> Result<PushLaunch> {
     })
 }
 
-/// The effects of a launch outside the ledger.
 pub trait Launches {
-    /// Whether the process `p` of an older attempt is still alive: its pid
-    /// runs with its start time, or its process group has members.
     fn alive(&self, p: Recorded) -> bool {
         crate::procid::alive(p.pid, p.pid_start)
             || p.pid_start
                 .is_some_and(|s| crate::procid::is_same_group(p.pid, s))
     }
 
-    /// The launch of `horch spawn <persona> --attempt <id>` for `l`.
     fn spec(&self, l: &PushLaunch) -> Result<LaunchSpec>;
+
+    fn resuming_harness(&self, _persona: &str) -> Option<String> {
+        None
+    }
 }
 
-/// What [`launch`] did.
+pub const SESSION_ID_MAX_BYTES: usize = 128;
+
+pub fn session_id_ok(id: &str) -> bool {
+    (1..=SESSION_ID_MAX_BYTES).contains(&id.len())
+        && !id.starts_with('-')
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+pub fn resume_of(conn: &Connection, p_id: &str, ports: &dyn Launches) -> Result<Option<String>> {
+    let Some(p) = pending_one(conn, p_id)? else {
+        return Ok(None);
+    };
+    let prev = conn
+        .query_row(
+            "SELECT a.id, a.outcome, w.session_id, w.persona
+             FROM attempts a JOIN workers w ON w.worker_id = a.worker_id
+             WHERE a.task_id = ?1 AND a.id <> ?2
+             ORDER BY a.rowid DESC LIMIT 1",
+            params![p.task_id, p.id],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                    r.get::<_, Option<String>>(3)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((prev_id, outcome, Some(session), prev_persona)) = prev else {
+        return Ok(None);
+    };
+    if outcome.as_deref() != Some(Outcome::Asked.as_str()) || !session_id_ok(&session) {
+        return Ok(None);
+    }
+    let answered = questions_store::answered_of_attempt(conn, &prev_id)?;
+    let persona = workers::get(conn, &p.worker_id)?
+        .persona
+        .unwrap_or_default();
+    let now = ports.resuming_harness(&persona);
+    let then = ports.resuming_harness(prev_persona.as_deref().unwrap_or_default());
+    Ok((answered && now.is_some() && now == then).then_some(session))
+}
+
+pub fn resume_refused(conn: &Connection, attempt_id: &str) -> Result<bool> {
+    let row = conn
+        .query_row(
+            "SELECT a.started_at, w.resumed_from_session, w.last_progress_source,
+                (SELECT b.outcome FROM attempts b
+                 WHERE b.task_id = a.task_id AND b.rowid < a.rowid
+                 ORDER BY b.rowid DESC LIMIT 1)
+             FROM attempts a JOIN workers w ON w.worker_id = a.worker_id
+             WHERE a.id = ?1",
+            params![attempt_id],
+            |r| {
+                Ok((
+                    r.get::<_, Option<String>>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                    r.get::<_, Option<String>>(3)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((Some(started_at), Some(_), progress, Some(before))) = row else {
+        return Ok(false);
+    };
+    let in_window =
+        util::seconds_between(&started_at, &util::now()).is_some_and(|s| s <= START_TIMEOUT_S);
+    Ok(before == Outcome::Asked.as_str()
+        && in_window
+        && progress.as_deref() != Some(ProgressSource::Agent.as_str()))
+}
+
+pub fn on_resume_refused(
+    tx: &Connection,
+    guard: Option<Generation>,
+    task_id: &str,
+    attempt_id: &str,
+) -> Result<()> {
+    if tasks::cancel_requested(tx, task_id)?.is_some() {
+        return Ok(());
+    }
+    tx.execute(
+        "UPDATE tasks SET attempt_floor = attempt_floor + 1, current_worker_id = NULL,
+            not_before = NULL, updated_at = ?2
+         WHERE task_id = ?1",
+        params![task_id, util::now()],
+    )?;
+    let text = format!(
+        "RR-12: the CLI refused the resume of attempt {attempt_id}; a fresh attempt \
+         starts from the question, the answer and the committed work"
+    );
+    let cause = Cause {
+        actor: Actor::Horch,
+        text: &text,
+    };
+    let ready = TaskStatus::Ready.as_str();
+    transition(
+        tx,
+        guard,
+        Entity::Task,
+        task_id,
+        ready,
+        cause,
+        &NeedsYouList,
+    )?;
+    Ok(())
+}
+
 #[derive(Debug)]
 pub enum Launch {
-    /// The spawn started. The caller reaps its process.
     Launched(Launched),
-    /// The attempt is not a push attempt in `launching`, or it has a launch
-    /// record: the spawn ran once already.
     Done,
-    /// The attempt waits for a later pass, for this reason.
     Waiting(String),
 }
 
-/// Part 3: launch the push attempt `attempt_id` at fleet clock `clock`,
-/// after the commit of its rows, through `host`, the launcher of fleetd
-/// (SR-7). It decides again on the rows and the processes of now, so a
-/// process that a stop of this pass did not end yet keeps the launch for
-/// a later pass. A spawn that fails ends its worker row `launch_failed`,
-/// and the start timeout ends the attempt.
 pub fn launch(
     conn: &Connection,
     fleet_root: &Path,
@@ -394,6 +441,11 @@ pub fn launch(
         }
     }
     let l = push_launch(conn, &p)?;
+    let resume = resume_of(conn, attempt_id, ports)?;
+    conn.execute(
+        "UPDATE workers SET resumed_from_session = ?2 WHERE worker_id = ?1",
+        params![l.worker_id, resume],
+    )?;
     let record = LaunchRecord {
         attempt: attempt_id.to_string(),
         launched_at: clock,
@@ -407,7 +459,7 @@ pub fn launch(
         Ok(started) => Ok(Launch::Launched(started)),
         Err(e) => {
             let reason = format!("the launch of attempt {attempt_id} did not start: {e:#}");
-            workers::launch_failed(conn, &l.worker_id, &reason)?;
+            util::atomic(conn, |tx| end_failed_spawn(tx, None, &l.worker_id, &reason))?;
             Err(e).with_context(|| format!("launching attempt {attempt_id}"))
         }
     }
@@ -425,9 +477,8 @@ mod tests {
     use crate::fleetd::fleet_runtime::application::jobs::JobCtx;
     use crate::fleetd::fleet_runtime::domain::config::FleetConfig;
     use crate::fleetd::ideas::application::needs_you::NeedsYouList;
-    use crate::fleetd::task_execution::adapters::sqlite as store;
+    use crate::fleetd::task_execution::application::commands;
     use crate::fleetd::task_execution::application::dispatch::{bind, Bound, DispatchCtx};
-    use crate::fleetd::task_execution::application::{commands, quota};
     use crate::fleetd::task_execution::domain::task::{ProcessScope, Reap, RowRef, Target};
     use crate::fleetd::worker_profiles::adapters::launcher::Launcher;
     use crate::fleetd::worker_profiles::application::ports::{EnvRule, LaunchError};
@@ -443,7 +494,6 @@ mod tests {
 
     const RUN_BRANCH: &str = "fleet/r1";
     const ORCHESTRATOR_PANE: &str = "w0:p0";
-    /// The process of an older attempt.
     const OLD: Recorded = Recorded {
         pid: 4_242,
         pid_start: Some(77),
@@ -468,9 +518,6 @@ mod tests {
         assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     }
 
-    /// A git repository with a run branch, a ledger, a fleet root and a run
-    /// whose orchestrator has a pane. No test starts `horch`, and no test
-    /// reads the clock, the load or the limits of this machine.
     struct World {
         _tmp: tempfile::TempDir,
         fleet_root: PathBuf,
@@ -483,7 +530,7 @@ mod tests {
     impl World {
         fn new() -> World {
             let tmp = tempfile::tempdir().unwrap();
-            let top = tmp.path().canonicalize().unwrap();
+            let top = horch_platform::path::for_child(&tmp.path().canonicalize().unwrap());
             let root = top.join("repo");
             let fleet_root = top.join("fleet");
             std::fs::create_dir_all(&root).unwrap();
@@ -508,7 +555,6 @@ mod tests {
                             ..Default::default()
                         },
                     )?;
-                    // FR-12: a task needs an idea in flight of the feature of its run.
                     crate::taskledger::schema::run_idea(
                         tx,
                         &run.run_id,
@@ -550,7 +596,6 @@ mod tests {
             }
         }
 
-        /// Queue a task of `opus` that works in a tree; gives its id.
         fn add(&mut self, title: &str) -> String {
             let run = self.run.clone();
             let mut t = NewTask::work(title, &format!("docs/{title}.md"), "opus");
@@ -560,7 +605,6 @@ mod tests {
                 .unwrap()
         }
 
-        /// The bind of dispatch, committed.
         fn bind(&mut self, task_id: &str) -> Bound {
             let config = FleetConfig::default();
             let git = Git::new("git");
@@ -585,8 +629,6 @@ mod tests {
                 .unwrap()
         }
 
-        /// Run the `worktree_add` job of the tree of `b` to its end, as a
-        /// job process does, and observe it.
         fn add_tree(&self, b: &Bound) -> Result<String> {
             let tree = b.worktree.as_ref().expect("a tree");
             let mut conn = Connection::open(&self.ledger).unwrap();
@@ -595,12 +637,10 @@ mod tests {
             create::finish_reserved(&mut conn, &self.jobs(), &TestJobs, &tree.worktree_id)
         }
 
-        /// Part 2 of a pass, committed, with `alive` as the process facts.
         fn plan(&mut self, alive: &dyn Fn(Recorded) -> bool) -> Plan {
             self.store.immediate(|tx| plan(tx, None, alive)).unwrap()
         }
 
-        /// Part 3 of a pass for `attempt`, after the commit.
         fn launch(&self, attempt: &str, ports: &Fake) -> Result<Launch> {
             launch(
                 self.store.conn(),
@@ -628,9 +668,6 @@ mod tests {
         }
     }
 
-    /// The launcher and the processes of a test. A launch starts `true`
-    /// through the launcher of fleetd, so it removes the forbidden key
-    /// (SR-7). The spec names the attempt as `horch spawn` gets it.
     #[derive(Default)]
     struct Fake {
         alive: RefCell<BTreeSet<u32>>,
@@ -666,6 +703,10 @@ mod tests {
                 output: None,
             })
         }
+
+        fn resuming_harness(&self, _: &str) -> Option<String> {
+            Some("claude".into())
+        }
     }
 
     impl ProcessHost for Fake {
@@ -684,8 +725,6 @@ mod tests {
         }
     }
 
-    /// The bound attempt of a task with a tree: the bind, then the job of
-    /// its tree.
     fn bound_with_tree(w: &mut World, title: &str) -> Bound {
         let task = w.add(title);
         let b = w.bind(&task);
@@ -697,17 +736,11 @@ mod tests {
     fn launching_attempt_is_launched_once_after_the_commit() {
         let mut w = World::new();
         let b = bound_with_tree(&mut w, "once");
-        let row = store::attempts_of_worker(w.store.conn(), &b.worker_id).unwrap();
-        assert!(
-            !quota::is_restart(&row[0]),
-            "a push attempt is not a restart on a fallback"
-        );
         let f = Fake::default();
         let plan = w.plan(&f.alive_fn());
         assert_eq!(plan.launches, std::slice::from_ref(&b.attempt_id));
         assert!(plan.stops.is_empty() && plan.crashed.is_empty());
 
-        // No effect inside the transaction of part 2.
         let refused = w.store.immediate(|tx| {
             launch(tx, &w.fleet_root, FleetSeconds(5), &b.attempt_id, &f, &f).map(|_| ())
         });
@@ -736,22 +769,16 @@ mod tests {
         assert_eq!(record.launched_at, FleetSeconds(5));
         assert_eq!(record.process, None, "the spawn is not the agent");
 
-        // A second pass does not launch it again.
         assert!(matches!(w.launch(&b.attempt_id, &f).unwrap(), Launch::Done));
         assert_eq!(f.launches.get(), 1);
     }
 
-    /// RR-8, FM-11: a fault before the commit of the bind leaves no
-    /// attempt and no launch. A fault after the commit and before the
-    /// launch leaves the attempt in `launching` with no launch record, and
-    /// the next pass launches it 1 time.
     #[test]
     fn crash_after_commit_before_launch_launches_once_on_the_next_pass() {
         let mut w = World::new();
         let task = w.add("fault");
         let f = Fake::default();
 
-        // Fault before the commit: the bind rolls back.
         let config = FleetConfig::default();
         let git = Git::new("git");
         let ctx = DispatchCtx {
@@ -777,8 +804,6 @@ mod tests {
         assert_eq!(w.plan(&f.alive_fn()), Plan::default());
         assert_eq!(f.launches.get(), 0);
 
-        // Fault after the commit, before the effect: fleetd dies with the
-        // row committed and no launch. The next pass launches it 1 time.
         let b = w.bind(&task);
         w.add_tree(&b).unwrap();
         assert!(effects::read_launch(&w.fleet_root, &b.attempt_id)
@@ -791,8 +816,6 @@ mod tests {
         assert_eq!(f.launches.get(), 1, "exactly 1 launch of the attempt");
     }
 
-    /// A crash of fleetd after the launch record: the record names the
-    /// attempt, so no later pass launches it again, and no row changes.
     #[test]
     fn crash_after_launch_does_not_launch_again() {
         let mut w = World::new();
@@ -800,7 +823,6 @@ mod tests {
         let f = Fake::default();
         reap(w.launch(&b.attempt_id, &f).unwrap());
 
-        // fleetd restarts: part 2 and part 3 run again on the same rows.
         let again = Fake::default();
         let _ = w.plan(&again.alive_fn());
         assert!(matches!(
@@ -811,8 +833,6 @@ mod tests {
         assert_eq!(w.attempt_state(&b.attempt_id).0, "launching");
     }
 
-    /// "The task state machine", `leased`: while the tree is `reserved`,
-    /// the attempt waits for its `worktree_add` job.
     #[test]
     fn reserved_tree_waits_for_its_worktree_add_job() {
         let mut w = World::new();
@@ -847,15 +867,12 @@ mod tests {
         assert_eq!(f.launches.get(), 1);
     }
 
-    /// A failed `worktree_add` job ends the attempt `crashed`, and rung 6
-    /// queues the task again. No launch happens.
     #[test]
     fn failed_worktree_add_ends_the_attempt_crashed() {
         let mut w = World::new();
         let task = w.add("broken");
         let b = w.bind(&task);
         let tree = b.worktree.clone().unwrap();
-        // A file at the path of the tree: `git worktree add` fails.
         std::fs::create_dir_all(&tree.path).unwrap();
         std::fs::write(Path::new(&tree.path).join("x"), "x").unwrap();
         assert!(w.add_tree(&b).is_err(), "the worktree_add job fails");
@@ -874,14 +891,9 @@ mod tests {
         assert_eq!(worker.status, "launch_failed");
         assert!(matches!(w.launch(&b.attempt_id, &f).unwrap(), Launch::Done));
         assert_eq!(f.launches.get(), 0);
-        // A second pass changes nothing.
         assert_eq!(w.plan(&f.alive_fn()), Plan::default());
     }
 
-    /// Stops come before launches (FM-11, RR-8). After a handoff, the
-    /// process of the old attempt can still write the tree. fleetd stops
-    /// it by its recorded pid, and launches the next attempt only when it
-    /// is gone.
     #[test]
     fn handoff_with_a_live_old_process_launches_only_after_it_is_gone() {
         let mut w = World::new();
@@ -908,7 +920,6 @@ mod tests {
                 Ok(id)
             })
             .unwrap();
-        // The pass ends the attempt of the worker that handed off.
         let old = crate::fleetd::task_execution::domain::task::attempt_id(&task, 1);
         w.store
             .immediate(|tx| {
@@ -926,7 +937,6 @@ mod tests {
         let b = w.bind(&task);
         w.add_tree(&b).unwrap();
 
-        // The old process is alive: a stop of it, and no launch.
         let f = Fake::with_alive(OLD.pid);
         let plan = w.plan(&f.alive_fn());
         assert!(plan.launches.is_empty(), "{plan:?}");
@@ -947,7 +957,6 @@ mod tests {
         ));
         assert_eq!(f.launches.get(), 0);
 
-        // The stop worked: the process is gone, and the launch follows.
         f.alive.borrow_mut().clear();
         let plan = w.plan(&f.alive_fn());
         assert_eq!(plan.launches, std::slice::from_ref(&b.attempt_id));
@@ -956,7 +965,6 @@ mod tests {
         assert_eq!(f.launches.get(), 1);
     }
 
-    /// The rule of the decision, with no rows.
     #[test]
     fn decide_puts_a_failed_tree_first_then_stops_then_the_tree() {
         assert!(matches!(
@@ -967,5 +975,27 @@ mod tests {
         assert_eq!(decide(TreeFact::Ready, &[OLD]), Decision::Stop(vec![OLD]));
         assert_eq!(decide(TreeFact::Adding, &[]), Decision::WaitTree);
         assert_eq!(decide(TreeFact::Ready, &[]), Decision::Launch);
+    }
+
+    #[test]
+    fn session_id_form_refuses_an_option_and_odd_bytes() {
+        assert!(session_id_ok("5bd39a10-8a9f-43b8-a26f-3e68992c7d58"));
+        assert!(session_id_ok("thread_1"));
+        for bad in ["", "-c", "--resume", "a b", "a;b", "a/b", "a\nb", "é"] {
+            assert!(!session_id_ok(bad), "{bad:?}");
+        }
+        assert!(session_id_ok(&"a".repeat(SESSION_ID_MAX_BYTES)));
+        assert!(!session_id_ok(&"a".repeat(SESSION_ID_MAX_BYTES + 1)));
+    }
+
+    #[test]
+    fn launch_with_no_question_records_no_resume() {
+        let mut w = World::new();
+        let b = bound_with_tree(&mut w, "fresh");
+        let f = Fake::default();
+        reap(w.launch(&b.attempt_id, &f).unwrap());
+        let worker = workers::get(w.store.conn(), &b.worker_id).unwrap();
+        assert_eq!(worker.resumed_from_session, None);
+        assert_eq!(resume_of(w.store.conn(), &b.attempt_id, &f).unwrap(), None);
     }
 }

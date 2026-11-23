@@ -1,24 +1,3 @@
-//! `horch mode <role> write|plan`: switch a read-only Codex pane to write and
-//! back (X6, design `ai_docs/plans/wave3/x6-design.md`).
-//!
-//! A Codex teammate with `permission_mode: plan` runs read-only: a plain
-//! `horch note` records through the execpolicy rule, but a compound one and
-//! the handoff file fail. Codex 0.160.0 switches its sandbox at run time
-//! with `/permissions`, so the orchestrator can open the pane for a handoff
-//! and close it again:
-//!
-//! 1. wait for the pane at its prompt (2 polls in a row);
-//! 2. type `/permissions`, find the target item by label (`fleet_write`
-//!    for write, `Read Only` for plan) and the `›` cursor, press `down` to
-//!    it, check the cursor line, press Enter;
-//! 3. type `/status` and check its `Permissions:` line (`Profile
-//!    fleet_write`, or `Read Only ...`);
-//! 4. record `mode-changed` (`write` or `plan`) on the record.
-//!
-//! [`switch`] is the keys and the check alone; `horch compact --request` and
-//! the compaction job call it too. Both `/permissions` and `/status` are
-//! local TUI commands: no model turn.
-
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -34,45 +13,35 @@ use horch_core::messaging::mailbox::Mailbox;
 use horch_core::roster::{PermissionMode, Roster};
 use horch_core::runtime::RuntimeContext;
 use horch_core::workspace::client::WorkspaceClient;
-use horch_core::workspace::herdr::Herdr;
 use horch_core::workspace::model::at_prompt;
+use horch_core::workspace::PaneHost;
 
 use super::context::record_kind;
 
-/// The event of a verified switch. Its text is the new mode.
 pub const EVENT_MODE_CHANGED: &str = "mode-changed";
-/// The event of a switch that failed after keys were typed:
-/// `<mode>: <reason>`.
 pub const EVENT_MODE_FAILED: &str = "mode-failed";
 
-/// The command line of `horch mode`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModeArgs {
     pub role: String,
     pub mode: PaneMode,
-    /// `--timeout`: the wait for the pane at its prompt, in seconds.
     pub timeout: Option<u64>,
 }
 
-/// The waits of 1 switch.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Timing {
     pub poll: Duration,
-    /// Polls before the pane must be at its prompt.
     pub idle_polls: u32,
-    /// Polls for the menu to open or close, and for the `/status` block.
     pub screen_polls: u32,
 }
 
 impl Timing {
-    /// 0.5 s polls; 120 s for the prompt, 10 s for a screen.
     pub const DEFAULT: Timing = Timing {
         poll: Duration::from_millis(500),
         idle_polls: 240,
         screen_polls: 20,
     };
 
-    /// [`Timing::DEFAULT`] with a `--timeout` in seconds for the prompt.
     pub fn with_timeout(timeout: Option<u64>) -> Timing {
         let mut t = Timing::DEFAULT;
         if let Some(s) = timeout {
@@ -83,12 +52,9 @@ impl Timing {
     }
 }
 
-/// Why a switch did not happen.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum SwitchError {
-    /// Nothing was typed.
     Refused(String),
-    /// Keys were typed; the pane's mode is unknown.
     Failed(String),
 }
 
@@ -100,7 +66,6 @@ impl std::fmt::Display for SwitchError {
     }
 }
 
-/// Switch the Codex TUI in `pane` to `mode` and check it with `/status`.
 pub(crate) fn switch(
     ws: &dyn WorkspaceClient,
     pane: &str,
@@ -113,7 +78,6 @@ pub(crate) fn switch(
         .map_err(SwitchError::Failed)
 }
 
-/// Poll until the pane has been at its prompt twice in a row.
 fn wait_for_prompt(
     ws: &dyn WorkspaceClient,
     pane: &str,
@@ -140,14 +104,11 @@ fn wait_for_prompt(
     )))
 }
 
-/// Press escape and give `reason` back, so a refused step never leaves the
-/// menu open.
 fn cancel_menu(ws: &dyn WorkspaceClient, pane: &str, reason: String) -> String {
     let _ = ws.pane_send_keys(pane, "esc");
     reason
 }
 
-/// Open `/permissions`, move to `label` and pick it.
 fn select_in_menu(
     ws: &dyn WorkspaceClient,
     pane: &str,
@@ -173,7 +134,6 @@ fn select_in_menu(
     .ok_or_else(|| "the /permissions menu did not close".to_string())
 }
 
-/// Open `/permissions` and count the downs from its cursor to `label`.
 fn open_menu(
     ws: &dyn WorkspaceClient,
     pane: &str,
@@ -195,7 +155,6 @@ fn open_menu(
     })
 }
 
-/// The item under the menu cursor, or an empty string when it cannot be read.
 fn cursor_label(ws: &dyn WorkspaceClient, pane: &str) -> String {
     ws.pane_read(pane, "visible")
         .ok()
@@ -204,7 +163,6 @@ fn cursor_label(ws: &dyn WorkspaceClient, pane: &str) -> String {
         .unwrap_or_default()
 }
 
-/// Run `/status` and check that its Permissions line shows `mode`.
 fn confirm_status(
     ws: &dyn WorkspaceClient,
     pane: &str,
@@ -238,7 +196,6 @@ fn key(ws: &dyn WorkspaceClient, pane: &str, key: &str) -> Result<(), String> {
         .map_err(|e| format!("pressing {key}: {e:#}"))
 }
 
-/// Read `pane` until `found` gives a value, at most `screen_polls` times.
 fn poll_screen<T>(
     ws: &dyn WorkspaceClient,
     pane: &str,
@@ -257,8 +214,6 @@ fn poll_screen<T>(
     None
 }
 
-/// The mode of a record: the text of its newest `mode-changed` event, else
-/// `plan` (the launch mode).
 pub(crate) fn current_mode(history: &[HistoryEntry]) -> PaneMode {
     history
         .iter()
@@ -268,7 +223,6 @@ pub(crate) fn current_mode(history: &[HistoryEntry]) -> PaneMode {
         .unwrap_or(PaneMode::Plan)
 }
 
-/// Whether `record` is a Codex pane whose teammate launches read-only.
 pub(crate) fn is_plan_pane(roster: &Roster, record: &Record) -> bool {
     record_kind(record) == HarnessKind::Codex
         && roster
@@ -276,8 +230,6 @@ pub(crate) fn is_plan_pane(roster: &Roster, record: &Record) -> bool {
             .is_some_and(|t| t.permission_mode == Some(PermissionMode::Plan))
 }
 
-/// [`switch`] on a record, with its event: `mode-changed` on success,
-/// `mode-failed` when keys were typed and the check failed.
 pub(crate) fn switch_record(
     ledger: &SessionLedger,
     ws: &dyn WorkspaceClient,
@@ -302,7 +254,6 @@ pub(crate) fn switch_record(
     }
 }
 
-/// Everything `horch mode` works with. Tests pass a simulated pane.
 pub(crate) struct Env<'a> {
     pub ledger: &'a SessionLedger,
     pub roster: &'a Roster,
@@ -311,7 +262,6 @@ pub(crate) struct Env<'a> {
     pub timing: Timing,
 }
 
-/// 1 run: the exit code and the lines for stdout and stderr.
 pub(crate) fn run(env: &Env, args: &ModeArgs) -> (u8, String) {
     let role = &args.role;
     let refused = |r: String| (1, format!("horch mode: refused: {r}"));
@@ -325,7 +275,6 @@ pub(crate) fn run(env: &Env, args: &ModeArgs) -> (u8, String) {
     }
 }
 
-/// The live record and the pane of `role`, or why `horch mode` refuses it.
 fn plan_pane(env: &Env, role: &str) -> Result<(Record, String), String> {
     let workspace = env.mailbox.workspace_id();
     let record = env
@@ -343,16 +292,15 @@ fn plan_pane(env: &Env, role: &str) -> Result<(Record, String), String> {
     Ok((record, pane))
 }
 
-/// `horch mode`.
 pub fn mode(ctx: &RuntimeContext, args: &ModeArgs) -> Result<ExitCode> {
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
-    let mailbox = match Mailbox::resolve_in(&herdr, ctx) {
+    let mailbox = match Mailbox::resolve_in(&PaneHost::of(ctx), ctx) {
         Ok(m) => m,
         Err(e) => {
             eprintln!("horch mode: refused: {e:#}");
             return Ok(ExitCode::from(1));
         }
     };
+    let herdr = PaneHost::for_workspace(ctx, mailbox.workspace_id());
     let ledger = SessionLedger::open_in(ctx)?;
     let roster = match super::load_roster_unwarned(ctx, None) {
         Ok(r) => r,
@@ -376,9 +324,6 @@ pub fn mode(ctx: &RuntimeContext, args: &ModeArgs) -> Result<ExitCode> {
 
 #[cfg(test)]
 pub(crate) mod sim {
-    //! A simulated Codex 0.160.0 TUI behind [`WorkspaceClient`]: it opens
-    //! the `/permissions` menu, moves its cursor, applies a selection and
-    //! prints `/status`, as the research pane showed (X6).
 
     use std::cell::RefCell;
 
@@ -396,17 +341,12 @@ pub(crate) mod sim {
         pub mode: PaneMode,
         pub menu: Option<usize>,
         pub lines: Vec<String>,
-        /// Every call: `prompt <text>`, `key <key>`, `read <source>`.
         pub calls: Vec<String>,
-        /// The `/status` value after `fleet_write` is selected.
         pub write_status: String,
-        /// When set, the cursor skips this many extra items on `down`.
         pub drift: usize,
     }
 
     impl SimCodex {
-        /// A pane `p1` at its prompt in `mode`, with the 5-item menu of the
-        /// profile launch (X6 repro 5b).
         pub fn new(mode: PaneMode) -> SimCodex {
             SimCodex {
                 state: RefCell::new(State {
@@ -433,7 +373,6 @@ pub(crate) mod sim {
             self.state.borrow().calls.clone()
         }
 
-        /// The calls that type or press, without the reads.
         pub fn typed(&self) -> Vec<String> {
             self.calls()
                 .into_iter()
@@ -563,7 +502,6 @@ mod tests {
         screen_polls: 3,
     };
 
-    /// A world with a plan Codex teammate `codex-plan` and its live record.
     struct Fleet {
         w: World,
         mailbox: Mailbox,
@@ -626,8 +564,6 @@ mod tests {
         }
     }
 
-    /// The exact keys of a switch to write: the menu opens on Read Only
-    /// (item 4), 1 down to fleet_write (item 5), Enter, then `/status`.
     #[test]
     fn write_types_the_menu_keys_checks_status_and_records_the_event() {
         let f = Fleet::new();
@@ -654,8 +590,6 @@ mod tests {
         );
     }
 
-    /// Back to plan: the menu opens on fleet_write (item 5); 4 downs wrap
-    /// to Read Only (item 4).
     #[test]
     fn plan_selects_read_only_and_records_the_event() {
         let f = Fleet::new();
@@ -681,8 +615,6 @@ mod tests {
         );
     }
 
-    /// Only a Codex pane whose teammate has `permission_mode: plan`: the
-    /// others type nothing and record nothing.
     #[test]
     fn other_panes_are_refused_without_a_key() {
         let f = Fleet::new();
@@ -698,7 +630,6 @@ mod tests {
         assert!(f.events("claude-1").is_empty());
     }
 
-    /// Each refusal names its cause, word for word.
     #[test]
     fn each_refusal_gives_its_exact_reason() {
         let f = Fleet::new();
@@ -721,7 +652,6 @@ mod tests {
         assert!(sim.typed().is_empty());
     }
 
-    /// A pane that stays busy is refused before any key.
     #[test]
     fn a_busy_pane_is_refused_before_any_key() {
         let f = Fleet::new();
@@ -735,8 +665,6 @@ mod tests {
         assert!(f.events("codex-plan-1").is_empty());
     }
 
-    /// The cursor is checked before Enter: on a mismatch the menu closes
-    /// with Esc, Enter is never pressed, and `mode-failed` is recorded.
     #[test]
     fn a_cursor_on_the_wrong_item_presses_esc_never_enter() {
         let f = Fleet::new();
@@ -753,8 +681,6 @@ mod tests {
         assert!(events[0].1.starts_with("write: "), "{:?}", events[0]);
     }
 
-    /// A menu without the target item (the legacy 3-item menu has neither
-    /// Read Only nor fleet_write) closes with Esc.
     #[test]
     fn a_menu_without_the_item_presses_esc() {
         let f = Fleet::new();
@@ -767,8 +693,6 @@ mod tests {
         assert_eq!(sim.typed(), ["prompt /permissions", "key esc"]);
     }
 
-    /// A `/status` that is not `Profile fleet_write` fails the write
-    /// switch: a plain workspace lacks the state root (X6 repro 4).
     #[test]
     fn a_status_without_the_fleet_profile_fails_the_write_check() {
         let f = Fleet::new();

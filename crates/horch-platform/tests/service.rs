@@ -1,18 +1,8 @@
-//! The concern service: the service definitions of fleetd, install and
-//! restart through the service manager, the systemd watchdog ping and the
-//! home of the OS user (PL-2, PL-3, PL-5, FM-12).
-//!
-//! No test runs `launchctl`, `systemctl` or `schtasks`. Each test passes a
-//! stand-in manager: a small script in a temp folder that writes its
-//! arguments to a file.
-
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use horch_platform::service::{self, Spec};
 
-/// The variable that tells a child run of this test binary to do the child
-/// part of a test.
 const CHILD: &str = "HORCH_SERVICE_TEST_CHILD";
 
 #[cfg(unix)]
@@ -23,9 +13,6 @@ const EXE: &str = r"C:\horch dir\horch.exe";
 #[cfg(unix)]
 const LEDGER: &str = "/tmp/a&b <c>/ledger.sqlite3";
 
-/// The spec of the tests. A Windows task carries no env, so the env is empty
-/// there (`docs/tickets/fleetd-p1/MAP.md`, Q8: the service mode has the
-/// default ledger and no `FLEET_ROOT`).
 fn spec(folder: &Path) -> Spec {
     #[cfg(unix)]
     let env = vec![
@@ -42,7 +29,6 @@ fn spec(folder: &Path) -> Spec {
     }
 }
 
-/// The text of the definition file `name` of `spec`.
 #[cfg(any(target_os = "linux", windows))]
 fn definition(spec: &Spec, name: &str) -> String {
     let defs = service::definitions(spec).expect("definitions");
@@ -52,7 +38,6 @@ fn definition(spec: &Spec, name: &str) -> String {
         .unwrap_or_else(|| panic!("no definition {name} in {defs:?}"))
 }
 
-/// Runs this test binary again for the test `test` only, with `CHILD` set.
 fn run_child(test: &str, envs: &[(&str, &std::ffi::OsStr)]) -> Output {
     let out = Command::new(std::env::current_exe().expect("test exe"))
         .args([test, "--exact", "--nocapture", "--test-threads=1"])
@@ -113,8 +98,6 @@ fn linux_unit_escapes_specifiers_and_quotes() {
     assert!(lines.contains(&r#"Environment="K=a%%b\"c\\d$e""#), "{unit}");
 }
 
-/// The value at `key` of the plist `path`, as `plutil` reads it. `plutil`
-/// only reads the file.
 #[cfg(target_os = "macos")]
 fn plist_value(path: &Path, key: &str) -> String {
     let out = Command::new("plutil")
@@ -177,7 +160,6 @@ fn mac_plists_have_keepalive_and_a_30_s_check() {
     );
 }
 
-/// `xml` with the whitespace between tags removed.
 #[cfg(windows)]
 fn compact(xml: &str) -> String {
     xml.lines().map(str::trim).collect()
@@ -222,7 +204,6 @@ fn windows_tasks_run_fleetd_and_its_check() {
     );
 }
 
-/// A Windows task carries no environment, so a spec with an env is refused.
 #[cfg(windows)]
 #[test]
 fn windows_tasks_refuse_an_env() {
@@ -234,8 +215,6 @@ fn windows_tasks_refuse_an_env() {
     assert!(err.to_string().contains("environment"), "{err}");
 }
 
-/// Task Scheduler refuses a repetition interval below `PT1M`, so the check
-/// task has 2 triggers of `PT1M` whose start times are 30 s apart (PL-5).
 #[cfg(windows)]
 #[test]
 fn windows_check_task_has_2_triggers_of_pt1m_30_s_apart() {
@@ -251,8 +230,6 @@ fn windows_check_task_has_2_triggers_of_pt1m_30_s_apart() {
     let starts: Vec<&str> = triggers
         .into_iter()
         .map(|t| {
-            // The schema order of a trigger (`triggerBaseType`, an
-            // `xs:sequence`): `Enabled`, `StartBoundary`, `Repetition`.
             let rest = t
                 .strip_prefix("<Enabled>true</Enabled><StartBoundary>")
                 .unwrap_or_else(|| panic!("Enabled, then StartBoundary: {t}"));
@@ -264,8 +241,6 @@ fn windows_check_task_has_2_triggers_of_pt1m_30_s_apart() {
     assert_eq!(starts, ["2000-01-01T00:00:00", "2000-01-01T00:00:30"]);
 }
 
-/// A stand-in manager script in `dir`. Each call appends 1 line
-/// `<args> | <count of files in folder>` to the log.
 #[cfg(unix)]
 fn stand_in(dir: &Path, folder: &Path, status: i32) -> (PathBuf, PathBuf) {
     use std::os::unix::fs::PermissionsExt;
@@ -284,19 +259,30 @@ fn stand_in(dir: &Path, folder: &Path, status: i32) -> (PathBuf, PathBuf) {
     (script, log)
 }
 
+fn windows_stand_in_text(folder: &Path, log: &Path, status: i32) -> String {
+    format!(
+        "@echo off\r\nset n=0\r\nfor %%f in (\"{}\\*\") do set /a n+=1\r\n>> \"{}\" echo %* ^| %n%\r\nexit /b {status}\r\n",
+        folder.display(),
+        log.display()
+    )
+}
+
+#[test]
+fn windows_stand_in_has_no_number_before_its_redirect() {
+    let text = windows_stand_in_text(Path::new("defs"), Path::new("calls.log"), 0);
+    let line = text
+        .split("\r\n")
+        .find(|line| line.contains(">>"))
+        .expect("the line that writes the log");
+    assert!(line.starts_with(">> "), "{line}");
+    assert!(line.ends_with("%n%"), "{line}");
+}
+
 #[cfg(windows)]
 fn stand_in(dir: &Path, folder: &Path, status: i32) -> (PathBuf, PathBuf) {
     let log = dir.join("calls.log");
     let script = dir.join("manager.cmd");
-    std::fs::write(
-        &script,
-        format!(
-            "@echo off\r\nset n=0\r\nfor %%f in (\"{}\\*\") do set /a n+=1\r\necho %* ^| %n%>> \"{}\"\r\nexit /b {status}\r\n",
-            folder.display(),
-            log.display()
-        ),
-    )
-    .unwrap();
+    std::fs::write(&script, windows_stand_in_text(folder, &log, status)).unwrap();
     (script, log)
 }
 
@@ -314,8 +300,6 @@ fn uid() -> String {
     String::from_utf8(out.stdout).unwrap().trim().to_string()
 }
 
-/// The text of a written definition file: UTF-8, or UTF-16LE with a byte
-/// order mark for a Windows task XML.
 fn read_definition(path: &Path) -> String {
     let bytes = std::fs::read(path).unwrap();
     #[cfg(windows)]
@@ -336,8 +320,6 @@ fn read_definition(path: &Path) -> String {
     String::from_utf8(bytes).unwrap()
 }
 
-/// The manager calls of `ensure` on this OS, for the definitions in
-/// `folder`.
 #[cfg(target_os = "macos")]
 fn expected_ensure_calls(folder: &Path) -> Vec<String> {
     let uid = uid();
@@ -385,13 +367,11 @@ fn ensure_writes_the_files_then_calls_the_manager() {
     for (path, text) in &defs {
         assert_eq!(read_definition(path), *text, "{}", path.display());
     }
-    // Each call logs the count of files in the folder: all of them exist.
     let suffix = format!(" | {}", defs.len());
     let args: Vec<String> = calls(&log)
         .iter()
         .map(|c| {
             let args = c.strip_suffix(&suffix);
-            // `%*` of the Windows stand-in shows the quotes of a path.
             args.unwrap_or_else(|| panic!("a call before the files: {c}"))
                 .replace('"', "")
         })
@@ -399,8 +379,6 @@ fn ensure_writes_the_files_then_calls_the_manager() {
     assert_eq!(args, expected_ensure_calls(&folder));
 }
 
-/// `ensure` stops at the first failure. A failed macOS `bootout` is not a
-/// failure: the label was not loaded.
 #[test]
 fn ensure_fails_when_the_manager_fails() {
     let dir = tempfile::tempdir().unwrap();
@@ -421,8 +399,6 @@ fn ensure_fails_when_the_manager_fails() {
     );
 }
 
-/// `ensure` calls each manager command again on the 2nd run: each task is
-/// created again with `/F`, then the fleetd task runs.
 #[cfg(windows)]
 #[test]
 fn ensure_twice_calls_each_command_twice() {
@@ -440,21 +416,6 @@ fn ensure_twice_calls_each_command_twice() {
     assert_eq!(args, [once.clone(), once].concat());
 }
 
-/// A stand-in manager with state, in `dir`. It acts as launchd or as
-/// systemd does for the commands of `ensure`, and keeps the definition
-/// that each label runs in `dir/loaded/<label>`:
-///
-/// - `bootstrap gui/<uid> <plist>` fails with 5 for a loaded label, as
-///   launchd does. Else it loads the plist.
-/// - `bootout gui/<uid>/<label>` fails with 3 for a label that is not
-///   loaded. Else it unloads the label.
-/// - `--user daemon-reload` reads the unit files of `folder`.
-/// - `--user enable --now <unit>` starts a unit that does not run, with
-///   the unit file of the last reload. `enable` without `--now` starts
-///   nothing.
-/// - `--user restart <unit>` runs the unit file of the last reload.
-///
-/// A call whose arguments contain the text of `dir/fail-on` fails with 9.
 #[cfg(unix)]
 fn model_manager(dir: &Path, folder: &Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
@@ -495,9 +456,6 @@ esac
     script
 }
 
-/// Each label of `spec` runs its current definition in the state of the
-/// [`model_manager`] in `dir`. The label of a plist is its file stem, the
-/// label of a systemd unit is its file name.
 #[cfg(unix)]
 fn assert_loaded(dir: &Path, spec: &Spec) {
     for (path, text) in service::definitions(spec).unwrap() {
@@ -509,8 +467,6 @@ fn assert_loaded(dir: &Path, spec: &Spec) {
     }
 }
 
-/// Install, then install again: each label is loaded and the 2nd run
-/// gives no error. launchd refuses a 2nd `bootstrap` of a loaded label.
 #[cfg(unix)]
 #[test]
 fn ensure_twice_keeps_each_label_loaded() {
@@ -524,9 +480,6 @@ fn ensure_twice_keeps_each_label_loaded() {
     assert_loaded(dir.path(), &spec);
 }
 
-/// The 1st install fails at its last manager command, after the files are
-/// written: the macOS check agent, or the Linux restart. The next install
-/// loads each label.
 #[cfg(unix)]
 #[test]
 fn ensure_after_a_failed_ensure_loads_each_label() {
@@ -547,7 +500,6 @@ fn ensure_after_a_failed_ensure_loads_each_label() {
     assert_loaded(dir.path(), &spec);
 }
 
-/// A changed definition: the next install loads the label with it.
 #[cfg(unix)]
 #[test]
 fn ensure_reloads_a_changed_definition() {
@@ -565,9 +517,6 @@ fn ensure_reloads_a_changed_definition() {
     assert_loaded(dir.path(), &new);
 }
 
-/// A `bootout` that fails for a reason other than "not loaded" stops
-/// `ensure` before the next command: the check agent never stays loaded
-/// while fleetd is unloaded.
 #[cfg(target_os = "macos")]
 #[test]
 fn ensure_stops_at_a_bootout_that_fails_for_another_reason() {
@@ -585,8 +534,6 @@ fn ensure_stops_at_a_bootout_that_fails_for_another_reason() {
     assert_loaded(dir.path(), &spec);
 }
 
-/// On Windows, `/Run` alone restarts the task: its policy `StopExisting`
-/// stops the old instance first, and a task that is not running starts.
 #[test]
 fn restart_calls_the_manager_once() {
     let dir = tempfile::tempdir().unwrap();
@@ -614,7 +561,6 @@ fn watchdog_ping_is_not_supported_off_linux() {
     assert_eq!(err.os, std::env::consts::OS);
 }
 
-/// The child part of the watchdog tests: 2 pings.
 #[cfg(target_os = "linux")]
 fn ping_twice() {
     for _ in 0..2 {
@@ -624,8 +570,6 @@ fn ping_twice() {
     }
 }
 
-/// Runs `test` as a child with `NOTIFY_SOCKET` set to `name`, and checks
-/// the 2 datagrams that `socket` gets.
 #[cfg(target_os = "linux")]
 fn check_pings(test: &str, name: &str, socket: &std::os::unix::net::UnixDatagram) {
     socket
@@ -680,7 +624,6 @@ fn watchdog_ping_sends_to_an_abstract_notify_socket() {
 #[test]
 fn os_user_home_ignores_home_env() {
     if is_child() {
-        // The harness prints the test name before it on the same line.
         println!("\nHOME_IS={}", service::os_user_home().unwrap().display());
         return;
     }
@@ -705,8 +648,6 @@ fn os_user_home_ignores_home_env() {
     assert_ne!(Path::new(child_home), fake.path());
 }
 
-/// The manager command of this OS is the 1 that [`service::ensure`] and
-/// [`service::restart`] expect.
 #[test]
 fn manager_is_the_service_manager_of_this_os() {
     #[cfg(target_os = "macos")]
@@ -718,7 +659,6 @@ fn manager_is_the_service_manager_of_this_os() {
     assert_eq!(service::MANAGER, want);
 }
 
-/// The definition folder is in the home of the OS user, never in `HOME`.
 #[test]
 fn default_folder_is_in_the_os_user_home() {
     let home = service::os_user_home().expect("the home of the OS user");
@@ -735,8 +675,6 @@ fn default_folder_is_in_the_os_user_home() {
     assert_eq!(service::default_folder().expect("the folder"), want);
 }
 
-/// The restart of the service of [`service::LABEL`] in
-/// [`service::default_folder`] is 1 call of the manager, here a stand-in.
 #[test]
 fn restart_of_the_fleetd_label_calls_the_manager() {
     let dir = tempfile::tempdir().unwrap();
@@ -751,4 +689,61 @@ fn restart_of_the_fleetd_label_calls_the_manager() {
     let calls = calls(&log);
     assert_eq!(calls.len(), 1, "{calls:?}");
     assert!(calls[0].contains(service::LABEL), "{calls:?}");
+}
+
+#[test]
+fn a_non_default_ledger_gets_its_own_valid_label() {
+    assert_eq!(service::LABEL, "horch-fleetd");
+    service::validate_label(service::LABEL).expect("the default label is valid");
+    let label = service::ledger_label(&[0xab, 0xcd, 0xef, 0x01, 0xff, 0x00]);
+    assert_eq!(label, "horch-fleetd-abcdef01");
+    service::validate_label(&label).expect("a ledger label is valid");
+    assert_ne!(
+        service::ledger_label(&[0, 0, 0, 1]),
+        service::ledger_label(&[0, 0, 0, 2])
+    );
+}
+
+#[test]
+fn a_ledger_label_names_only_its_own_files_and_manager_calls() {
+    let dir = tempfile::tempdir().unwrap();
+    let folder = dir.path().join("defs");
+    let mut spec = spec(&folder);
+    spec.label = service::ledger_label(&[0x12, 0x34, 0x56, 0x78]);
+    let (manager, log) = stand_in(dir.path(), &folder, 0);
+
+    service::ensure(&spec, &manager).expect("ensure");
+
+    let names: Vec<String> = std::fs::read_dir(&folder)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(!names.is_empty());
+    for name in &names {
+        assert!(name.starts_with("horch-fleetd-12345678"), "{names:?}");
+    }
+    let calls = calls(&log);
+    assert!(!calls.is_empty());
+    for call in &calls {
+        assert!(
+            !call.replace(&spec.label, "").contains(service::LABEL),
+            "a call names the default label: {call}"
+        );
+    }
+}
+
+#[test]
+fn definitions_refuse_an_invalid_label() {
+    let dir = tempfile::tempdir().unwrap();
+    let long = "a".repeat(service::LABEL_MAX + 1);
+    for label in [
+        "", "../x", "a/b", r"a\b", "x y", ".hidden", "-x", "a..b", &long,
+    ] {
+        let mut spec = spec(dir.path());
+        spec.label = label.to_string();
+        let err = service::definitions(&spec).expect_err(label);
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput, "{label:?}");
+        service::validate_label(label).expect_err(label);
+    }
+    service::validate_label(&"a".repeat(service::LABEL_MAX)).expect("64 bytes is valid");
 }

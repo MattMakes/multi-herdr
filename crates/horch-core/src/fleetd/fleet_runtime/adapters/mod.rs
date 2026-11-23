@@ -1,5 +1,3 @@
-//! The adapters layer of fleet runtime: I/O: SQLite, files and processes.
-
 pub mod channel_client;
 pub mod channel_server;
 pub mod clock_store;

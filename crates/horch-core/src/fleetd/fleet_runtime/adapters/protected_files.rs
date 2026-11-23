@@ -1,12 +1,3 @@
-//! The protected file reader: the 1 function that reads an untrusted file
-//! and refuses a link, a file that is not regular, another owner, a wide
-//! mode, a real path outside its root, or a file over its size limit.
-//!
-//! Requirements: SR-5, SR-6, FM-23. The checks run in the order of
-//! Protocol rule 7 of `docs/specs/fleetd/design.md`. A guard whose fact is
-//! unknown does not hold: on Windows the platform gives no mode, so each
-//! file is refused with the reason "mode unknown".
-
 use std::fs::{self, File, Metadata};
 use std::io::Read;
 use std::path::Path;
@@ -14,36 +5,21 @@ use std::path::Path;
 use horch_platform::channel::User;
 use horch_platform::fs as platform;
 
-/// The permission bits of group and others. A protected file is 0600 or
-/// narrower, and each folder from the root to the file is 0700 or
-/// narrower.
-const GROUP_AND_OTHERS: u32 = 0o077;
-
-/// The rule that a protected file must meet. The caller gives it.
 #[derive(Debug, Clone, Copy)]
 pub struct Rule<'a> {
-    /// The folder that holds the file, for example the outbox of 1 attempt
-    /// or the request folder. The real path of the file is inside it, and
-    /// each folder from this root to the file has the owner and mode rule.
     pub root: &'a Path,
-    /// The user that owns the ledger.
     pub owner: &'a User,
-    /// The size limit of the type of the file, in bytes. A file of this
-    /// size is read; a larger one is refused.
     pub limit: u64,
 }
 
-/// A file that failed 1 check. The caller records it in `ingested` and does
-/// not read the path again.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rejected {
-    /// Why the file failed, as the user reads it.
     pub reason: String,
 }
 
-/// Read the untrusted file `path` under `rule`. Returns its bytes, or the
-/// reason of the first check that fails.
 pub fn read_protected(path: &Path, rule: &Rule<'_>) -> Result<Vec<u8>, Rejected> {
+    let identity =
+        platform::file_identity_at(path).map_err(|e| reject(format!("stat failed: {e}")))?;
     let before = fs::symlink_metadata(path).map_err(|e| reject(format!("stat failed: {e}")))?;
     if before.file_type().is_symlink() {
         return Err(reject("the file is a link".into()));
@@ -56,7 +32,9 @@ pub fn read_protected(path: &Path, rule: &Rule<'_>) -> Result<Vec<u8>, Rejected>
     let meta = file
         .metadata()
         .map_err(|e| reject(format!("stat of the open file failed: {e}")))?;
-    if !meta.is_file() || platform::file_identity(&meta) != platform::file_identity(&before) {
+    let opened = platform::file_identity_of(&file)
+        .map_err(|e| reject(format!("stat of the open file failed: {e}")))?;
+    if !meta.is_file() || opened != identity {
         return Err(reject(
             "the file changed between the check and the open".into(),
         ));
@@ -77,7 +55,6 @@ pub fn read_protected(path: &Path, rule: &Rule<'_>) -> Result<Vec<u8>, Rejected>
     read_to_limit(&mut file, &meta, rule.limit)
 }
 
-/// Check each folder from the parent of `real` up to `real_root`.
 fn check_folders(real: &Path, real_root: &Path, owner: &User) -> Result<(), Rejected> {
     for folder in real.ancestors().skip(1) {
         let in_folder = |text: String| reject(format!("folder {}: {text}", folder.display()));
@@ -97,8 +74,6 @@ fn check_folders(real: &Path, real_root: &Path, owner: &User) -> Result<(), Reje
     Ok(())
 }
 
-/// Check that `owner` owns `file` and that its mode is `rule` or narrower.
-/// The error is the reason text.
 fn check_owner_and_mode(
     file: &File,
     meta: &Metadata,
@@ -113,16 +88,9 @@ fn check_owner_and_mode(
             user_text(owner)
         ));
     }
-    let mode = platform::mode_of(meta).map_err(|_| "mode unknown".to_string())? & 0o7777;
-    if mode & GROUP_AND_OTHERS != 0 {
-        return Err(format!("mode {mode:04o} is wider than {rule:04o}"));
-    }
-    Ok(())
+    platform::check_owner_only(file, meta, rule)
 }
 
-/// Read `file` when its size is at most `limit`. A size over the limit is
-/// refused before a read, and a read stops 1 byte after the limit, so a
-/// file that grows after the check is refused without a read of all of it.
 fn read_to_limit(file: &mut File, meta: &Metadata, limit: u64) -> Result<Vec<u8>, Rejected> {
     if meta.len() > limit {
         return Err(reject(format!(

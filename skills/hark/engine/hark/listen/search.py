@@ -21,7 +21,6 @@ from hark.listen import vocabulary as voc
 SR = 48000
 NEAR_SILENT_DB = -70.0
 
-# find: envelope and trims
 FRAME_S = 0.005
 FRAME = 240
 ATTACK_FRAME = 48
@@ -69,9 +68,6 @@ def query_text(prompt: Any) -> str:
     if not isinstance(prompt, str) or not prompt.strip():
         raise ValueError("no query given")
     return prompt.strip()
-
-
-# ================================================================ rank
 
 
 def _rank_rows(vec: voc.Vocab, paths: list[str], prompt: str) -> list[dict]:
@@ -170,9 +166,6 @@ def rank_text(result: dict) -> str:
     return "\n".join(lines)
 
 
-# ================================================================ find: envelope helpers
-
-
 def envelope(mat: numpy.ndarray, frame: int = FRAME) -> numpy.ndarray:
     """Frame levels in dB of non-overlapping frames."""
     mat = numpy.asarray(mat, numpy.float64)
@@ -237,9 +230,6 @@ def multiple_sounds(envl: numpy.ndarray, noise_lo: float, lhs: float, rhs: float
         return False
     mid = envl[ix_lo + above[0]:ix_lo + above[-1] + 1]
     return has_gap(mid) or _longest_run(mid <= qtext) >= QUIET_RUN
-
-
-# ================================================================ find: windows
 
 
 def _default_win(span: float) -> float:
@@ -371,9 +361,6 @@ def round_robin(pool: Sequence[dict], count: int = CAP) -> list[dict]:
     return result
 
 
-# ================================================================ find: strokes and events
-
-
 def _attack_time(env1: numpy.ndarray, noise_lo: float, o: float) -> float | None:
     """The attack near onset o (F5 step 3.4); None when no frame reaches floor + 10 dB (an onset in the noise)."""
     a0 = max(0, int(math.floor((o - ATTACK_REACH_S) / 0.001)))
@@ -463,9 +450,6 @@ def onset_candidates(mat: numpy.ndarray, envl: numpy.ndarray, noise_lo: float, d
     for cand in pool:
         _isolate(envl, noise_lo, cand)
     return pool
-
-
-# ================================================================ find: query kind and scoring
 
 
 def query_kind(vec: voc.Vocab, qtext: numpy.ndarray) -> tuple[str, float]:
@@ -559,9 +543,6 @@ def _segment(ctx: dict, cand: dict) -> dict:
             "tail_db": round(cand["tail_db"], 1), "cut": cand["cut"]}
 
 
-# ================================================================ find: driver
-
-
 def _span_of(fpath: str, t_from: float | None, t_to: float | None) -> tuple[float, float, float]:
     """(searched start, searched end, load start with the margin)."""
     secs = voc.check_range(fpath, t_from, t_to)
@@ -623,9 +604,6 @@ def find(path: str, query: str, win: float | None = None, hop: float | None = No
             "n_windows": ctx["n_windows"], "n_events": ctx["n_events"], "segments": segs}
 
 
-# ================================================================ find: summary and text
-
-
 def _how_text(ctx: dict) -> str:
     how = f"query reads as {ctx['read']}" if ctx["kind"] == "auto" else f"kind={ctx['kind']}"
     span = ctx["s1"] - ctx["s0"]
@@ -676,9 +654,6 @@ def find_text(result: dict) -> str:
                      f"z {voc.zf(sv['z'])}  {sv['verdict']}  {sv['kind']}  peak {sv['peak_dbfs']:.1f}  "
                      f"head {sv['head_db']:.0f} dB  tail {sv['tail_db']:.0f} dB{cut}")
     return "\n".join(lines)
-
-
-# ================================================================ CLI
 
 
 def _require(name: str) -> None:

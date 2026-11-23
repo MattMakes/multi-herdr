@@ -22,10 +22,6 @@ def parser_with(add_cli) -> argparse.ArgumentParser:
     return p
 
 
-# ---------------------------------------------------------------- fixtures
-
-
-
 class StubClap:
     """Fixed unit vectors: an excerpt maps to a vector from its RMS level, a text to a vector from its hash."""
 

@@ -1,14 +1,3 @@
-//! The use cases of rung 6 (`docs/specs/fleetd/design.md`, "Stall ladder",
-//! rung 6): a burned attempt, and the escalation of a `failed` task past
-//! its replan limit.
-//!
-//! - [`burn_attempt`]: 1 attempt ended with an outcome that burns it. The
-//!   task waits for its backoff in `ready`, or goes to `failed` with 1 wake
-//!   to the orchestrator of the run, or goes to `escalated` after its 1
-//!   replan.
-//! - [`escalate_overdue`]: the pass moves each `failed` task past its
-//!   `due_at` to `escalated`.
-
 use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
 use std::path::{Path, PathBuf};
 
@@ -37,8 +26,6 @@ use crate::taskledger::model::{Actor, EventKind, TaskStatus, WorkerStatus};
 use crate::taskledger::tasks::{self, Requeue};
 use crate::taskledger::{util, workers};
 
-/// The numbers that rung 6 reads: the retry numbers of the profile of the
-/// task and `replan_limit_s` of `fleet.toml`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Policy {
     pub retry: Retry,
@@ -46,8 +33,6 @@ pub struct Policy {
 }
 
 impl Default for Policy {
-    /// The design defaults. A caller with no profile and no `fleet.toml`
-    /// uses them.
     fn default() -> Self {
         Policy {
             retry: Retry::default(),
@@ -56,9 +41,6 @@ impl Default for Policy {
     }
 }
 
-/// Rung 6 for task `task_id`, whose attempt ended with `outcome`, in the
-/// open transaction `tx`. `policy` holds the numbers of its profile.
-/// Refuses an outcome that burns no attempt: it has its own path.
 pub fn burn_attempt(
     tx: &Connection,
     task_id: &str,
@@ -83,43 +65,24 @@ pub fn burn_attempt(
     )
 }
 
-/// The cause of the `exited` fact of an attempt that ended at the context
-/// limit. Its `data_json` holds the head of the worktree at the end.
 pub const CONTEXT_LIMIT_END: &str = "context_limit";
 
-/// The kind of the needs-you item of a context-limit loop.
 pub const CONTEXT_LIMIT_LOOP: &str = "context_limit_loop";
 
-/// The handoff file of an attempt, in its attempt folder.
 const HANDOFF_MD: &str = "handoff.md";
 
-/// What fleetd knows of the worktree of an attempt at its end: its head
-/// commit (`None` when unknown) and its `git diff`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TreeAtEnd {
     pub head: Option<String>,
     pub diff: String,
 }
 
-/// What [`on_context_limit`] did with the task.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ContextLimitMove {
-    /// The task is `ready` at once, and its next attempt reads `handoff`.
     Ready { handoff: PathBuf },
-    /// The loop guard held: the task is `escalated` with 1 needs-you item.
     Held,
 }
 
-/// The attempt `attempt` reached the context limit, and its wrapper ended
-/// it (FM-20, MAP.md Q2), in the open transaction `tx`. The attempt ends
-/// with the outcome `context_limit`, which burns no attempt, and the head
-/// of `tree` goes into the `data_json` of its `exited` fact. The task moves
-/// to `ready` at once, with no `not_before`, and the handoff file of rung 6
-/// for the next attempt in the same worktree. The loop guard: when the
-/// attempt before it also ended at the limit at the same head, the task
-/// goes to `escalated` with 1 needs-you item instead. `tail_bytes` bounds
-/// each tail that the handoff file holds. `None`: the task already moved,
-/// or the attempt ended with another outcome.
 pub fn on_context_limit(
     tx: &Connection,
     guard: Option<Generation>,
@@ -145,8 +108,6 @@ pub fn on_context_limit(
     }
     end_at_limit(tx, guard, attempt, &worker, ended, tree.head.as_deref())?;
     let previous = previous_end(tx, attempt)?;
-    // No attempt is burned: the next claim adds 1 to `attempts`, and the
-    // floor moves with it.
     tx.execute(
         "UPDATE tasks SET attempt_floor = attempt_floor + 1, current_worker_id = NULL,
             not_before = NULL, updated_at = ?2
@@ -197,7 +158,6 @@ fn by_fleetd(text: &str) -> Cause<'_> {
     }
 }
 
-/// The worker, the state and the outcome of the attempt `id`.
 fn attempt_row(tx: &Connection, id: &str) -> Result<(String, String, Option<String>)> {
     tx.query_row(
         "SELECT worker_id, state, outcome FROM attempts WHERE id = ?1",
@@ -208,9 +168,6 @@ fn attempt_row(tx: &Connection, id: &str) -> Result<(String, String, Option<Stri
     .with_context(|| format!("no attempt {id}"))
 }
 
-/// End the attempt `a` of `worker` with `context_limit`, when it is not
-/// `ended` yet, end its live worker row, and record `head` in its `exited`
-/// fact.
 fn end_at_limit(
     tx: &Connection,
     guard: Option<Generation>,
@@ -253,15 +210,12 @@ fn end_at_limit(
     Ok(())
 }
 
-/// 1 ended attempt, as the loop guard reads it.
 struct PreviousEnd {
     id: String,
     outcome: Option<String>,
-    /// The head that its `exited` fact recorded.
     head: Option<String>,
 }
 
-/// The ended attempt of the task of `a` just before `a`.
 fn previous_end(tx: &Connection, a: &AttemptRef) -> Result<Option<PreviousEnd>> {
     let row: Option<(String, Option<String>)> = tx
         .query_row(
@@ -289,9 +243,6 @@ fn previous_end(tx: &Connection, a: &AttemptRef) -> Result<Option<PreviousEnd>> 
     Ok(Some(PreviousEnd { id, outcome, head }))
 }
 
-/// The loop guard held for the attempts `previous` and `a`: the task goes
-/// `running -> failed -> escalated`, and 1 needs-you item names the task
-/// and the 2 attempts.
 fn hold_loop(
     tx: &Connection,
     guard: Option<Generation>,
@@ -333,9 +284,6 @@ fn hold_loop(
     )
 }
 
-/// Write the handoff file of rung 6 for the attempt `a` into its attempt
-/// folder: the tails of its `progress.jsonl` and `transcript.jsonl`, at most
-/// `tail_bytes` each, and `diff`. A second write gives the same file.
 fn write_handoff(
     fleet_root: &Path,
     tail_bytes: u64,
@@ -359,7 +307,6 @@ fn write_handoff(
     let path = dir.join(HANDOFF_MD);
     let mut options = std::fs::OpenOptions::new();
     options.create(true).write(true).truncate(true);
-    // Windows has no file modes: the file keeps the default access.
     let _ = horch_platform::fs::create_mode(&mut options, 0o600);
     options
         .open(&path)
@@ -368,8 +315,6 @@ fn write_handoff(
     Ok(path)
 }
 
-/// The last `bytes` of the file `path` from its first whole line. A missing
-/// file gives an empty text.
 fn tail(path: &Path, bytes: u64) -> Result<String> {
     let mut file = match std::fs::File::open(path) {
         Ok(f) => f,
@@ -391,10 +336,6 @@ fn tail(path: &Path, bytes: u64) -> Result<String> {
         .to_string())
 }
 
-/// Move each `failed` task past its `due_at` at fleet clock `clock` to
-/// `escalated`. A `failed` task with no `due_at` (it failed while no
-/// fleetd row had a clock) gets `clock + replan_limit_s`. Gives the ids of
-/// the escalated tasks.
 pub fn escalate_overdue(
     tx: &Connection,
     clock: FleetSeconds,
@@ -442,8 +383,6 @@ mod tests {
         task: String,
     }
 
-    /// A ledger with the `fleetd` row at fleet clock `clock`, 1 run with
-    /// `max_attempts` 3 and 1 task.
     fn fixture(clock: i64) -> Fixture {
         let dir = tempfile::tempdir().unwrap();
         let mut store = Store::open(&dir.path().join("ledger.sqlite3")).unwrap();
@@ -462,7 +401,6 @@ mod tests {
         let run = store
             .immediate(|tx| {
                 let run = runs::create(tx, dir.path(), &new_run)?;
-                // FR-12: a task needs an idea in flight of the feature of its run.
                 crate::taskledger::schema::run_idea(
                     tx,
                     &run.run_id,
@@ -498,8 +436,6 @@ mod tests {
             tasks::get(self.store.conn(), &self.task).unwrap()
         }
 
-        /// The task is bound to a new worker of `dev` when it can start
-        /// now; the task id, if it was bound.
         fn claim(&mut self) -> Option<String> {
             let conn = self.store.conn();
             let startable = tasks::startable(conn, &self.run.run_id).unwrap();
@@ -513,7 +449,6 @@ mod tests {
             Some(self.task.clone())
         }
 
-        /// The worker of the running task ends, and its attempt burns 1.
         fn fail(&mut self, outcome: Outcome) -> Requeue {
             let task = self.task.clone();
             let worker = self.task().current_worker_id.unwrap();
@@ -526,7 +461,6 @@ mod tests {
                 .unwrap()
         }
 
-        /// Claim at `clock`, then fail the attempt.
         fn claim_and_fail(&mut self, clock: i64) -> Requeue {
             self.set_clock(clock);
             assert_eq!(self.claim().as_deref(), Some(self.task.as_str()));
@@ -601,11 +535,8 @@ mod tests {
         assert_eq!(tick(&mut l, boot(5)), 5);
         assert_eq!(l.claim_and_fail(5), Requeue::Queued);
         assert_eq!(l.task().not_before, Some(35));
-        // The machine sleeps 1 hour: the awake time does not move, so the
-        // tick after the wake adds 0, and the backoff does not fire.
         assert_eq!(tick(&mut l, boot(5)), 5);
         assert_eq!(l.claim(), None);
-        // The rest of its fleet time: 25 s more, 5 s for each pass.
         let mut now = 5;
         while now < 30 {
             now += 5;
@@ -636,7 +567,6 @@ mod tests {
         );
         assert!(wakes[0].contains(&format!("horch ledger requeue {short}")));
         assert!(wakes[0].contains(&format!("horch ledger cancel {short}")));
-        // The pass before the limit changes nothing and wakes nobody again.
         assert_eq!(l.overdue(1000), Vec::<String>::new());
         assert_eq!(l.replan_wakes().len(), 1);
         assert_eq!(l.escalated_items(), Vec::<String>::new());
@@ -702,7 +632,6 @@ mod tests {
             ],
             "the task reaches escalated through failed"
         );
-        // The operator requeue is the exit, and it answers the item.
         l.replan();
         assert_eq!(l.task().status, "ready");
         assert_eq!(l.escalated_items(), Vec::<String>::new());
@@ -739,7 +668,6 @@ mod tests {
         assert_eq!(l.overdue(9999), Vec::<String>::new(), "1 escalation");
     }
 
-    /// The task states that the walk reaches.
     #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
     enum State {
         Ready,
@@ -748,7 +676,6 @@ mod tests {
         Escalated,
     }
 
-    /// The state of the walk: the task state and its counters.
     #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
     struct Node {
         state: State,
@@ -756,9 +683,6 @@ mod tests {
         replans: i64,
     }
 
-    /// Each move of the task from `n`: a claim, each outcome of a running
-    /// attempt, and the replan and the limit of a failed task. The operator
-    /// requeue of an escalated task is the exit of the walk.
     fn moves(n: &Node, policy: &Policy, run_max: i64) -> Vec<(bool, Node)> {
         let limit =
             crate::fleetd::task_execution::domain::retry::limit(policy.retry.max_attempts, run_max);
@@ -769,8 +693,6 @@ mod tests {
         };
         match n.state {
             State::Ready => vec![(false, to(State::Running, n.used + 1, n.replans))],
-            // An outcome that burns no attempt (asked, quota,
-            // critical_open) gives the attempt back: it is no retry.
             State::Running => Outcome::ALL
                 .into_iter()
                 .filter(|o| o.burns_attempt())
@@ -795,7 +717,6 @@ mod tests {
                 }
                 out
             }
-            // The operator requeue is the exit of the walk.
             State::Escalated => Vec::new(),
         }
     }
@@ -814,10 +735,6 @@ mod tests {
                 policy.retry.max_attempts,
                 run_max,
             );
-            // Each path from ready
-            // with 0 used reaches escalated after at most 2 * limit burned
-            // attempts, and no path of burned attempts comes back to a
-            // node it left (no cycle).
             let start = Node {
                 state: State::Ready,
                 used: 0,
@@ -827,7 +744,6 @@ mod tests {
             let mut stack = vec![(start, 0_i64, BTreeSet::new())];
             while let Some((n, burned, seen)) = stack.pop() {
                 assert!(burned <= 2 * limit, "{n:?}: {burned} burned attempts");
-                // The 6 outcomes that burn an attempt lead to the same node.
                 let next: BTreeSet<(bool, Node)> =
                     moves(&n, &policy, run_max).into_iter().collect();
                 if next.is_empty() {

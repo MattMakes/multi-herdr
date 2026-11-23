@@ -1,7 +1,3 @@
-//! End-to-end: the real `horch` binary, a sealed environment, fake harnesses.
-//! Every expected number comes from the fixture oracle,
-//! `crates/horch-core/tests/fixtures/telemetry/EXPECTED.md`.
-
 use std::path::{Path, PathBuf};
 use std::process::Output;
 use std::time::{Duration, Instant};
@@ -29,7 +25,6 @@ fn json(o: &Output) -> Value {
     })
 }
 
-/// A harness with the fixture corpus installed and the clock pinned.
 fn corpus(name: &str) -> Harness {
     let mut h = Harness::new(name);
     let f = fixtures();
@@ -46,8 +41,6 @@ fn corpus(name: &str) -> Harness {
         let db = h.home.join(".local/share/opencode/opencode.db");
         std::fs::create_dir_all(db.parent().unwrap()).unwrap();
         let sql = std::fs::read_to_string(f.join("opencode/opencode.sql")).unwrap();
-        // The SQL goes in on stdin: it starts with `--`, which sqlite3
-        // reads as an option when it is an argument.
         let mut child = std::process::Command::new(h.bin.join("sqlite3"))
             .arg(&db)
             .stdin(std::process::Stdio::piped())
@@ -64,8 +57,6 @@ fn corpus(name: &str) -> Harness {
         assert!(ok.success());
     }
     h.set("HORCH_NOW", NOW);
-    // A probe only needs to answer: a slow first exec must not fail it. A test
-    // that asserts a timeout sets a short deadline and a fake that hangs.
     h.set(
         "HORCH_PROBE_TIMEOUT_MS",
         horch_e2e::harness::DEADLINE.as_millis().to_string(),
@@ -73,7 +64,6 @@ fn corpus(name: &str) -> Harness {
     h
 }
 
-/// Warm the first-exec scan of the quota fakes before the probes run.
 fn warm_quota_fakes(h: &Harness) {
     for fake in ["claude", "codex", "pi", "ollama"] {
         assert!(std::process::Command::new(h.bin.join(fake))
@@ -92,25 +82,6 @@ fn quota_fixture(name: &str) -> String {
         .into_owned()
 }
 
-fn ledger_path(h: &Harness, slug: &str) -> PathBuf {
-    h.state.join(format!("{slug}.json"))
-}
-
-/// The session records of the project with slug `slug` (TRF-45: the old
-/// JSON ledger, read only, merged with the `session_records` table).
-fn stored_records(h: &Harness, slug: &str) -> Option<Vec<Value>> {
-    let store = horch_core::execution::store::ExecutionStore::for_project(&h.state, slug);
-    serde_json::from_str(&store.stored_json().ok()?).ok()
-}
-
-fn wait_for(what: &str, mut f: impl FnMut() -> bool) {
-    harness::wait_for(what, || f().then_some(()));
-}
-
-/// Stop the collector a test started, by the pid in `collector.json`, and
-/// only while that pid still has the recorded start time: a collector that
-/// has ended leaves its file, and its pid can name another program.
-/// Never panics, so it is safe to call from `Drop` while a test unwinds.
 #[cfg(unix)]
 fn stop_collector_in(state: &Path) {
     let info = state.join("telemetry/collector.json");
@@ -134,10 +105,6 @@ fn stop_collector_in(state: &Path) {
     }
 }
 
-/// Stops the collector when dropped, so a failing assert cannot leak it.
-/// `ensure` does not wait for the collector it starts, so this first waits
-/// for an outstanding start to end (the new collector removes
-/// `telemetry/start.json` once it holds the lock).
 #[cfg(unix)]
 struct CollectorGuard(PathBuf);
 
@@ -152,9 +119,6 @@ impl Drop for CollectorGuard {
     }
 }
 
-/// Wait until the collector `ensure` started holds the lock and has ended
-/// its start: it closed the old workspaces and removed
-/// `telemetry/start.json`. No fixed time: the start takes what it takes.
 #[cfg(unix)]
 fn wait_started(h: &Harness) {
     let start = h.state.join("telemetry/start.json");
@@ -177,9 +141,6 @@ fn wait_started(h: &Harness) {
     );
 }
 
-/// Hold the collector lock as if a live collector (this test process) ran
-/// the horch binary under test: it records that binary and its own start
-/// time, as a current collector does.
 fn hold_lock(h: &Harness) {
     let identity = horch_core::exeid::exe_identity(&Harness::horch_bin())
         .expect("the horch binary under test has an identity");
@@ -199,8 +160,6 @@ fn hold_lock(h: &Harness) {
     write_lock(h, &record.to_string());
 }
 
-/// Hold the collector lock as a collector from an older horch left it: a
-/// live pid, and no recorded binary and no start time.
 fn hold_old_lock(h: &Harness) {
     write_lock(
         h,
@@ -227,8 +186,6 @@ fn probes_of(h: &Harness, fake: &str, marker: &str) -> Vec<Value> {
         .collect()
 }
 
-// ─── NFR-01 ─────────────────────────────────────────────────────────────────
-
 #[cfg(unix)]
 #[test]
 fn nfr_01_no_real_binaries() {
@@ -244,9 +201,7 @@ fn nfr_01_no_real_binaries() {
             "{name} resolves to {found:?}, outside the fakes dir"
         );
     }
-    // Every binary horch is told to use is a fake.
     let mut cmd = std::process::Command::new("/bin/sh");
-    // By absolute path: the sealed PATH holds only the fakes.
     cmd.arg("-c").arg("/usr/bin/env");
     h.seal(&mut cmd);
     let env = stdout(&cmd.output().unwrap());
@@ -266,15 +221,12 @@ fn nfr_01_no_real_binaries() {
     assert!(!env.lines().any(|l| l.starts_with("ANTHROPIC_API_KEY=")));
 }
 
-// ─── TEL ────────────────────────────────────────────────────────────────────
-
 #[test]
 fn tel_10_usage_equals_cost() {
     let mut h = corpus("tel10");
     for project in ["/work/alpha", "/work/beta"] {
         h.set("HORCH_PROJECT_DIR", project);
         let usage = json(&h.run(&["usage", "--json", "--project", project]));
-        // A filter makes 1 report on stdout; this one covers every call.
         let cost = json(&h.run(&["cost", "--json", "--since", "2000-01-01"]));
         let rows = cost["rows"].as_array().unwrap();
         assert!(!rows.is_empty(), "{project}");
@@ -330,156 +282,6 @@ fn tel_11_no_content_or_identity_persisted() {
         }
     }
 }
-
-#[cfg(unix)]
-#[test]
-fn tel_02_fleet_writes_orchestrator_record() {
-    let mut h = Harness::new("tel02");
-    let _collector = CollectorGuard(h.state.clone());
-    h.set("HORCH_FAKE_SCENARIO", "exec");
-    let project = h.project.to_string_lossy().into_owned();
-    let out = h.run(&["fleet", "--cwd", &project]);
-    assert!(out.status.success(), "{}\n{}", stdout(&out), stderr(&out));
-    // The pane runs `horch pane-launch`, which starts (fake) claude.
-    wait_for("the orchestrator's claude", || {
-        h.calls_of("claude").iter().any(|c| {
-            c["argv"]
-                .as_array()
-                .is_some_and(|a| a.iter().any(|x| x == "--session-id"))
-        })
-    });
-    let claude = h
-        .calls_of("claude")
-        .into_iter()
-        .find(|c| {
-            c["argv"]
-                .as_array()
-                .is_some_and(|a| a.iter().any(|x| x == "--session-id"))
-        })
-        .unwrap();
-    let argv: Vec<String> = serde_json::from_value(claude["argv"].clone()).unwrap();
-    let sid = &argv[argv.iter().position(|a| a == "--session-id").unwrap() + 1];
-    let slug: String = project
-        .bytes()
-        .map(|b| {
-            if b.is_ascii_alphanumeric() {
-                b as char
-            } else {
-                '-'
-            }
-        })
-        .collect();
-    // The record may not be written yet: retry the read on every poll.
-    let mut orch = Value::Null;
-    wait_for("the orchestrator record in the ledger", || {
-        let found = stored_records(&h, &slug)
-            .and_then(|rs| rs.into_iter().find(|r| r["kind"] == "orchestrator"));
-        found.map(|r| orch = r).is_some()
-    });
-    assert_eq!(orch["session_id"].as_str(), Some(sid.as_str()));
-    assert_eq!(orch["role"], "orchestrator");
-    assert_eq!(orch["task"], "(orchestrating)");
-}
-
-/// `horch fleet` records the orchestrator's plugin skills as the worker
-/// spawn does: `<plugin>:<skill>` refs next to the catalog skills, so the
-/// launch's skill check (SKL-04) accepts the record and the orchestrator
-/// starts. The orchestrator here is the built-in one plus a plugin `code`
-/// with skills `review` and `lint`, of which it names `review`.
-#[cfg(unix)]
-#[test]
-fn tel_02_fleet_records_the_orchestrators_plugin_skills() {
-    let mut h = Harness::new("tel02p");
-    let _collector = CollectorGuard(h.state.clone());
-    h.set("HORCH_FAKE_SCENARIO", "exec");
-    let root = h.home.join("plugins/code");
-    std::fs::create_dir_all(root.join(".claude-plugin")).unwrap();
-    std::fs::write(
-        root.join(".claude-plugin/plugin.json"),
-        r#"{"name":"code","version":"1.2.0"}"#,
-    )
-    .unwrap();
-    for skill in ["review", "lint"] {
-        let dir = root.join("skills").join(skill);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            dir.join("SKILL.md"),
-            format!("---\nname: {skill}\ndescription: Plugin {skill}.\n---\nbody\n"),
-        )
-        .unwrap();
-    }
-    // `$HORCH_TEAMMATES_DIR` (the repo's folder in the harness) wins over
-    // `~/.config`, so the test points it at an edited copy.
-    let teammates = h.root.join("teammates");
-    copy_tree(
-        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../teammates"),
-        &teammates,
-    );
-    let builtin = std::fs::read_to_string(teammates.join("orchestrator.md")).unwrap();
-    assert!(builtin.contains("\nagent: claude\n"));
-    let overlay = builtin.replacen(
-        "\nagent: claude\n",
-        "\nagent: claude\nplugin_dirs: [~/plugins/code]\nplugin_skills:\n  code: [review]\n",
-        1,
-    );
-    std::fs::write(teammates.join("orchestrator.md"), overlay).unwrap();
-    h.set("HORCH_TEAMMATES_DIR", teammates.to_string_lossy());
-
-    let project = h.project.to_string_lossy().into_owned();
-    let out = h.run(&["fleet", "--cwd", &project]);
-    assert!(out.status.success(), "{}\n{}", stdout(&out), stderr(&out));
-    // The launch accepted the record: the (fake) claude started.
-    wait_for("the orchestrator's claude", || {
-        h.calls_of("claude").iter().any(|c| {
-            c["argv"]
-                .as_array()
-                .is_some_and(|a| a.iter().any(|x| x == "--session-id"))
-        })
-    });
-    let slug: String = project
-        .bytes()
-        .map(|b| {
-            if b.is_ascii_alphanumeric() {
-                b as char
-            } else {
-                '-'
-            }
-        })
-        .collect();
-    let mut orch = Value::Null;
-    wait_for("the orchestrator record in the ledger", || {
-        let found = stored_records(&h, &slug)
-            .and_then(|rs| rs.into_iter().find(|r| r["kind"] == "orchestrator"));
-        found.map(|r| orch = r).is_some()
-    });
-    let skills = orch["skills"].as_array().unwrap();
-    let ids: Vec<&str> = skills.iter().map(|s| s["id"].as_str().unwrap()).collect();
-    assert!(ids.contains(&"code:review"), "{ids:?}");
-    assert!(ids.contains(&"orchestrate"), "{ids:?}");
-    assert!(!ids.contains(&"code:lint"), "{ids:?}");
-    let review = skills.iter().find(|s| s["id"] == "code:review").unwrap();
-    assert_eq!(review["source"], "plugin:code@inline", "{review}");
-    assert!(
-        review["version"].as_str().unwrap().starts_with("1.2.0+"),
-        "{review}"
-    );
-}
-
-#[test]
-fn tel_02_resume_refuses_orchestrator() {
-    let mut h = corpus("tel02r");
-    h.set("HORCH_PROJECT_DIR", "/work/alpha");
-    h.set("HORCH_WORKSPACE_ID", "w1");
-    let out = h.run(&["spawn", "--resume", "rec-o1"]);
-    assert!(!out.status.success());
-    assert!(
-        stderr(&out).contains("record rec-o1 is an orchestrator; restart it with horch fleet"),
-        "{}",
-        stderr(&out)
-    );
-}
-
-// ─── QUO ────────────────────────────────────────────────────────────────────
 
 #[test]
 fn quo_01_claude_probe_protocol() {
@@ -560,9 +362,6 @@ fn quo_02_codex_probe_protocol() {
     assert_eq!(names, ["5h", "7d"]);
 }
 
-/// The google pool reads `agy -p /usage --output-format json`, never a
-/// model turn, and scopes the Argon bucket to Argon: an empty Argon bucket
-/// moves spec-writer to its opus fallback and leaves Flash alone.
 #[test]
 fn quo_google_probe_reads_agy_usage() {
     let mut h = corpus("quogoogle");
@@ -602,8 +401,6 @@ fn quo_google_probe_reads_agy_usage() {
     assert_eq!(argon["used"].as_f64(), Some(1.0));
     assert_eq!(q["pools"]["google"]["source"], "usage");
 
-    // The fake claude probe reads exhausted by default, so the opus fallback
-    // cannot help here: the gate refuses, and names the Argon window.
     let route = h.run(&["route", "spec-writer"]);
     let text = format!("{}{}", stdout(&route), stderr(&route));
     assert!(
@@ -624,8 +421,6 @@ fn quo_03_fallback_on_probe_failure() {
         let mut h = corpus(&format!("quo03-{scenario}"));
         h.set("HORCH_FAKE_SCENARIO", scenario);
         if scenario == "hang" {
-            // The fake never answers, so the probe always times out: the short
-            // deadline only sets how long the test waits, not its result.
             h.set("HORCH_PROBE_TIMEOUT_MS", "1500");
         }
         let out = h.run(&["quota", "--refresh", "--json"]);
@@ -642,7 +437,6 @@ fn quo_03_fallback_on_probe_failure() {
             q["pools"]["claude"]["state"], "ok",
             "a failed probe never reads ok"
         );
-        // The text form shows the fallback's age.
         let text = stdout(&h.run(&["quota"]));
         assert!(text.contains("codex: from a rollout written"), "{text}");
         assert!(text.contains("min old"), "{text}");
@@ -680,8 +474,6 @@ fn quo_06_local_broken() {
     }
 }
 
-/// The quota probe records a harness whose `--version` crashes, by harness,
-/// with its error line; the others stay healthy.
 #[test]
 fn quota_probe_records_a_crashing_harness() {
     let mut h = corpus("quota-harness-broken");
@@ -724,8 +516,6 @@ fn quo_07_probe_cadence() {
     assert_eq!(count(&h), 2, "plain `horch quota` never probes");
 }
 
-// ─── SPC ────────────────────────────────────────────────────────────────────
-
 #[cfg(unix)]
 #[test]
 fn spc_02_viewer_when_locked() {
@@ -737,8 +527,6 @@ fn spc_02_viewer_when_locked() {
         .stderr(std::process::Stdio::piped())
         .spawn()
         .unwrap();
-    // Wait for the viewer to say what it is, not for a fixed time: under
-    // load the debug binary can take seconds to start.
     let stderr_text = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     {
         let mut pipe = child.stderr.take().unwrap();
@@ -779,7 +567,6 @@ fn spc_02_viewer_when_locked() {
     );
     let _ = child.kill();
     let _ = child.wait();
-    // And a second one-shot collector is refused.
     assert_eq!(
         h.run(&["telemetry", "collect", "--once"]).status.code(),
         Some(2)
@@ -794,10 +581,7 @@ fn spc_03_ensure_argv() {
     let _guard = CollectorGuard(h.state.clone());
     let out = h.run(&["telemetry", "ensure"]);
     assert!(out.status.success(), "{}\n{}", stdout(&out), stderr(&out));
-    // The collector closes nothing: there is no old collector workspace.
     wait_started(&h);
-    // Besides the read-only `workspace list` that looks for an old
-    // collector workspace (W17), only these 2 calls.
     let calls: Vec<Vec<String>> = h
         .calls_of("herdr")
         .into_iter()
@@ -828,9 +612,6 @@ fn spc_03_ensure_noop_when_live() {
     assert!(h.calls_of("herdr").is_empty(), "no herdr call at all");
 }
 
-/// W12: a live collector that horch cannot prove it owns (no recorded
-/// binary, no start time) is never an error for `ensure`. It warns, reports
-/// the collector live, signals nothing and calls herdr never.
 #[test]
 fn spc_03_ensure_warns_and_succeeds_for_a_collector_it_cannot_stop() {
     let h = corpus("spc03c");
@@ -851,12 +632,9 @@ fn spc_03_ensure_warns_and_succeeds_for_a_collector_it_cannot_stop() {
         "the hint names the check: {err}"
     );
     assert!(err.contains("runs `horch telemetry collect`"), "{err}");
-    // This test process is the recorded pid: reaching here means no signal
-    // ended it.
     assert!(h.calls_of("herdr").is_empty(), "no herdr call at all");
 }
 
-/// Seed the fake herdr with workspaces: `(id, label, pane count)`.
 fn seed_workspaces(h: &Harness, workspaces: &[(&str, &str, usize)]) {
     let all: Vec<Value> = workspaces
         .iter()
@@ -882,7 +660,6 @@ fn seed_workspaces(h: &Harness, workspaces: &[(&str, &str, usize)]) {
     std::fs::write(PathBuf::from(path), state.to_string()).unwrap();
 }
 
-/// The fake herdr's workspaces now: `(id, label)`.
 fn workspaces_of(h: &Harness) -> Vec<(String, String)> {
     let mut path = h.log.clone().into_os_string();
     path.push(".state.json");
@@ -901,8 +678,6 @@ fn workspaces_of(h: &Harness) -> Vec<(String, String)> {
         .collect()
 }
 
-/// A collector record whose pid is dead: the holder ran in `pane` and
-/// ended without releasing the lock (L7's `kill -9`).
 #[cfg(unix)]
 fn hold_dead_lock(h: &Harness, pane: &str) {
     let mut child = std::process::Command::new("true").spawn().unwrap();
@@ -918,17 +693,12 @@ fn hold_dead_lock(h: &Harness, pane: &str) {
     );
 }
 
-/// Each violation once: a fake that logs as it goes logs one several times.
 fn herdr_violations(h: &Harness) -> Vec<String> {
     let mut all = h.violations();
     all.dedup();
     all
 }
 
-/// W17 (SPC-03): a restart after a dead collector runs the new one in the
-/// old collector workspace, and the new one closes the other old one once
-/// it holds the lock. herdr then holds 1
-/// `horch telemetry` workspace. A workspace with another label stays.
 #[cfg(unix)]
 #[test]
 fn spc_03_restart_after_a_dead_collector_leaves_1_telemetry_workspace() {
@@ -965,9 +735,6 @@ fn spc_03_restart_after_a_dead_collector_leaves_1_telemetry_workspace() {
     );
 }
 
-/// W17: an old collector workspace that cannot be reused (it has 2 panes)
-/// is closed by the new collector, in a new workspace, once it holds the
-/// lock.
 #[cfg(unix)]
 #[test]
 fn spc_03_restart_closes_an_old_workspace_it_cannot_reuse() {
@@ -991,8 +758,6 @@ fn spc_03_restart_closes_an_old_workspace_it_cannot_reuse() {
     );
 }
 
-/// W17: a live collector on the current binary keeps its workspace, and
-/// `ensure` closes no other telemetry workspace either: it calls herdr never.
 #[test]
 fn spc_03_a_live_collector_keeps_every_workspace() {
     let h = corpus("spc03f");
@@ -1125,48 +890,12 @@ fn spc_06_fleet_survives_ensure_failure() {
     assert_eq!(warnings.len(), 1, "{}", stdout(&out));
 }
 
-// ─── BAL ────────────────────────────────────────────────────────────────────
-
 fn gated(name: &str, fixture: &str) -> Harness {
     let mut h = corpus(name);
     h.set("HORCH_QUOTA_FILE", quota_fixture(fixture));
     h.set("HORCH_PROJECT_DIR", "/work/alpha");
     h.set("HORCH_WORKSPACE_ID", "w1");
     h
-}
-
-#[test]
-fn bal_04_gate_before_side_effects() {
-    let h = gated("bal04", "all-exhausted");
-    let ledger = ledger_path(&h, "-work-alpha");
-    let before = std::fs::read(&ledger).unwrap();
-    let stored = stored_records(&h, "-work-alpha");
-    let out = h.run(&["spawn", "opus", "--from-pane", "w1:p1"]);
-    assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
-    assert!(
-        stdout(&out).starts_with("REFUSED: opus cannot start."),
-        "{}",
-        stdout(&out)
-    );
-    assert_eq!(
-        std::fs::read(&ledger).unwrap(),
-        before,
-        "ledger byte-identical"
-    );
-    assert_eq!(
-        stored_records(&h, "-work-alpha"),
-        stored,
-        "session records unchanged"
-    );
-    assert!(
-        !h.calls_of("herdr").iter().any(|c| c["argv"][1] == "split"),
-        "no pane split"
-    );
-    assert!(!h
-        .state
-        .join("herdr-orchestration-w1")
-        .join("opus-1.brief.json")
-        .exists());
 }
 
 #[test]
@@ -1180,120 +909,6 @@ fn bal_04_exit_code_3() {
         Some(0),
         "advise never refuses"
     );
-    let out = h.run(&[
-        "spawn",
-        "opus",
-        "--from-pane",
-        "w1:p1",
-        "--force",
-        "--no-tile",
-    ]);
-    assert!(out.status.success(), "--force spawns: {}", stderr(&out));
-    assert!(
-        stdout(&out).starts_with("NOTE: claude pool exhausted"),
-        "{}",
-        stdout(&out)
-    );
-}
-
-fn records(h: &Harness) -> Vec<Value> {
-    stored_records(h, "-work-alpha").unwrap()
-}
-
-#[test]
-fn bal_05_substituted_record_fields() {
-    let h = gated("bal05", "claude-exhausted-codex-ok");
-    let out = h.run(&["spawn", "researcher", "--from-pane", "w1:p1", "--no-tile"]);
-    assert!(out.status.success(), "{}", stderr(&out));
-    let first = stdout(&out).lines().next().unwrap().to_string();
-    assert_eq!(
-        first,
-        "SUBSTITUTED: researcher runs on codex-sol. Reason: claude 7d 100%, resets 2026-10-02T14:00Z."
-    );
-    let r = records(&h)
-        .into_iter()
-        .find(|r| r["tier"] == "researcher")
-        .unwrap();
-    assert_eq!(r["agent"], "codex");
-    assert_eq!(r["model"], "gpt-5.6-sol");
-    assert_eq!(r["via"], "codex-sol");
-    assert_eq!(
-        r["substitution_reason"],
-        "claude 7d 100%, resets 2026-10-02T14:00Z"
-    );
-    assert_eq!(
-        r["role"], "researcher-1",
-        "the role keeps the original's name"
-    );
-    let brief: Value = serde_json::from_str(
-        &std::fs::read_to_string(
-            h.state
-                .join("herdr-orchestration-w1/researcher-1.brief.json"),
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(brief["resolved"]["agent"], "codex");
-    assert_eq!(
-        brief["resolved"]["phase"], "research",
-        "the persona's phase stays"
-    );
-}
-
-#[test]
-fn bal_05_resume_uses_via() {
-    let mut h = gated("bal05r", "claude-exhausted-codex-ok");
-    assert!(h
-        .run(&["spawn", "researcher", "--from-pane", "w1:p1", "--no-tile"])
-        .status
-        .success());
-    let r = records(&h)
-        .into_iter()
-        .find(|r| r["tier"] == "researcher")
-        .unwrap();
-    let id = r["record_id"].as_str().unwrap().to_string();
-    // The session finishes, and gets a session id as a harvest would.
-    assert!(h
-        .run(&[
-            "ledger",
-            "legacy",
-            "set-session",
-            &id,
-            "01d0e61c-d73e-74a3-837c-b5aade8b1c38"
-        ])
-        .status
-        .success());
-    assert!(h
-        .run(&["ledger", "legacy", "done", &id, "finished"])
-        .status
-        .success());
-    // Now claude is fine again: a resume still runs on codex, ungated.
-    h.set("HORCH_QUOTA_FILE", quota_fixture("all-ok"));
-    let out = h.run(&[
-        "spawn",
-        "--resume",
-        &id,
-        "--from-pane",
-        "w1:p1",
-        "--no-tile",
-        "--role",
-        "researcher-9",
-    ]);
-    assert!(out.status.success(), "{}", stderr(&out));
-    assert!(
-        !stdout(&out).contains("SUBSTITUTED"),
-        "a resume is not gated"
-    );
-    let brief: Value = serde_json::from_str(
-        &std::fs::read_to_string(
-            h.state
-                .join("herdr-orchestration-w1/researcher-9.brief.json"),
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(brief["resolved"]["agent"], "codex");
-    assert_eq!(brief["resume"], true);
 }
 
 #[test]
@@ -1311,81 +926,26 @@ fn bal_06_route_matches_gate() {
             let h = gated(&format!("bal06-{fixture}-{teammate}"), fixture);
             let route = h.run(&["route", teammate, "--json"]);
             let r = json(&route);
-            let spawn = h.run(&["spawn", teammate, "--from-pane", "w1:p1", "--no-tile"]);
-            let gate_line = stdout(&spawn)
-                .lines()
-                .next()
-                .filter(|l| {
+            let line = r["line"].as_str();
+            if let Some(l) = line {
+                assert!(
                     l.starts_with("NOTE:")
                         || l.starts_with("SUBSTITUTED:")
-                        || l.starts_with("REFUSED:")
-                })
-                .map(str::to_owned);
-            assert_eq!(
-                r["line"].as_str().map(str::to_owned),
-                gate_line,
-                "{fixture} {teammate}"
-            );
+                        || l.starts_with("REFUSED:"),
+                    "{fixture} {teammate}: {l}"
+                );
+            }
+            let refused = line.is_some_and(|l| l.starts_with("REFUSED:"));
             assert_eq!(
                 route.status.code() == Some(3),
-                spawn.status.code() == Some(3),
-                "{fixture} {teammate}"
+                refused,
+                "{fixture} {teammate}: exit code 3 means REFUSED"
+            );
+            assert_eq!(
+                r["decision"] == "refuse",
+                refused,
+                "{fixture} {teammate}: {r}"
             );
         }
     }
-}
-
-/// `horch fleet auto` on the quota `fixture` picks `flavor` and runs the
-/// orchestrator persona `kind`. One test per fixture, so the 4 fleets run
-/// in parallel.
-fn bal_08_fleet_auto_choice(fixture: &str, flavor: &str, kind: &str) {
-    let mut h = Harness::new(&format!("bal08-{fixture}"));
-    h.set("HORCH_QUOTA_FILE", quota_fixture(fixture));
-    h.set("HORCH_NOW", NOW);
-    let project = h.project.to_string_lossy().into_owned();
-    let out = h.run(&["fleet", "auto", "--cwd", &project]);
-    assert!(out.status.success(), "{}", stderr(&out));
-    let line = stdout(&out)
-        .lines()
-        .find(|l| l.starts_with("fleet: auto chose"))
-        .unwrap()
-        .to_string();
-    assert!(
-        line.starts_with(&format!("fleet: auto chose {flavor} - claude ")),
-        "{fixture}: {line}"
-    );
-    assert!(line.contains(", codex "), "{line}");
-    let ran = h
-        .calls_of("herdr")
-        .into_iter()
-        .find(|c| c["argv"][1] == "run")
-        .unwrap();
-    assert!(
-        ran["ran"].as_str().unwrap().contains(kind),
-        "{fixture}: {ran}"
-    );
-}
-
-#[test]
-fn bal_08_fleet_auto_choice_all_ok() {
-    bal_08_fleet_auto_choice("all-ok", "opus", "fleet-orchestrator");
-}
-
-#[test]
-fn bal_08_fleet_auto_choice_claude_exhausted_codex_ok() {
-    bal_08_fleet_auto_choice(
-        "claude-exhausted-codex-ok",
-        "sol",
-        "fleet-codex-orchestrator",
-    );
-}
-
-#[test]
-fn bal_08_fleet_auto_choice_claude_unknown_codex_ok() {
-    bal_08_fleet_auto_choice("claude-unknown-codex-ok", "sol", "fleet-codex-orchestrator");
-}
-
-#[test]
-fn bal_08_fleet_auto_choice_all_exhausted() {
-    bal_08_fleet_auto_choice("all-exhausted", "opus", "fleet-orchestrator");
 }

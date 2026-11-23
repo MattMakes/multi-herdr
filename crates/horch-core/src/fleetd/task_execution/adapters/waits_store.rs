@@ -1,26 +1,17 @@
-//! The SQLite store of the waits: the `worker_waits` table.
-
 use anyhow::Result;
 use rusqlite::{params, Connection};
 
-/// 1 `worker_waits` row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WaitRow {
     pub kind: String,
     pub reason: String,
     pub started_at: String,
-    /// The calendar deadline of today.
     pub deadline: String,
-    /// The JSON list of the review task ids.
     pub task_ids: String,
-    /// The cap on the fleet clock. `None` only in a row that no binary of
-    /// Phase 2 wrote.
     pub due_at: Option<i64>,
-    /// The `questions` row behind a question wait.
     pub question_id: Option<String>,
 }
 
-/// The waits of `worker`, by kind.
 pub fn of_worker(conn: &Connection, worker: &str) -> Result<Vec<WaitRow>> {
     let mut stmt = conn.prepare(
         "SELECT kind, reason, started_at, deadline, task_ids, due_at, question_id
@@ -40,7 +31,6 @@ pub fn of_worker(conn: &Connection, worker: &str) -> Result<Vec<WaitRow>> {
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// Write the wait `row` of `worker`, in place of its wait of that kind.
 pub fn put(conn: &Connection, worker: &str, row: &WaitRow) -> Result<()> {
     conn.execute(
         "INSERT OR REPLACE INTO worker_waits (worker_id, kind, reason, started_at, deadline,
@@ -60,7 +50,6 @@ pub fn put(conn: &Connection, worker: &str, row: &WaitRow) -> Result<()> {
     Ok(())
 }
 
-/// Move the cap of the wait `kind` of `worker` to `due_at`.
 pub fn set_due_at(conn: &Connection, worker: &str, kind: &str, due_at: i64) -> Result<()> {
     conn.execute(
         "UPDATE worker_waits SET due_at = ?3 WHERE worker_id = ?1 AND kind = ?2",
@@ -69,7 +58,6 @@ pub fn set_due_at(conn: &Connection, worker: &str, kind: &str, due_at: i64) -> R
     Ok(())
 }
 
-/// Delete the wait `kind` of `worker`. Whether a row was deleted.
 pub fn delete(conn: &Connection, worker: &str, kind: &str) -> Result<bool> {
     Ok(conn.execute(
         "DELETE FROM worker_waits WHERE worker_id = ?1 AND kind = ?2",

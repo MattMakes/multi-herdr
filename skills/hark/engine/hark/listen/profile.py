@@ -44,7 +44,6 @@ CHANCE_OFFSETS = (0.23, 0.31, 0.43, 0.57, 0.71, 0.87, 1.13, 1.37, -0.29, -0.41, 
                   -1.19, -1.43)
 PROFILE_PATH = Path(__file__).resolve().parent.parent / "data" / "timeline" / "launch_profile.json"
 
-# key, group, unit, decimals, label (table order = output order)
 METRICS: tuple[tuple[str, str, str, int, str], ...] = (
     ("lufs_i", "loudness", "LUFS", 1, "integrated loudness"),
     ("true_peak", "loudness", "dBTP", 1, "true peak"),
@@ -91,9 +90,6 @@ class ProfileError(ValueError):
     """Bad profile input (no usable films, bad styles)."""
 
 
-# ================================================================ small helpers
-
-
 def energy_mean(levels: Sequence[float]) -> float:
     """10 log10 of the mean power of dB levels."""
     vec = numpy.asarray(levels, numpy.float64)
@@ -128,9 +124,6 @@ def _round_metrics(mat: Mapping[str, Any]) -> dict:
     return result
 
 
-# ================================================================ media checks
-
-
 def _no_streams(info: Mapping[str, Any]) -> bool:
     """ffprobe found neither an audio nor a picture stream: the file is not media."""
     return not info.get("codec") and not info.get("has_video") and not info.get("duration")
@@ -160,9 +153,6 @@ def unscorable(metrics: Mapping[str, Any]) -> str | None:
     if lufs is None or lufs <= SILENT_LUFS:
         return "silent"
     return None
-
-
-# ================================================================ P1 audio pass
 
 
 def _curve(sig: numpy.ndarray, block: tuple[float, float]) -> list[list[float]]:
@@ -230,9 +220,6 @@ def ast_pass(fpath: str, dd: float) -> tuple[list[float], numpy.ndarray, Any]:
         P = numpy.asarray(model.probs(segs), numpy.float16)
         voc.save_array(cpath, P)
     return [float(sv) for sv in starts], numpy.asarray(P, numpy.float32), model
-
-
-# ================================================================ P3 hits, P4 stop-downs
 
 
 def _runs(idx: Sequence[int], gap: int = 2) -> list[list[int]]:
@@ -312,9 +299,6 @@ def stopdowns(fast: Sequence[Sequence[float]]) -> list[list[float]]:
         else:
             ix += 1
     return result
-
-
-# ================================================================ P6 metrics, P9 edges
 
 
 def _edge_index(ok: numpy.ndarray, lhs: int, t_from: bool) -> float:
@@ -458,9 +442,6 @@ def film_core(ap: dict, found: list[float], stops: list, dd: float) -> tuple[dic
     return result, _arc(mt, ml, dd, lufs_i) if len(mt) > 2 else None
 
 
-# ================================================================ P7 sync
-
-
 def near(V: Sequence[float], targets: Sequence[float], tol: float) -> float | None:
     """Share of events with a target no more than tol away (None without events, 0 without targets)."""
     if not len(V):
@@ -503,9 +484,6 @@ def picture_events(src: str, dd: float) -> tuple[float | None, list[float], list
     diff = numpy.asarray(diff, numpy.float64)
     idx = [ix for ix in video.diff_events(diff, fps) if ix / fps < dd]
     return float(fps), [round(ix / fps, 3) for ix in idx], [round(float(diff[ix]), 3) for ix in idx]
-
-
-# ================================================================ film_metrics
 
 
 def _picture_source(fpath: str, video: str | None) -> str | None:
@@ -597,9 +575,6 @@ def film_metrics(fpath: str, video: str | None = None, use_ast: bool = True) -> 
     return row_
 
 
-# ================================================================ P8 aggregate and profile
-
-
 def _stats(values: Sequence[float | None]) -> dict:
     vec = [float(sig) for sig in values if _finite(sig)]
     if not vec:
@@ -667,7 +642,7 @@ def _skip_reason(fpath: str) -> str | None:
         return problem
     try:
         sig = audio.load(fpath)
-    except Exception as exc:  # a decode error skips the file
+    except Exception as exc:
         return f"cannot decode ({voc.first_line(exc, 160)})"
     dd = len(sig) / SR
     lufs = features.integrated_lufs(numpy.asarray(sig, numpy.float64)) if dd >= MIN_SHAPE_S else None
@@ -748,9 +723,6 @@ def profile(paths: str | Sequence[str], styles: Any = None, use_ast: bool = True
 def load_profile(fpath: str | None = None) -> dict:
     """A profile file (default: the bundled launch profile of the timeline unit)."""
     return json.loads(Path(fpath or PROFILE_PATH).read_text(encoding="utf-8"))
-
-
-# ================================================================ text and CLI
 
 
 def profile_text(prof: dict) -> str:

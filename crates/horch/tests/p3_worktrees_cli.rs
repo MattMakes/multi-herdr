@@ -1,9 +1,3 @@
-//! `horch worktrees`, `horch worktree restore` and the disk line of
-//! `horch ledger status` (ticket 15 of fleetd-p3).
-//!
-//! Each test runs the real binary on its own temporary git project, with
-//! its own ledger, state and fleet folders, and the watchdog off.
-
 #![cfg(unix)]
 
 mod support;
@@ -22,12 +16,42 @@ use horch_core::fleetd::fleet_runtime::domain::ledger::Entity;
 use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
 use horch_core::fleetd::worktree_custody::adapters::sqlite as custody;
 use horch_core::fleetd::worktree_custody::application::reconcile::{reconcile_worktrees, Facts};
+use horch_core::taskledger::map::ticket_facts;
 use horch_core::taskledger::model::Actor;
-use horch_core::taskledger::Store;
+use horch_core::taskledger::runs::{self, NewRun};
+use horch_core::taskledger::tasks::{self, NewTask};
+use horch_core::taskledger::{schema, util, Store};
 
 const HEALTHY_MACHINE: &str = r#"{"os":"linux","arch":"x86_64","cpus":8,"load_average_1m":1.0,"mem_total_bytes":17179869184,"mem_available_bytes":8589934592,"disk_free_bytes":214748364800,"disk_total_bytes":536870912000,"gpu":"none","max_open_files":1048576,"max_processes":100000}"#;
 
-const PATH: &str = "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin";
+const PATH_WITHOUT_AGENT_CLIS: &str = "/usr/bin:/bin";
+
+fn seed_run_and_task(git: impl Fn(&[&str]), proj: &Path, ledger: &Path) {
+    git(&["branch", "fleet/r1", "main"]);
+    let new = NewRun {
+        slug: "r1".into(),
+        base_branch: Some("main".into()),
+        run_branch: Some("fleet/r1".into()),
+        ..Default::default()
+    };
+    let ticket = proj.join("t1.md");
+    let text = std::fs::read_to_string(&ticket).unwrap();
+    let facts = ticket_facts(&text);
+    let title = facts.title.clone().unwrap_or_else(|| "task".to_string());
+    let task = NewTask {
+        land_check: facts.check.clone(),
+        ticket_snapshot: Some(text.clone()),
+        ..NewTask::work(&title, &ticket.to_string_lossy(), "dev")
+    };
+    let mut store = Store::open(ledger).unwrap();
+    store
+        .immediate(|tx| {
+            let run = runs::create(tx, proj, &new)?;
+            schema::run_idea(tx, &run.run_id, &util::now(), true)?;
+            tasks::add(tx, &run, &task, Actor::Orchestrator)
+        })
+        .unwrap();
+}
 
 struct Out {
     code: i32,
@@ -35,24 +59,38 @@ struct Out {
     err: String,
 }
 
-/// The fleetd drops first: fields drop in order.
+struct Agent(std::process::Child);
+
+impl Drop for Agent {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 struct World {
     _fleetd: Option<TestFleetd>,
+    _agent: Option<Agent>,
     _tmp: tempfile::TempDir,
-    /// The temporary folder with no symlink in its path, as git and the
-    /// ledger write it.
     root: PathBuf,
     worker: String,
 }
 
 impl World {
-    /// A project with 1 run `r1`, 1 task T1 bound to the worker `dev1`,
-    /// and its tree `T1-feat` with 1 untracked and 1 changed file.
     fn with_a_tree() -> World {
+        World::start("")
+    }
+
+    fn with_a_rescuable_tree() -> World {
+        World::start("worktree_list_period_s = 5\n")
+    }
+
+    fn start(fleet_toml: &str) -> World {
         let tmp = short_tempdir();
-        let root = tmp.path().canonicalize().unwrap();
+        let root = horch_platform::path::canonicalize(tmp.path()).unwrap();
         let mut w = World {
             _fleetd: None,
+            _agent: None,
             _tmp: tmp,
             root,
             worker: String::new(),
@@ -69,24 +107,53 @@ impl World {
         std::fs::create_dir_all(w.root().join("fleet")).unwrap();
         std::fs::write(
             w.root().join("fleet/fleet.toml"),
-            "health_max_process_share = 1.0\nhealth_max_open_file_share = 1.0\n",
+            format!(
+                "health_max_process_share = 1.0\nhealth_max_open_file_share = 1.0\n{fleet_toml}"
+            ),
         )
         .unwrap();
+        seed_run_and_task(|args| drop(w.git(&proj, args)), &proj, &w.ledger());
         w._fleetd = Some(TestFleetd::start(w.command(None), &w.root().join("fleet")));
-        w.ok(&["ledger", "run", "new", "r1"]);
-        w.ok(&["ledger", "add", "--file", "t1.md", "--primary", "dev"]);
         let worker = NewWorker {
             persona: "dev".into(),
             role: Some("dev1".into()),
             ..Default::default()
         };
-        w.worker = support::bind::bind(&w.ledger(), worker, None).worker_id;
-        let made = w.as_worker(&["ledger", "worktree", "new", "feat"]);
-        assert_eq!(made.code, 0, "{}", made.err);
+        let agent = Command::new("sleep").arg("3600").spawn().unwrap();
+        w.worker = support::bind::bind(&w.ledger(), worker, Some(agent.id())).worker_id;
+        w._agent = Some(Agent(agent));
+        w.wait_for("fleetd to make the tree of T1", |w| {
+            let path = w.tree().to_string_lossy().into_owned();
+            let store = w.store();
+            custody::by_path(store.conn(), &path)
+                .unwrap()
+                .is_some_and(|r| r.state.as_str() == "active")
+        });
         let tree = w.tree();
         std::fs::write(tree.join("u.txt"), "unsaved\n").unwrap();
         std::fs::write(tree.join("a.txt"), "changed\n").unwrap();
         w
+    }
+
+    fn wait_for(&self, what: &str, done: impl Fn(&World) -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        while !done(self) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for {what}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
+    fn wait_restored(&self, tree: &Path) {
+        let path = tree.to_string_lossy().into_owned();
+        self.wait_for("fleetd to make the restored tree", |w| {
+            let store = w.store();
+            custody::by_path(store.conn(), &path)
+                .unwrap()
+                .is_some_and(|r| r.state.as_str() == "created")
+        });
     }
 
     fn root(&self) -> &Path {
@@ -97,22 +164,20 @@ impl World {
         self.root().join("proj")
     }
 
-    /// The tree of T1.
     fn tree(&self) -> PathBuf {
-        self.proj().join(".worktrees/T1-feat")
+        self.proj().join(".worktrees/r1-T1-ticket-one")
     }
 
     fn ledger(&self) -> PathBuf {
         self.root().join("ledger.sqlite3")
     }
 
-    /// `git <args>` in `dir`, with no config of the operator's.
     fn git(&self, dir: &Path, args: &[&str]) -> String {
         let out = Command::new("git")
             .args(args)
             .current_dir(dir)
             .env_clear()
-            .env("PATH", PATH)
+            .env("PATH", PATH_WITHOUT_AGENT_CLIS)
             .env("HOME", self.root().join("home"))
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_AUTHOR_NAME", "n")
@@ -129,14 +194,12 @@ impl World {
         String::from_utf8(out.stdout).unwrap()
     }
 
-    /// The `horch` binary with the environment of the test; `worker` sets
-    /// `HORCH_WORKER_ID`.
     fn command(&self, worker: Option<&str>) -> Command {
         let root = self.root();
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_horch"));
         cmd.current_dir(self.proj())
             .env_clear()
-            .env("PATH", PATH)
+            .env("PATH", PATH_WITHOUT_AGENT_CLIS)
             .env("HOME", root.join("home"))
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("XDG_DATA_HOME", root.join("data"))
@@ -158,7 +221,6 @@ impl World {
         Out {
             code: o.status.code().unwrap(),
             out: String::from_utf8(o.stdout).unwrap(),
-            // A host that cannot read a count (a sandbox) gets a guard note.
             err: String::from_utf8(o.stderr)
                 .unwrap()
                 .lines()
@@ -168,11 +230,6 @@ impl World {
         }
     }
 
-    fn as_worker(&self, args: &[&str]) -> Out {
-        self.horch(Some(&self.worker), args)
-    }
-
-    /// Run `args` as the operator, require exit 0, return stdout.
     fn ok(&self, args: &[&str]) -> String {
         let o = self.horch(None, args);
         assert_eq!(o.code, 0, "{args:?}: {}{}", o.out, o.err);
@@ -183,7 +240,6 @@ impl World {
         Store::open(&self.ledger()).unwrap()
     }
 
-    /// The row of the tree of T1.
     fn row(&self) -> custody::WorktreeRow {
         let store = self.store();
         let path = self.tree().to_string_lossy().into_owned();
@@ -197,7 +253,6 @@ impl World {
             .unwrap()
     }
 
-    /// The facts that the `worktree_list` job of the pass stores.
     fn measure(&self, bytes: i64) {
         let id = self.row().worktree_id;
         self.store()
@@ -205,7 +260,6 @@ impl World {
             .unwrap();
     }
 
-    /// The tree of T1 loses its owner, as the reconciler finds it.
     fn orphan(&self) {
         let id = self.row().worktree_id;
         self.store()
@@ -228,8 +282,6 @@ impl World {
             .unwrap();
     }
 
-    /// 1 call of the reconciler with no new fact, as part 2 of a pass:
-    /// the id of the rescue job that it queues for the orphan of T1.
     fn reconcile(&self) -> i64 {
         let id = self.row().worktree_id;
         let config = FleetConfig::default();
@@ -253,12 +305,11 @@ impl World {
             .unwrap()
     }
 
-    /// Orphan the tree of T1, then let the worker take it again: its
-    /// rescue job runs first, and the row keeps the rescue ref.
     fn rescued(&self) -> String {
         self.orphan();
-        let again = self.as_worker(&["ledger", "worktree", "new", "feat"]);
-        assert_eq!(again.code, 0, "{}{}", again.out, again.err);
+        self.wait_for("fleetd to rescue the tree of T1", |w| {
+            w.row().rescue_ref.is_some()
+        });
         self.row().rescue_ref.expect("the rescue ref of the tree")
     }
 
@@ -279,7 +330,7 @@ impl World {
             ])
             .current_dir(self.proj())
             .env_clear()
-            .env("PATH", PATH)
+            .env("PATH", PATH_WITHOUT_AGENT_CLIS)
             .env("HOME", self.root().join("home"))
             .status()
             .unwrap()
@@ -291,7 +342,6 @@ fn json(text: &str) -> serde_json::Value {
     serde_json::from_str(text).unwrap_or_else(|e| panic!("{e}: {text}"))
 }
 
-/// 1 line for each tree, with a word for each fact, then the total.
 #[test]
 fn worktrees_lists_each_tree_with_state_task_owner_age_and_size() {
     let w = World::with_a_tree();
@@ -326,8 +376,6 @@ fn worktrees_lists_each_tree_with_state_task_owner_age_and_size() {
     assert_eq!(lines[1], "total: 1 worktree, 2.0 KB on disk");
 }
 
-/// RR-10: each orphan on disk is listed with the rescue job that the
-/// reconciler queued for it; the listing changes nothing.
 #[test]
 fn worktrees_shows_the_rescue_job_that_the_reconciler_queued_for_an_orphan() {
     let w = World::with_a_tree();
@@ -402,7 +450,7 @@ fn worktrees_json_has_each_field() {
 
 #[test]
 fn restore_of_a_task_makes_branch_rescue_t_seq_n_and_its_tree_with_each_rescued_file() {
-    let w = World::with_a_tree();
+    let w = World::with_a_rescuable_tree();
     let rescue_ref = w.rescued();
     let n = rescue_ref.rsplit('/').next().unwrap();
     let branch = format!("rescue/T1-{n}");
@@ -414,6 +462,7 @@ fn restore_of_a_task_makes_branch_rescue_t_seq_n_and_its_tree_with_each_rescued_
         out,
         format!("restored {rescue_ref} on {branch} at {}\n", tree.display())
     );
+    w.wait_restored(&tree);
     assert!(w.branch_exists(&branch));
     let rescued = w.git(
         &w.proj(),
@@ -429,9 +478,6 @@ fn restore_of_a_task_makes_branch_rescue_t_seq_n_and_its_tree_with_each_rescued_
         std::fs::read_to_string(tree.join("a.txt")).unwrap(),
         "changed\n"
     );
-    // F2 of review round 1: the tree is for the operator. It is `created`
-    // with no owner, which the reconciler leaves as it is, not `active`
-    // with no owner, which it orphans.
     let listed = w.ok(&["worktrees"]);
     let line = listed
         .lines()
@@ -444,11 +490,9 @@ fn restore_of_a_task_makes_branch_rescue_t_seq_n_and_its_tree_with_each_rescued_
     );
 }
 
-/// F1 of review round 1: Phase 3 deletes no rescue ref, so a tree that
-/// custody removed still gives its rescue ref back.
 #[test]
 fn restore_of_a_task_whose_tree_is_removed_uses_its_rescue_ref() {
-    let w = World::with_a_tree();
+    let w = World::with_a_rescuable_tree();
     let rescue_ref = w.rescued();
     let id = w.row().worktree_id;
     w.store()
@@ -469,17 +513,16 @@ fn restore_of_a_task_whose_tree_is_removed_uses_its_rescue_ref() {
             tree.display()
         )
     );
+    w.wait_restored(&tree);
     assert_eq!(
         std::fs::read_to_string(tree.join("u.txt")).unwrap(),
         "unsaved\n"
     );
 }
 
-/// The security rule of the orchestrator: no hook of the project runs
-/// when restore makes the tree.
 #[test]
 fn restore_runs_no_hook_of_the_project() {
-    let w = World::with_a_tree();
+    let w = World::with_a_rescuable_tree();
     w.rescued();
     let marker = w.root().join("hook-ran");
     let hook = w.proj().join(".git/hooks/post-checkout");
@@ -490,6 +533,7 @@ fn restore_runs_no_hook_of_the_project() {
 
     w.ok(&["worktree", "restore", "T1"]);
 
+    w.wait_restored(&w.proj().join(".worktrees/rescue-T1-1"));
     assert!(w.proj().join(".worktrees/rescue-T1-1/u.txt").is_file());
     assert!(
         !marker.exists(),
@@ -499,7 +543,7 @@ fn restore_runs_no_hook_of_the_project() {
 
 #[test]
 fn restore_refuses_when_the_branch_or_the_folder_exists_and_changes_nothing() {
-    let w = World::with_a_tree();
+    let w = World::with_a_rescuable_tree();
     w.rescued();
     let rows = w.rows();
     let tree = w.proj().join(".worktrees/rescue-T1-1");
@@ -547,15 +591,14 @@ fn restore_of_an_archive_name_keeps_today_s_behavior() {
         format!(
             "restored {} on restored/old at {} from refs/horch/archive/old\n",
             path.display(),
-            &tip[..12]
+            &tip[..7]
         )
     );
+    w.wait_restored(&path);
     assert!(path.join("a.txt").is_file());
     assert!(w.branch_exists("restored/old"));
 }
 
-/// FM-28: the board shows the total size of all trees, as a line and as a
-/// field of `--json`.
 #[test]
 fn ledger_status_shows_the_total_size_of_all_trees() {
     let w = World::with_a_tree();

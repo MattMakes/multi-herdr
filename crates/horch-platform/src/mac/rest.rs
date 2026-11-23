@@ -1,5 +1,3 @@
-//! The concern rest for macOS.
-
 pub(crate) use crate::unix::rest::{
     ensure_user_path, extract_release, path_extensions, path_help, replace_process,
     RELEASE_ARCHIVE_SUFFIX, RUNNING_EXE_IS_LOCKED, SHELL_LAUNCHERS, STATUS_HAS_START_TIMES,

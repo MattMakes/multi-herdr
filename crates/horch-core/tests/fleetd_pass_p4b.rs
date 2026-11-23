@@ -1,19 +1,3 @@
-//! The pass of Phase 4, part 2: landing, bundles, the ref move, candidate
-//! refs, the feature, fetch, push, rebase, the rescue classes and the checks
-//! of I8 to I12 in the reconcile pass
-//! (docs/tickets/fleetd-p4/47-pass-wiring-integration.md).
-//!
-//! `docs/specs/fleetd/design.md`, "The reconcile pass", "Long work is a
-//! job. A pass never waits for it", "A pass has a work budget", "No work is
-//! lost", I8 to I12, "1 git writer for each repository", FM-39.
-//!
-//! Each test makes its own temporary git repository, ledger and fleet root,
-//! and runs the passes as library calls with no herdr snapshot. No test
-//! starts a `horch` binary: a job process is a script that sleeps, and the
-//! test runs the executor of the job in its own process with the pid of the
-//! row, as `horch job run <id>` runs it, or writes the result file of the
-//! job. No test reads the load, the limits or the clock of this machine:
-//! there is no health hold, and the numbers come from a test `FleetConfig`.
 #![cfg(unix)]
 
 #[path = "common/test_jobs.rs"]
@@ -40,7 +24,7 @@ use horch_core::fleetd::fleet_runtime::domain::config::FleetConfig;
 use horch_core::fleetd::fleet_runtime::domain::health::Hold;
 use horch_core::fleetd::fleet_runtime::domain::jobs::{Kind, State};
 use horch_core::fleetd::fleet_runtime::domain::ledger::Generation;
-use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
+use horch_core::fleetd::ideas::application::needs_you::{self, NeedsYouList};
 use horch_core::fleetd::integration::adapters::sqlite::{self as rows, BranchFact, NewBranch};
 use horch_core::fleetd::integration::application::rebase::{rebase_key, Rebased};
 use horch_core::fleetd::task_execution::application::launch::{Launches, PushLaunch};
@@ -61,17 +45,11 @@ use horch_core::taskledger::tasks::{self, NewTask};
 use horch_core::taskledger::{schema, util};
 use rusqlite::{params, Connection};
 
-/// The folder of the world of a child process of a crash test.
 const CHILD: &str = "HORCH_P4B_CHILD";
 
 const FEATURE: &str = "F-0001";
 const FEATURE_BRANCH: &str = "fleet/r1";
 
-// ─── the world ──────────────────────────────────────────────────────────
-
-/// A temp git repository `project` on `main` with a `fleet.toml` of the
-/// remote `remote`, the feature branch `fleet/r1`, a ledger at generation 1
-/// and 1 run whose run branch is the feature branch.
 struct World {
     _temp: Option<tempfile::TempDir>,
     dir: PathBuf,
@@ -80,8 +58,6 @@ struct World {
     config: FleetConfig,
     tools: Tools,
     sandboxes: WorkerSandboxes,
-    /// The repositories that the outside names: each gets its
-    /// `worktree_list` job.
     listed: bool,
 }
 
@@ -128,7 +104,7 @@ fn cause(text: &str) -> Cause<'_> {
 
 fn world(remote: &str) -> World {
     let temp = tempfile::tempdir().unwrap();
-    let dir = temp.path().canonicalize().unwrap();
+    let dir = horch_platform::path::canonicalize(temp.path()).unwrap();
     let mut conn = open(&dir.join("ledger.sqlite3"));
     schema::migrate_to(&mut conn, schema::VERSION).unwrap();
     conn.execute(
@@ -157,10 +133,8 @@ fn world(remote: &str) -> World {
         ..Default::default()
     };
     let run = runs::create(&conn, &project, &new_run).unwrap();
-    // A task needs an idea in flight of the feature of its run (FR-12).
     schema::run_idea(&conn, &run.run_id, &util::now(), true).unwrap();
     let tip = git(&project, &["rev-parse", FEATURE_BRANCH]);
-    // The idea of the run wrote the row of the feature branch.
     let tx = conn.transaction().unwrap();
     let seen = BranchFact::SeenTip(&tip);
     rows::set_branch_fact(&tx, None, FEATURE_BRANCH, seen, cause("its tip")).unwrap();
@@ -174,7 +148,6 @@ fn world(remote: &str) -> World {
 }
 
 impl World {
-    /// The world of the folder `dir` that [`world`] made.
     fn reopen(dir: &Path) -> World {
         let conn = open(&dir.join("ledger.sqlite3"));
         let run_id: String = conn
@@ -195,7 +168,11 @@ impl World {
             codex: CodexSandbox::default(),
             jobs: None,
         };
-        let mut sandboxes = WorkerSandboxes::new(CodexSandbox::default(), dir.join("fleet"));
+        let mut sandboxes = WorkerSandboxes::on_path(
+            CodexSandbox::default(),
+            dir.join("fleet"),
+            std::env::var_os("PATH"),
+        );
         sandboxes.gap = None;
         World {
             _temp: None,
@@ -213,9 +190,6 @@ impl World {
         self.dir.join("fleet")
     }
 
-    /// The gate tree of [`FEATURE`], so a fast gate can run (Q18): its
-    /// reserved row, the folder that its `worktree_add` job makes, and the
-    /// observation of the passed job, as a pass observes it.
     fn gate_tree(&self) {
         let repo = self.repo();
         let tip = self.tip(FEATURE_BRANCH).unwrap();
@@ -291,8 +265,6 @@ impl World {
         }
     }
 
-    /// The program of each job process: it sleeps and writes no result
-    /// file. The test runs the executor or writes the result file.
     fn job_program(&self) -> PathBuf {
         let path = self.dir.join("job.sh");
         if !path.exists() {
@@ -302,8 +274,6 @@ impl World {
         path
     }
 
-    /// Commit `file` on the git branch `branch`, made from the feature
-    /// branch when it is new. Gives the new tip.
     fn commit_on(&self, branch: &str, file: &str, text: &str) -> String {
         let repo = self.repo();
         if self.tip(branch).is_some() {
@@ -318,9 +288,6 @@ impl World {
         self.tip(branch).unwrap()
     }
 
-    /// A task of `persona` in `status`, its git branch `branch` with 1
-    /// commit of its own file, and the row of its task branch in
-    /// `building`, as the bind writes it. Gives the task id.
     fn task_branch(&self, branch: &str, persona: &str, status: &str) -> String {
         let n = self.count("SELECT count(*) FROM tasks") + 1;
         let file = format!("f{n}.txt");
@@ -375,15 +342,12 @@ impl World {
             .collect()
     }
 
-    /// The 1 run of `kind`.
     fn only_job(&self, kind: Kind) -> JobRow {
         let jobs = self.jobs_of(kind);
         assert_eq!(jobs.len(), 1, "{kind} runs: {jobs:?}");
         jobs.into_iter().next().unwrap()
     }
 
-    /// The executor of the running job `job` runs in this process, as
-    /// `horch job run` runs it, and writes its result file.
     fn run_executor(&self, job: &JobRow) {
         assert_eq!(job.state, State::Running, "the pass started {job:?}");
         let ctx = JobCtx {
@@ -398,7 +362,6 @@ impl World {
         assert_eq!(ended.state, State::Passed, "{ended:?}");
     }
 
-    /// The job process of the running `job` ends with a passed verdict.
     fn pass_job(&self, job: &JobRow) {
         assert_eq!(job.state, State::Running, "the pass started {job:?}");
         let result = JobResult {
@@ -412,7 +375,6 @@ impl World {
         job_result_file::write(&self.root(), &result).unwrap();
     }
 
-    /// The events of `entity` `id` that moved it to `to`.
     fn moves_to(&self, id: &str, to: &str) -> i64 {
         self.conn
             .query_row(
@@ -423,7 +385,6 @@ impl World {
             .unwrap()
     }
 
-    /// The events of the needs-you item `key`.
     fn item_events(&self, key: &str) -> i64 {
         self.moves_to(key, "open")
     }
@@ -433,9 +394,6 @@ impl World {
     }
 }
 
-/// The outside of the tests: no herdr snapshot and no health hold. With
-/// `repo`, it names the repository of the run, so each pass queues its
-/// `worktree_list` job.
 struct Fake {
     repo: Option<String>,
 }
@@ -461,7 +419,6 @@ impl Outside for Fake {
     }
 }
 
-/// The spawn of a push attempt: `true`.
 struct Spawns;
 
 impl Launches for Spawns {
@@ -477,7 +434,6 @@ impl Launches for Spawns {
     }
 }
 
-/// 1 fleetd of the world `w`: a new pass object, as after a restart.
 fn fleetd<'a>(w: &'a World, fake: &'a Fake, faults: Faults) -> Pass<'a> {
     let ports = Ports {
         outside: fake,
@@ -507,8 +463,6 @@ fn run(p: &mut Pass<'_>, conn: &mut Connection) -> PassReport {
 
 const ABC: [&str; 3] = ["fleet/r1-T1-a", "fleet/r1-T2-b", "fleet/r1-T3-c"];
 
-/// A world whose 3 tasks are done, each with its task branch in
-/// `building`.
 fn three_done() -> World {
     let w = world("none");
     for b in ABC {
@@ -517,9 +471,6 @@ fn three_done() -> World {
     w
 }
 
-/// Run the passes of `w` until the bundle of `ABC` is `gating` and its
-/// fast gate job runs, then end the job with a pass. Gives the id of the
-/// bundle.
 fn to_passed_gate(w: &World, p: &mut Pass<'_>, conn: &mut Connection) -> i64 {
     run(p, conn);
     for b in ABC {
@@ -534,12 +485,6 @@ fn to_passed_gate(w: &World, p: &mut Pass<'_>, conn: &mut Connection) -> i64 {
     id
 }
 
-// ─── landing by passes alone ────────────────────────────────────────────
-
-/// 3 task branches of done tasks follow their tasks to `ready`, go in 1
-/// bundle, are built, gated 1 time and land on the feature branch by the
-/// ref move, by passes alone. The candidate ref of the landed bundle is
-/// deleted and the deletion verified.
 #[test]
 fn ready_branches_of_1_feature_land_by_passes_alone() {
     let w = three_done();
@@ -552,10 +497,8 @@ fn ready_branches_of_1_feature_land_by_passes_alone() {
     let candidate = w
         .tip(&candidate_ref)
         .expect("the build wrote the candidate");
-    // The pass moves the bundle to `passed` and the ref after its commit.
     run(&mut p, &mut conn);
     assert_eq!(w.tip(FEATURE_BRANCH).as_deref(), Some(candidate.as_str()));
-    // The next pass observes the move.
     run(&mut p, &mut conn);
     assert_eq!(w.bundle_state(id), "landed");
     for b in ABC {
@@ -568,7 +511,6 @@ fn ready_branches_of_1_feature_land_by_passes_alone() {
     }
     assert_eq!(w.jobs_of(Kind::BundleBuild).len(), 1, "1 build");
     assert_eq!(w.jobs_of(Kind::FastGate).len(), 1, "1 fast gate run");
-    // The candidate ref is deleted, then the deletion is verified.
     run(&mut p, &mut conn);
     assert_eq!(w.tip(&candidate_ref), None, "the candidate ref is deleted");
     let bundle = rows::bundle(&w.conn, id).unwrap().unwrap();
@@ -577,11 +519,6 @@ fn ready_branches_of_1_feature_land_by_passes_alone() {
     assert_eq!(seen.seen_tip.as_deref(), Some(candidate.as_str()));
 }
 
-// ─── 1 git writer for each repository ───────────────────────────────────
-
-/// A running fetch, push or rebase of the repository holds a second git
-/// writer: the `bundle_build` run of the pass stays `queued` while it
-/// runs.
 #[test]
 fn only_1_git_writer_job_runs_for_1_repository() {
     for kind in [Kind::Fetch, Kind::Push, Kind::Rebase] {
@@ -622,7 +559,6 @@ fn only_1_git_writer_job_runs_for_1_repository() {
             State::Queued,
             "the running {kind} holds the build"
         );
-        // A trial merge only reads git, so it runs beside the writer.
         let running = w.count(&format!(
             "SELECT count(*) FROM jobs WHERE state = 'running' AND repo = '{repo}'
              AND kind != 'trial_merge'"
@@ -637,26 +573,13 @@ fn only_1_git_writer_job_runs_for_1_repository() {
     }
 }
 
-// ─── the checks of I8 to I12 ────────────────────────────────────────────
-
-/// Each breach of I9, I11 and I12 that a pass sees gets 1 event, and the
-/// next passes add none:
-/// - I9: the feature tip moves under a `passed` bundle: the bundle is
-///   `dropped` 1 time, and the new tip is recorded 1 time.
-/// - I11: a fleet branch with no row is adopted, reported with 1 needs-you
-///   item and not deleted.
-/// - I12: a landed branch is deleted, and a landed branch that a stash
-///   entry names is kept. The schema trigger refuses a task branch in 2
-///   bundles that are not ended, so that breach cannot be written.
 #[test]
 fn each_invariant_breach_records_1_event() {
-    // I9.
     let w = three_done();
     let f = fake(&w);
     let mut conn = open(&w.db());
     let mut p = fleetd(&w, &f, Faults::default());
     let id = to_passed_gate(&w, &mut p, &mut conn);
-    // The bundle is `passed`, and its ref move did not run yet.
     crash(&w, ABORT_AFTER_COMMIT);
     assert_eq!(w.bundle_state(id), "passed");
     let moved = w.commit_on(FEATURE_BRANCH, "pushed-by-you.txt", "x\n");
@@ -674,7 +597,6 @@ fn each_invariant_breach_records_1_event() {
     );
     drop(p);
 
-    // I11 and I12.
     let mut w = world("none");
     w.listed = true;
     let orphan = "fleet/r1-T9-orphan";
@@ -713,11 +635,6 @@ fn each_invariant_breach_records_1_event() {
     assert!(w.tip(stashed).is_some(), "I12: the stash keeps its branch");
 }
 
-// ─── the work budget ────────────────────────────────────────────────────
-
-/// A pass follows at most `pass_budget` task branches. A new fleetd goes
-/// on at the cursor `branches` of the last: each branch gets its turn, and
-/// none is followed twice before each had 1 turn.
 #[test]
 fn branch_rows_continue_at_their_cursor() {
     let mut w = world("none");
@@ -738,7 +655,6 @@ fn branch_rows_continue_at_their_cursor() {
 
     run(&mut fleetd(&w, &f, Faults::default()), &mut conn);
     assert_eq!(moved(&w), names[..2].to_vec());
-    // A restart: a new pass object on the same ledger.
     run(&mut fleetd(&w, &f, Faults::default()), &mut conn);
     assert_eq!(moved(&w), names[..4].to_vec());
     run(&mut fleetd(&w, &f, Faults::default()), &mut conn);
@@ -751,12 +667,6 @@ fn branch_rows_continue_at_their_cursor() {
     }
 }
 
-// ─── FM-39 ──────────────────────────────────────────────────────────────
-
-/// A task is cancelled, and its branch is not abandoned: a crash between
-/// the commit of the cancel and the abandon, or a cancel source other than
-/// `horch task cancel`. The pass writes the rescue ref of the branch after
-/// its commit, then abandons the branch 1 time with the ref on its row.
 #[test]
 fn pass_abandons_the_branch_of_a_cancelled_task_after_its_rescue() {
     let w = world("none");
@@ -778,11 +688,6 @@ fn pass_abandons_the_branch_of_a_cancelled_task_after_its_rescue() {
     assert_eq!(w.moves_to(branch, "abandoned"), 1, "1 abandon");
 }
 
-// ─── the resolver persona ───────────────────────────────────────────────
-
-/// A rebase of the feature branch that conflicts opens a resolver task.
-/// The feature branch has no task, so the resolver task takes the primary
-/// persona of the newest task of the feature.
 #[test]
 fn rebase_resolver_task_takes_the_persona_of_the_newest_task_of_the_feature() {
     let w = world("none");
@@ -838,10 +743,6 @@ fn rebase_resolver_task_takes_the_persona_of_the_newest_task_of_the_feature() {
     assert_eq!(personas, vec![Some("rev".to_string())], "1 resolver task");
 }
 
-// ─── crash points ───────────────────────────────────────────────────────
-
-/// Not a test of its own: 1 pass of a child process of a crash test, with
-/// the fault of `HORCH_FAULT`. It runs only with [`CHILD`].
 #[test]
 fn child_pass() {
     let Some(dir) = std::env::var_os(CHILD) else {
@@ -866,10 +767,6 @@ fn crash(w: &World, fault: &str) {
     assert_eq!(status.code(), Some(ABORT_EXIT_CODE), "the fault {fault}");
 }
 
-/// The ref move of a `passed` bundle: a crash before the commit of the
-/// pass that intends it, then a crash after that commit and before the
-/// move. The next pass moves the ref 1 time, the bundle and each member
-/// land 1 time, and no tip is lost.
 #[test]
 fn crash_before_and_after_the_commit_of_the_ref_move_lands_once() {
     let w = three_done();
@@ -907,4 +804,248 @@ fn crash_before_and_after_the_commit_of_the_ref_move_lands_once() {
             &["merge-base", "--is-ancestor", &tip, FEATURE_BRANCH],
         );
     }
+}
+
+const GIT_CHILD: &str = "HORCH_P4B_GIT_CHILD";
+
+#[test]
+fn child_pass_with_git() {
+    let Some(dir) = std::env::var_os(GIT_CHILD) else {
+        return;
+    };
+    let w = World::reopen(Path::new(&dir));
+    let f = fake(&w);
+    let mut conn = open(&w.db());
+    let mut p = fleetd(&w, &f, Faults::default());
+    match p.run(&mut conn) {
+        Ok(report) => println!("PASS-FAILED {:?}", report.failed),
+        Err(e) => println!("PASS-ERROR {e}"),
+    }
+    let Some(lock) = std::env::var_os(LOCK_CHILD) else {
+        return;
+    };
+    let lock_items = |conn: &Connection| {
+        needs_you::open_keys(conn, "job_abandoned")
+            .unwrap()
+            .into_iter()
+            .filter(|k| k.contains(":git_lock:"))
+            .collect::<Vec<_>>()
+    };
+    run(&mut p, &mut conn);
+    run(&mut p, &mut conn);
+    println!("LOCK-ITEMS {:?}", lock_items(&conn));
+    fs::remove_file(&lock).unwrap();
+    run(&mut p, &mut conn);
+    println!("LOCK-ITEMS-AFTER {:?}", lock_items(&conn));
+}
+
+const LOCK_CHILD: &str = "HORCH_P4B_LOCK_CHILD";
+
+fn hang_once_git(w: &World, subcommand: &str, on_hang: &str) -> PathBuf {
+    let real = String::from_utf8(
+        Command::new("sh")
+            .args(["-c", "command -v git"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    let once = w.repo().join(".git").join("git-hung-once");
+    let bin = w.dir.join("hang-once-git");
+    let script = format!(
+        "#!/bin/sh\nfor a in \"$@\"; do\n  if [ \"$a\" = '{subcommand}' ] && [ ! -e '{once}' ]; then\n    : > '{once}'\n    {on_hang}\n    sleep 600 &\n    wait\n  fi\ndone\nexec '{real}' \"$@\"\n",
+        once = once.display(),
+        real = real.trim(),
+    );
+    fs::write(&bin, script).unwrap();
+    fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+    bin
+}
+
+fn pass_with_git(w: &World, bin: &Path) -> String {
+    passes_with_git(w, bin, None)
+}
+
+fn passes_with_git(w: &World, bin: &Path, lock: Option<&Path>) -> String {
+    let mut cmd = Command::new(std::env::current_exe().unwrap());
+    if let Some(lock) = lock {
+        cmd.env(LOCK_CHILD, lock);
+    }
+    let out = cmd
+        .args([
+            "--exact",
+            "child_pass_with_git",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env(GIT_CHILD, &w.dir)
+        .env("HORCH_GIT_BIN", bin)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+#[test]
+fn a_git_of_the_pass_past_its_limit_rolls_back_its_duty_and_the_next_pass_works() {
+    let w = three_done();
+    let f = fake(&w);
+    let mut conn = open(&w.db());
+    let mut p = fleetd(&w, &f, Faults::default());
+    let id = to_passed_gate(&w, &mut p, &mut conn);
+    drop(p);
+    let candidate_ref = format!("refs/horch/bundle/{id}");
+    let candidate = w.tip(&candidate_ref).unwrap();
+
+    let bin = hang_once_git(&w, "diff", ":");
+    let started = std::time::Instant::now();
+    let out = pass_with_git(&w, &bin);
+    let took = started.elapsed();
+    assert!(
+        out.contains("PASS-FAILED [\"the duty trial_merges: "),
+        "the duty names its failure: {out}"
+    );
+    assert!(out.contains("ran past its time limit of 10 s"), "{out}");
+    assert!(out.contains("no .lock file stays"), "{out}");
+    assert!(
+        took < Duration::from_secs(30),
+        "below the hang limit: {took:?}"
+    );
+    assert_eq!(
+        w.bundle_state(id),
+        "passed",
+        "the rest of the pass committed"
+    );
+    assert_eq!(
+        w.tip(FEATURE_BRANCH),
+        Some(candidate.clone()),
+        "the ref move"
+    );
+    let refs = git(
+        &w.repo(),
+        &["for-each-ref", "--format=%(refname)", "refs/horch/"],
+    );
+    assert_eq!(refs, candidate_ref, "no other candidate ref");
+
+    let mut p = fleetd(&w, &f, Faults::default());
+    run(&mut p, &mut conn);
+    assert_eq!(w.bundle_state(id), "landed");
+    assert_eq!(w.moves_to(&id.to_string(), "landed"), 1, "1 landing");
+}
+
+#[test]
+fn a_lock_that_stays_after_the_kill_of_a_git_at_its_limit_gets_1_needs_you_item() {
+    let w = three_done();
+    let f = fake(&w);
+    let mut conn = open(&w.db());
+    let mut p = fleetd(&w, &f, Faults::default());
+    to_passed_gate(&w, &mut p, &mut conn);
+    drop(p);
+    let lock = w.repo().join(".git/refs/heads/fleet/held.lock");
+    let on_hang = format!("trap '' TERM; : > '{}'", lock.display());
+    let bin = hang_once_git(&w, "diff", &on_hang);
+    let out = passes_with_git(&w, &bin, Some(&lock));
+    assert!(out.contains("SIGKILL ended"), "{out}");
+    assert!(out.contains(&lock.display().to_string()), "{out}");
+    let key = format!("job_abandoned:git_lock:{}", lock.display());
+    assert!(
+        out.contains(&format!("LOCK-ITEMS [\"{key}\"]")),
+        "1 item for the lock: {out}"
+    );
+    assert!(out.contains("LOCK-ITEMS-AFTER []"), "resolved: {out}");
+    let items: i64 = w
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM needs_you WHERE key = ?1",
+            [&key],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(items, 1, "1 row for the lock");
+}
+
+#[test]
+fn a_git_lock_notice_survives_a_fleetd_restart() {
+    let w = three_done();
+    let f = fake(&w);
+    let mut conn = open(&w.db());
+    let mut p = fleetd(&w, &f, Faults::default());
+    to_passed_gate(&w, &mut p, &mut conn);
+    drop(p);
+    let lock = w.repo().join(".git/refs/heads/fleet/held.lock");
+    let on_hang = format!("trap '' TERM; : > '{}'", lock.display());
+    let bin = hang_once_git(&w, "diff", &on_hang);
+    let out = pass_with_git(&w, &bin);
+    assert!(
+        out.contains("PASS-FAILED [\"the duty trial_merges: "),
+        "the duty rolls back: {out}"
+    );
+    assert!(lock.exists(), "the lock stays");
+    let key = format!("job_abandoned:git_lock:{}", lock.display());
+    let open_items = |conn: &Connection| {
+        needs_you::open_keys(conn, "job_abandoned")
+            .unwrap()
+            .into_iter()
+            .filter(|k| k.contains(":git_lock:"))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        open_items(&conn),
+        vec![key.clone()],
+        "the pass wrote the item"
+    );
+
+    let mut p = fleetd(&w, &f, Faults::default());
+    run(&mut p, &mut conn);
+    run(&mut p, &mut conn);
+    assert_eq!(open_items(&conn), vec![key.clone()], "the item stays open");
+    fs::remove_file(&lock).unwrap();
+    run(&mut p, &mut conn);
+    assert_eq!(open_items(&conn), Vec::<String>::new(), "resolved");
+    let items: i64 = w
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM needs_you WHERE key = ?1",
+            [&key],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(items, 1, "1 row for the lock");
+}
+
+#[test]
+fn a_failed_read_of_the_project_file_gives_a_failed_line_of_the_pass() {
+    let w = three_done();
+    let bin = hang_once_git(&w, "cat-file", ":");
+    let out = pass_with_git(&w, &bin);
+    assert!(
+        out.contains("PASS-FAILED [\"the gate holds: running git cat-file blob "),
+        "the gate holds name the failed read: {out}"
+    );
+    assert!(out.contains("ran past its time limit of 10 s"), "{out}");
+}
+
+#[test]
+fn a_project_file_that_does_not_parse_gives_the_line_of_its_feature() {
+    let w = three_done();
+    let tip = w.commit_on(FEATURE_BRANCH, "fleet.toml", "remote = [\n");
+    let f = fake(&w);
+    let mut conn = open(&w.db());
+    let mut p = fleetd(&w, &f, Faults::default());
+    let report = p.run(&mut conn).unwrap();
+    let parse: Vec<_> = report
+        .failed
+        .iter()
+        .filter(|l| l.contains(&format!("at {tip}")))
+        .collect();
+    assert_eq!(parse.len(), 1, "{:?}", report.failed);
+    assert!(parse[0].starts_with("feature "), "{:?}", report.failed);
+    assert!(
+        !report
+            .failed
+            .iter()
+            .any(|l| l.starts_with("the gate holds")),
+        "{:?}",
+        report.failed
+    );
 }

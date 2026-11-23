@@ -1,52 +1,22 @@
-//! Where horch keeps its state, and which project a command belongs to.
-//!
-//! Pure functions of an [`EnvSource`], moved out of `ledger.rs`. The rules are
-//! unchanged: an empty variable counts as unset.
-
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
 use super::context::EnvSource;
 
-/// The directories a command works with.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Paths {
-    /// The current directory at bootstrap, when the platform can say.
     pub cwd: Option<PathBuf>,
-    /// `$HORCH_PROJECT_DIR`, else the current directory. `None` when neither
-    /// is available; [`Paths::project`] reports that.
     pub project_dir: Option<PathBuf>,
-    /// `$HORCH_STATE_DIR`, else `${XDG_STATE_HOME:-$HOME/.local/state}/horch`.
     pub state_root: PathBuf,
-    /// The explicit `$HORCH_STATE_DIR`, if any. A pane does not inherit this
-    /// process's environment, so an explicit state root is passed on to it.
     pub state_override: Option<PathBuf>,
-    /// The state root without `$HORCH_STATE_DIR`. A pane command sets the
-    /// variable to the root it uses, so only a root other than this one
-    /// says that the state moved.
     pub default_state_root: PathBuf,
-    /// `$HORCH_DATA_DIR`, else `${XDG_DATA_HOME:-$HOME/.local/share}/horch`.
-    /// A pane does not inherit this process's environment, so a pane command
-    /// sets `HORCH_DATA_DIR` to this value.
     pub data_root: PathBuf,
-    /// The task ledger: `$HORCH_LEDGER_DB`, else `<home>/.horch/ledger.sqlite3`
-    /// on every OS (docs/adr/0001).
     pub ledger_db: PathBuf,
-    /// The explicit `$HORCH_LEDGER_DB`, if any. A pane does not inherit this
-    /// process's environment, so it travels in the brief.
     pub ledger_override: Option<PathBuf>,
-    /// The fleet root of fleetd: `$FLEET_ROOT`, else the folder `fleet` next
-    /// to [`Paths::ledger_db`]. So 1 ledger has 1 fleet root
-    /// (docs/tickets/fleetd-p1/MAP.md, Q4).
     pub fleet_root: PathBuf,
-    /// The system temp dir; the workspace mailboxes live under it.
     pub temp_root: PathBuf,
-    /// `$HOME` (`%USERPROFILE%` on Windows), else `.`.
     pub home: PathBuf,
-    /// Claude Code's managed settings file: `$HORCH_CLAUDE_MANAGED_SETTINGS`,
-    /// else the platform path (`horch_platform::path::CLAUDE_MANAGED_SETTINGS`). A test points
-    /// it into a temp dir, so no result depends on the machine's file.
     pub claude_managed_settings: PathBuf,
 }
 
@@ -73,23 +43,16 @@ impl Paths {
         }
     }
 
-    /// The project dir, or the error the ambient lookup gave.
     pub fn project(&self) -> Result<PathBuf> {
         self.project_dir
             .clone()
             .context("resolving the current directory")
     }
 
-    /// The current directory, or the error the ambient lookup gave.
     pub fn current_dir(&self) -> Result<PathBuf> {
         self.cwd.clone().context("resolving the current directory")
     }
 
-    /// The warning for a command whose state root is not the default one
-    /// but that has no `HORCH_LEDGER_DB` (#199): the state moved, but the
-    /// task ledger did not. The ledger path stays independent of the state
-    /// root on purpose, as the state root is writable from a Codex pane
-    /// (#181).
     pub fn ledger_isolation_warning(&self) -> Option<String> {
         let moved = self.state_root != self.default_state_root;
         (moved && self.ledger_override.is_none()).then(|| {
@@ -100,10 +63,6 @@ impl Paths {
         })
     }
 
-    /// The variables that give a launched process the fleet of this process
-    /// (T-890): its task ledger as `HORCH_LEDGER_DB` and its fleet root as
-    /// `FLEET_ROOT`. Each process that a spawner or fleetd launches gets
-    /// them, so it never guesses its fleet from `HORCH_STATE_DIR`.
     pub fn fleet_env(&self) -> [(&'static str, &Path); 2] {
         [
             ("HORCH_LEDGER_DB", self.ledger_db.as_path()),
@@ -111,7 +70,6 @@ impl Paths {
         ]
     }
 
-    /// Point every state lookup at `dir`, as `HORCH_STATE_DIR=<dir>` would.
     pub fn set_state_dir(&mut self, dir: impl Into<PathBuf>) {
         let dir = dir.into();
         self.state_root = dir.clone();
@@ -119,22 +77,16 @@ impl Paths {
     }
 }
 
-/// Root directory for ledger files: `$HORCH_STATE_DIR`, else
-/// `${XDG_STATE_HOME:-$HOME/.local/state}/horch`.
 pub(crate) fn state_root(env: &dyn EnvSource, home: &Path) -> PathBuf {
     nonempty_path(env, "HORCH_STATE_DIR").unwrap_or_else(|| default_state_root(env, home))
 }
 
-/// The state root without `$HORCH_STATE_DIR`:
-/// `${XDG_STATE_HOME:-$HOME/.local/state}/horch`.
 fn default_state_root(env: &dyn EnvSource, home: &Path) -> PathBuf {
     nonempty_path(env, "XDG_STATE_HOME")
         .unwrap_or_else(|| home.join(".local").join("state"))
         .join("horch")
 }
 
-/// horch's data directory (the skill store): `$HORCH_DATA_DIR`, else
-/// `${XDG_DATA_HOME:-$HOME/.local/share}/horch`.
 pub(crate) fn data_root(env: &dyn EnvSource, home: &Path) -> PathBuf {
     if let Some(dir) = nonempty_path(env, "HORCH_DATA_DIR") {
         return dir;
@@ -144,7 +96,6 @@ pub(crate) fn data_root(env: &dyn EnvSource, home: &Path) -> PathBuf {
         .join("horch")
 }
 
-/// The project dir a ledger belongs to: `$HORCH_PROJECT_DIR`, else the cwd.
 pub(crate) fn project_dir(env: &dyn EnvSource) -> Result<PathBuf> {
     if let Some(dir) = nonempty_path(env, "HORCH_PROJECT_DIR") {
         return Ok(dir);
@@ -152,12 +103,10 @@ pub(crate) fn project_dir(env: &dyn EnvSource) -> Result<PathBuf> {
     env.current_dir().context("resolving the current directory")
 }
 
-/// The user's home directory: `$HOME` (`%USERPROFILE%` on Windows), else `.`.
 pub(crate) fn home_dir(env: &dyn EnvSource) -> PathBuf {
     nonempty_path(env, horch_platform::path::HOME_VAR).unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// A variable as a path, with an empty value counting as unset.
 pub(crate) fn nonempty_path(env: &dyn EnvSource, key: &str) -> Option<PathBuf> {
     env.var_os(key).filter(|v| !v.is_empty()).map(PathBuf::from)
 }
@@ -179,7 +128,6 @@ mod tests {
         assert_eq!(state_root(&env, home), PathBuf::from("/xdg/horch"));
         let env = env.with("HORCH_STATE_DIR", "/state");
         assert_eq!(state_root(&env, home), PathBuf::from("/state"));
-        // Empty counts as unset.
         let env = MapEnv::new("/cwd")
             .with("HORCH_STATE_DIR", "")
             .with("XDG_STATE_HOME", "");
@@ -199,11 +147,9 @@ mod tests {
         );
         let env = env.with("XDG_DATA_HOME", "/xdg");
         assert_eq!(data_root(&env, home), PathBuf::from("/xdg/horch"));
-        // The variable names the store itself: no `horch` is appended.
         let env = env.with("HORCH_DATA_DIR", "/data");
         assert_eq!(data_root(&env, home), PathBuf::from("/data"));
         assert_eq!(Paths::from_env(&env).data_root, PathBuf::from("/data"));
-        // Empty counts as unset.
         let env = MapEnv::new("/cwd")
             .with("HORCH_DATA_DIR", "")
             .with("XDG_DATA_HOME", "");
@@ -224,9 +170,6 @@ mod tests {
         assert!(Paths::from_env(&env).project().is_err());
     }
 
-    /// #199: only a state root other than the default one, without an own
-    /// ledger, warns, and the warning names the ledger the command still
-    /// uses.
     #[test]
     fn a_state_dir_without_a_ledger_override_warns_with_the_ledger_path() {
         let home = MapEnv::new("/cwd").with("HOME", "/h");
@@ -243,8 +186,6 @@ mod tests {
             Paths::from_env(&scratch).ledger_isolation_warning(),
             Some(expected)
         );
-        // A fleet pane: its command sets HORCH_STATE_DIR to the root its
-        // opener used, which is the default root.
         let default = Path::new("/h").join(".local").join("state").join("horch");
         let pane = home
             .clone()
@@ -290,7 +231,6 @@ mod tests {
             Paths::from_env(&test).fleet_root,
             PathBuf::from("/tmp/t/fleet")
         );
-        // Empty counts as unset.
         let empty = test.with("FLEET_ROOT", "");
         assert_eq!(
             Paths::from_env(&empty).fleet_root,

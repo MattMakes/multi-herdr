@@ -1,11 +1,3 @@
-//! fleetd queues the `docs_sync` and `conformance` jobs (fleetd-p7 ticket
-//! 28): each day, on a new horch binary, on a new CLI binary, and a
-//! `conformance` run after each `docs_sync` run.
-//!
-//! Each test gives the fleet clock, the horch binary id and the CLI binary
-//! ids. No test reads the real clock or starts a CLI. A run starts and ends
-//! through `transition()`, as the pass and the job process move it.
-
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
@@ -52,7 +44,6 @@ fn cli(name: &str, binary_id: &str) -> CliBinary {
     }
 }
 
-/// The kind, subject and rule of each run that a pass queued as new.
 fn new_runs(out: &[QueuedDocsJob]) -> Vec<(Kind, String, Why)> {
     out.iter()
         .filter(|q| matches!(q.queued, Queued::New(_)))
@@ -68,7 +59,6 @@ fn new_id(q: &QueuedDocsJob) -> i64 {
 }
 
 impl World {
-    /// 1 pass of the docs jobs at `clock`, in its own transaction.
     fn pass(&mut self, clock: i64, horch: &str, clis: &[CliBinary]) -> Vec<QueuedDocsJob> {
         let ctx = JobCtx {
             guard: None,
@@ -110,8 +100,6 @@ impl World {
         tx.commit().unwrap();
     }
 
-    /// Start the run `id` at `clock` on the fleet clock, as part 3 of a
-    /// pass records it.
     fn start(&mut self, id: i64, clock: i64) {
         let limit = self.row(id).time_limit_s;
         let deadline = job_kinds::deadline(FleetSeconds(clock), limit);
@@ -119,13 +107,11 @@ impl World {
         self.moved(id, "running");
     }
 
-    /// Start the run `id` at `clock` and end it `passed`.
     fn run_to_end(&mut self, id: i64, clock: i64) {
         self.start(id, clock);
         self.moved(id, "passed");
     }
 
-    /// Run each new run of `out` to its end at `clock`.
     fn end_each(&mut self, out: &[QueuedDocsJob], clock: i64) {
         for q in out {
             if let Queued::New(id) = q.queued {
@@ -142,8 +128,6 @@ fn daily_run_starts_a_new_run() {
     let first = w.pass(1_000, HORCH, &clis);
     let docs = new_id(&first[0]);
     w.end_each(&first, 1_000);
-    // The first docs_sync run ended, and the conformance run of the new
-    // binary is later, so rule 4 asks for nothing.
     assert!(new_runs(&w.pass(1_000, HORCH, &clis)).is_empty());
 
     assert!(
@@ -221,7 +205,6 @@ fn new_cli_binary_queues_docs_sync_and_conformance() {
     );
     w.end_each(&out, 10);
 
-    // A binary that goes back to an earlier id is new again.
     let back = w.pass(20, HORCH, &[cli("claude", "b1")]);
     assert_eq!(
         new_runs(&back),
@@ -271,12 +254,9 @@ fn queued_run_is_not_queued_twice() {
     let first = w.pass(0, HORCH, &clis);
     assert_eq!(new_runs(&first).len(), 2);
 
-    // The same pass again, a new horch binary, a later day: each run of the
-    // CLI is still queued, so no second row.
     for (clock, horch) in [(0, HORCH), (5, "h2"), (DAILY_S * 2, HORCH)] {
         assert!(new_runs(&w.pass(clock, horch, &clis)).is_empty());
     }
-    // A new CLI binary while the runs of the old one are queued.
     assert!(new_runs(&w.pass(10, HORCH, &[cli("claude", "b2")])).is_empty());
     let count: i64 = w
         .conn
@@ -285,10 +265,6 @@ fn queued_run_is_not_queued_twice() {
     assert_eq!(count, 2);
 }
 
-/// Preservation row 06 S7 (Slice 7): docs sync starts no CLI update. A
-/// release younger than the cooldown is still held, and a new CLI binary
-/// queues only `docs_sync` and `conformance`, which read the installed
-/// binary and never change it.
 #[test]
 fn pres_06_s7_cli_release_younger_than_cooldown_is_held() {
     let doc: Packument = serde_json::from_str(

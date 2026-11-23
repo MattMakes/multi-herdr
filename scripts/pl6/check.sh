@@ -1,8 +1,4 @@
 #!/bin/sh
-# The test of PL-6 on this host: run each test of the workspace, record the
-# results, and compare them with scripts/pl6/baseline-macos.txt.
-# The exit code is the exit code of the compare, not of cargo test, because an
-# expected failure fails the run.
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
 tmpdir=${TMPDIR:-/tmp}

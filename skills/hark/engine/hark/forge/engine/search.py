@@ -47,8 +47,6 @@ def workers_of(workers: int | None = None) -> int:
     return int(min(8, max(1, cnt)))
 
 
-# ---------------------------------------------------------------- encoding
-
 def _range_type(sp: Any) -> str:
     if isinstance(sp, list):
         return "choice"
@@ -138,8 +136,6 @@ def clip_to(spec: Any, v: Any) -> Any:
     return int(round(cand)) if _range_type(spec) == "int" else cand
 
 
-# ---------------------------------------------------------------- starts
-
 def _owner_module(rcp: Any) -> Any:
     func = getattr(rcp, "render", None)
     while isinstance(func, functools.partial):
@@ -192,8 +188,6 @@ def fill_start(space: dict, start: dict, defaults: dict, own: dict | None = None
     return complete, remarks
 
 
-# ---------------------------------------------------------------- render
-
 _SEEN_FAILS: set[str] = set()
 _SEEN_GUARD = threading.Lock()
 
@@ -236,8 +230,6 @@ def render_many(recipe: Any, jobs: Sequence[tuple[dict, int]], workers: int | No
             return list(executor.map(lambda jx: render(recipe, jx[0], jx[1]), jobs))
     return [render(recipe, prm, one) for prm, one in jobs]
 
-
-# ---------------------------------------------------------------- descriptor
 
 def _downmix(sig: Any) -> np.ndarray:
     return tone.as_mono(sig)
@@ -378,8 +370,6 @@ def sound_dist(a: dict, b: dict) -> float:
     return float(np.sqrt(np.mean(dprof ** 2)) + 4 * np.sqrt(np.mean(denv ** 2)))
 
 
-# ---------------------------------------------------------------- pre-screen
-
 def _ref_monos(ref_list: Any) -> list[np.ndarray]:
     return [_downmix(rw) for rw in ref_list or []]
 
@@ -491,8 +481,6 @@ def prescreen_for(critic: Any) -> Prescreen:
                      polish_ref=getattr(critic, "polish_ref", None), study=getattr(critic, "study", None) or None)
 
 
-# ---------------------------------------------------------------- separable CMA-ES
-
 def _reflect_unit(sig: np.ndarray) -> np.ndarray:
     rw = np.mod(sig, 2.0)
     return np.where(rw > 1, 2 - rw, rw)
@@ -560,8 +548,6 @@ class SepCMA:
         self.diag = np.clip(self.diag, 1e-4, 16)
 
 
-# ---------------------------------------------------------------- optimiser
-
 def _fill_text(flagged: list[dict]) -> str:
     parts = "; ".join(f"start {wt['start']} {wt['key']} = {wt['value']} ({wt['from']})" for wt in flagged[:8])
     text = f"forge: {len(flagged)} start value(s) not from the start or DEFAULTS: {parts}"
@@ -623,8 +609,6 @@ class _Run:
         self.opt = SepCMA(max(1, len(self.names)), self.cfg["pop"], conf["mu"], conf["elite"])
         self.opt.reset(self.start_pts[0], self.scale0)
 
-    # -- candidates
-
     def _draw_seed(self) -> int:
         return int(self.gen.integers(0, 2 ** 31))
 
@@ -674,8 +658,6 @@ class _Run:
                     prm[ky] = val
         return prm
 
-    # -- evaluation
-
     def _screen_batch(self, mat: list[dict], sds: list[int], anchor: list) -> tuple[list, list, list, list]:
         tic = time.time()
         wavs = render_many(self.rcp, list(zip(mat, sds)), self.cfg["workers"])
@@ -711,8 +693,6 @@ class _Run:
         self.clock["scored"] += len(tbl)
         scored = {key2: rw for (key2, _), rw in zip(alive, tbl)}
         return [_join_reps(scored, jx, n_reps) for jx in range(cnt)]
-
-    # -- generation
 
     def step_gen(self, g: int) -> None:
         want = self.n_screen or self.cfg["pop"]
@@ -870,8 +850,6 @@ def optimize(recipe: Any, critic: Any, **opts: Any) -> dict:
     return one.summary()
 
 
-# ---------------------------------------------------------------- robust and diverse
-
 def _total_stats(sums: list[float]) -> dict:
     if not sums:
         return {"mean": None, "min": None, "max": None, "sd": None}
@@ -933,8 +911,6 @@ def diverse(results: Sequence[dict], recipe: Any, k: int = 4, min_dist: float = 
                 picked.append(rw)
     return sorted(picked, key=_order_key)
 
-
-# ---------------------------------------------------------------- seed bank
 
 def seeds_path(recipe: Any, folder: Any = None) -> Path:
     """<folder>/<recipe>.json, else the registry's seed path of the recipe."""

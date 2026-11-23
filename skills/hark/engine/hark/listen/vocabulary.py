@@ -73,9 +73,6 @@ STATS_PATH = DATA_DIR / "vocab_stats.json"
 Span = tuple[float, float]
 
 
-# ---------------------------------------------------------------- verdicts and text
-
-
 def verdict(z: float) -> str:
     """The verdict band of a calibrated z (bands are not cumulative)."""
     for name, lo in VERDICT_THRESHOLDS_Z.items():
@@ -110,9 +107,6 @@ def unit(vec: numpy.ndarray) -> numpy.ndarray:
     vec = numpy.asarray(vec, dtype=numpy.float64)
     count = numpy.linalg.norm(vec, axis=-1, keepdims=True)
     return vec / (count + NORM_FLOOR)
-
-
-# ---------------------------------------------------------------- ranges and batches
 
 
 def raise_first(checks: Sequence[tuple[bool, str | None]]) -> None:
@@ -153,7 +147,7 @@ def split_readable(files: Sequence[str]) -> tuple[list[str], list[dict]]:
         try:
             audio.duration(pth)
             good.append(pth)
-        except Exception as exc:  # one bad file never fails a batch
+        except Exception as exc:
             bad.append({"path": pth, "error": first_line(exc)})
     return good, bad
 
@@ -172,9 +166,6 @@ def array_peak_db(sig: numpy.ndarray) -> float:
 def same_path(lhs: str, b: str) -> bool:
     """True when 2 paths name one file (absolute, case-normalised)."""
     return os.path.normcase(os.path.abspath(lhs)) == os.path.normcase(os.path.abspath(b))
-
-
-# ---------------------------------------------------------------- windows
 
 
 def spans(t_from: float, t_to: float, win_cap: int = MAX_WIN) -> list[Span]:
@@ -213,9 +204,6 @@ def prepare(seg: numpy.ndarray, padding: str) -> numpy.ndarray:
         cell = numpy.pad(sig, (0, int(SPACED_UNIT_S * SR) - len(sig)))
         return numpy.tile(cell, int(math.ceil(win_n / len(cell))))[:win_n]
     return sig
-
-
-# ---------------------------------------------------------------- cache
 
 
 def _slug(joined: str) -> str:
@@ -275,9 +263,6 @@ def save_json(fpath: Path, value: Any) -> None:
         audio.replace_quietly(str(tmp), str(fpath))
     except Exception:
         pass
-
-
-# ---------------------------------------------------------------- text embedding
 
 
 def clap_model():
@@ -342,9 +327,6 @@ def embed_plain_text(texts: Sequence[str]) -> numpy.ndarray:
             save_array(fpath, stored)
         result.append(stored)
     return numpy.stack(result) if result else numpy.zeros((0, DIM), numpy.float32)
-
-
-# ---------------------------------------------------------------- audio embedding
 
 
 def _span_key(fid: str, span: Span, padding: str) -> str:
@@ -438,9 +420,6 @@ def embed_audio(arrays: Sequence[numpy.ndarray], pad: str = PAD) -> numpy.ndarra
         segs = [prepare(_slice(m, sv), pad) for sv in sp]
         result.append(unit(_embed_arrays(segs).mean(axis=0)))
     return numpy.stack(result).astype(numpy.float32) if result else numpy.zeros((0, DIM), numpy.float32)
-
-
-# ---------------------------------------------------------------- calibration
 
 
 class Calibration(NamedTuple):
@@ -611,9 +590,6 @@ def reset() -> None:
     global _VOCAB
     with _LOCK:
         _VOCAB = None
-
-
-# ---------------------------------------------------------------- reference statistics
 
 
 def folder_weights(files: Sequence[str], normalise: bool = True) -> numpy.ndarray:

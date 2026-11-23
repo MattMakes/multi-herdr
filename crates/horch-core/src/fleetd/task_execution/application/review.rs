@@ -1,31 +1,3 @@
-//! The review steps of a code kind (ticket 20 of `docs/tickets/fleetd-p4/`).
-//!
-//! `docs/specs/fleetd/design.md`, "Done for each kind of task" (Code kind),
-//! D6 and RR-18; `preservation-04-behavior.md` rows F1, F2, F5 and F12;
-//! `preservation-05-contracts-and-values.md` row V-14.
-//!
-//! - After the check of a push attempt passed, the verifier runs the steps
-//!   of the run's verification profile that come before `land`, in the
-//!   run's order ([`verifier_steps`]). The check already ran as the
-//!   `task_check` job of ticket 19. `land`, `pr` and `cleanup` are not
-//!   steps of the verifier.
-//! - Each step is today's code of `taskledger::finish`, called through
-//!   [`VerifierAttempt`], not copied. `code-sweep` runs in fleetd: its
-//!   reviewer tasks, rounds, `F<n>` ids, answers file and waivers are
-//!   today's. Push dispatch dispatches its reviewer tasks. While a review of
-//!   its round is open, the step waits and does not run again.
-//! - `complexity-sweep` and `recheck` run a command: each is a `task_check`
-//!   job run keyed by the tip and the hash of the step and its command
-//!   ([`step_input_key`]), so the pass never waits for it.
-//! - When each step passed or is not applicable, the task moves to `done`.
-//! - A failed `code-sweep` sends the task back for a fix attempt: a review
-//!   requeue. It adds 1 to `fix_rounds` (limit [`FIX_ROUND_LIMIT`]) and
-//!   does not change the attempt count (RR-18). Past the limit, the attempt
-//!   burns 1 attempt by rung 6.
-//! - A failed `complexity-sweep` or `recheck` ends the attempt `rejected`
-//!   and burns 1 attempt. Its `verdict.json` holds the list, and the next
-//!   attempt gets it in its `START.md` ([`start_section`]; Q11 of the MAP).
-
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
@@ -47,48 +19,28 @@ use crate::taskledger::store::Store;
 use crate::taskledger::tasks::{self, Task};
 use crate::taskledger::{runs, util};
 
-/// The most review requeues of 1 task: fix attempts after a failed
-/// code-sweep, counted in `fix_rounds`, not in the attempt count (V-14).
 pub const FIX_ROUND_LIMIT: i64 = 2;
 
-/// The command of the complexity-sweep, for its job key: clippy's
-/// `cognitive_complexity` lint on changed Rust files, and the analyser of
-/// the complexity-sweep skill on changed TypeScript, JavaScript and Python
-/// files (`taskledger::finish::complexity`).
 pub const COMPLEXITY_COMMAND: &str =
     "cargo clippy -W clippy::cognitive_complexity; complexity-sweep analyser";
 
-/// What the review [`run`] and its callers read.
 pub struct Review<'a> {
     pub jobs: &'a JobCtx<'a>,
-    /// The fleet clock of the pass.
     pub clock: FleetSeconds,
-    /// The programs and places of the finish steps.
     pub tools: &'a Tools,
-    /// The numbers of rung 6 of a task.
     pub policy: &'a dyn Fn(&Task) -> Policy,
 }
 
-/// What 1 [`run`] did with 1 task.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Reviewed {
-    /// Each step passed or is not applicable: the task is `done`.
     Done,
-    /// The verified value no longer stands: nothing moved.
     Stale,
-    /// The step waits: for its reviewer tasks, or for its job.
     Waiting(StepName),
-    /// The job of the step is held at `abandoned_run_limit`.
     Held(StepName),
-    /// A failed code-sweep: the task is `ready` for a fix attempt.
     FixAttempt(StepName),
-    /// The step failed: the attempt ended `rejected` and burned 1 attempt.
     Rejected(StepName),
 }
 
-/// The steps that the verifier runs after the check, in the run's order
-/// `steps`: each step before `land`, except the check, which ran as the
-/// `task_check` job. `land`, `pr` and `cleanup` are never verifier steps.
 pub fn verifier_steps(steps: &[StepName]) -> Vec<StepName> {
     steps
         .iter()
@@ -97,14 +49,16 @@ pub fn verifier_steps(steps: &[StepName]) -> Vec<StepName> {
         .filter(|n| {
             !matches!(
                 n,
-                StepName::Check | StepName::Land | StepName::Pr | StepName::Cleanup
+                StepName::Check
+                    | StepName::CommentSweep
+                    | StepName::Land
+                    | StepName::Pr
+                    | StepName::Cleanup
             )
         })
         .collect()
 }
 
-/// The input key of the `task_check` job of step `step` at `tip`: the tip,
-/// and the hash of the step and its command.
 pub fn step_input_key(tip: &str, step: StepName, command: &str) -> String {
     input_key(tip, &step_hash(step, command))
 }
@@ -113,13 +67,11 @@ fn step_hash(step: StepName, command: &str) -> String {
     check_hash(Some(&format!("{}\n{command}", step.as_str())))
 }
 
-/// Whether the `task_check` job with `input_key` is a complexity-sweep.
 pub fn is_complexity_key(input_key: &str) -> bool {
     let hash = step_hash(StepName::ComplexitySweep, COMPLEXITY_COMMAND);
     input_key.rsplit_once(':').is_some_and(|(_, h)| h == hash)
 }
 
-/// The step outcome `o` as the `data` of a job result.
 pub fn step_data(o: &Outcome) -> serde_json::Value {
     serde_json::to_value(StepData {
         status: o.status.as_str().into(),
@@ -131,7 +83,6 @@ pub fn step_data(o: &Outcome) -> serde_json::Value {
     .unwrap_or_default()
 }
 
-/// The step outcome of a job result.
 #[derive(Serialize, Deserialize)]
 struct StepData {
     status: String,
@@ -141,10 +92,6 @@ struct StepData {
     judged_rev: Option<String>,
 }
 
-/// The review steps of the attempt of `verified`, at its tip, in the store
-/// `store` with no transaction open. Each call goes on from the step where
-/// the last call stopped. A step that passed and stands for the tree now
-/// does not run again (F5).
 pub fn run(r: &Review<'_>, store: &mut Store, verified: Verified) -> Result<Reviewed> {
     let task = tasks::get(store.conn(), verified.task_id())?;
     if task.status != TaskStatus::Verifying.as_str() {
@@ -179,17 +126,13 @@ pub fn run(r: &Review<'_>, store: &mut Store, verified: Verified) -> Result<Revi
     })
 }
 
-/// What 1 step did in 1 [`run`].
 enum Step {
     Through,
     Waiting,
     Held,
-    /// The outcome, with the job run that gave it.
     Failed(Outcome, Option<i64>),
 }
 
-/// The code-sweep in this process, as `finish` runs it. While a review of
-/// its round is open, it waits and does not run.
 fn code_sweep(store: &mut Store, att: &VerifierAttempt<'_>, task: &Task) -> Result<Step> {
     let running = att
         .row(store.conn(), StepName::CodeSweep)?
@@ -205,8 +148,6 @@ fn code_sweep(store: &mut Store, att: &VerifierAttempt<'_>, task: &Task) -> Resu
     })
 }
 
-/// A step that runs a command: its `task_check` job run at `tip`. A pass
-/// queues it and never waits. A later pass records its result.
 fn job_step(
     r: &Review<'_>,
     store: &mut Store,
@@ -221,7 +162,6 @@ fn job_step(
         _ => check_of(store.conn(), task)?,
     };
     let Some(command) = command else {
-        // F2: horch decides `not_applicable` from the facts alone.
         let o = Outcome::not_applicable("the ticket says `**Check:** none`").judged(Some(tree));
         att.record(store, name, &o)?;
         return Ok(Step::Through);
@@ -258,7 +198,6 @@ fn job_step(
     })
 }
 
-/// The check command of `task`: its own, else the run's default.
 fn check_of(conn: &Connection, task: &Task) -> Result<Option<String>> {
     Ok(task
         .land_check
@@ -267,7 +206,6 @@ fn check_of(conn: &Connection, task: &Task) -> Result<Option<String>> {
         .filter(|c| !c.trim().is_empty()))
 }
 
-/// The tree of `tip`: what a step of a job judged.
 fn tip_tree(tools: &Tools, att: &VerifierAttempt<'_>, tip: &str) -> Result<String> {
     tools
         .git
@@ -279,8 +217,6 @@ fn tip_tree(tools: &Tools, att: &VerifierAttempt<'_>, tip: &str) -> Result<Strin
         .with_context(|| format!("the tree of the tip {tip}"))
 }
 
-/// The step outcome of the ended job run `row`. A run with step data gives
-/// it. Else, the run of a check: its exit, judged at `tree`.
 fn job_outcome(row: &JobRow, tree: &str) -> Result<Outcome> {
     let o = jobs::outcome(row).with_context(|| format!("the job run {} has no result", row.id))?;
     if let Some(d) = jobs::result_data(row).and_then(|d| serde_json::from_value::<StepData>(d).ok())
@@ -304,14 +240,11 @@ fn job_outcome(row: &JobRow, tree: &str) -> Result<Outcome> {
     Ok(o.judged(Some(tree.to_string())))
 }
 
-/// The prefix of the reason of the verdict of a failed review step.
 fn reason_of(name: StepName, o: &Outcome) -> String {
     let verdict = o.verdict.as_deref().unwrap_or(o.status.as_str());
     format!("{}: {verdict}: {}", name.as_str(), o.note)
 }
 
-/// Step `name` failed with `o`: record the failed verdict, then the review
-/// requeue of a code-sweep, or the rejection of each other step.
 fn fail(
     r: &Review<'_>,
     store: &mut Store,
@@ -353,9 +286,6 @@ fn fix_rounds(conn: &Connection, task_id: &str) -> Result<i64> {
     )?)
 }
 
-/// The review requeue of `task` (RR-18): 1 more fix round, `verifying` to
-/// `ready`, and the attempt count stays. The next attempt adds 1 to
-/// `attempts`, and the floor moves with it.
 fn requeue_for_fix(
     tx: &Connection,
     guard: Option<crate::fleetd::fleet_runtime::domain::ledger::Generation>,
@@ -387,8 +317,6 @@ fn requeue_for_fix(
     Ok(())
 }
 
-/// Whether each verifier step of the attempt `attempt_id` of `task` passed
-/// or is not applicable. Only then does a code kind move to `done`.
 pub fn steps_through(conn: &Connection, task: &Task, attempt_id: &str) -> Result<bool> {
     let worker_id = verifier::attempt(conn, attempt_id)?.worker_id;
     let run = runs::get(conn, &task.run_id)?;
@@ -405,13 +333,21 @@ pub fn steps_through(conn: &Connection, task: &Task, attempt_id: &str) -> Result
     Ok(true)
 }
 
-/// The section of `START.md` of the next attempt of `task_id`, when the
-/// newest verdict of the task is a failed review step: its verdict file
-/// and its reason, which holds the list of findings or functions.
 pub fn start_section(conn: &Connection, task_id: &str) -> Result<Option<String>> {
-    let Some(v) = verdict_file::newest(conn, task_id)? else {
-        return Ok(None);
-    };
+    Ok(verdict_file::newest(conn, task_id)?.and_then(|v| section_of(&v)))
+}
+
+pub fn start_sections<'a>(
+    conn: &Connection,
+    task_ids: impl IntoIterator<Item = &'a str>,
+) -> Result<std::collections::BTreeMap<String, String>> {
+    Ok(verdict_file::newest_of(conn, task_ids)?
+        .into_iter()
+        .filter_map(|(task_id, v)| section_of(&v).map(|s| (task_id, s)))
+        .collect())
+}
+
+fn section_of(v: &crate::fleetd::task_execution::domain::verification::Verdict) -> Option<String> {
     let review_step = [
         StepName::CodeSweep,
         StepName::ComplexitySweep,
@@ -420,15 +356,15 @@ pub fn start_section(conn: &Connection, task_id: &str) -> Result<Option<String>>
     .iter()
     .any(|n| v.reason.starts_with(&format!("{}: ", n.as_str())));
     if v.decision != Decision::Failed || !review_step {
-        return Ok(None);
+        return None;
     }
-    Ok(Some(format!(
+    Some(format!(
         "## The review of the last attempt\n\n\
          `{}` of attempt {}: {}\n",
         verdict_file::file_name(v.n),
         v.attempt,
         v.reason
-    )))
+    ))
 }
 
 #[cfg(test)]
@@ -448,7 +384,6 @@ mod tests {
             [ComplexitySweep]
         );
         assert!(verifier_steps(&VerifyProfile::Minimal.steps()).is_empty());
-        // A step after land is never a verifier step.
         assert_eq!(verifier_steps(&[Check, Land, Recheck, Pr]), []);
     }
 
@@ -459,7 +394,6 @@ mod tests {
         assert!(is_complexity_key(&complexity));
         let recheck = step_input_key("tip1", StepName::Recheck, "cargo test");
         assert!(!is_complexity_key(&recheck));
-        // The recheck is not the check: the same command has another key.
         assert_ne!(recheck, input_key("tip1", &check_hash(Some("cargo test"))));
         assert_ne!(
             recheck,

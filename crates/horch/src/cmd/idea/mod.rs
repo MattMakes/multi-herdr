@@ -1,8 +1,3 @@
-//! `horch idea` and `horch ideas`: the operator captures, approves and
-//! steers ideas, and the sub-orchestrator records notes
-//! (`docs/specs/fleetd/design.md`, "Ideas"). 1 file for each subcommand.
-//! Each write command sends its request to fleetd with the channel client.
-
 pub mod add;
 pub mod amend;
 pub mod approve;
@@ -19,12 +14,10 @@ use anyhow::Result;
 use clap::Subcommand;
 use horch_core::fleetd::fleet_runtime::adapters::channel_client::{self, Sent};
 use horch_core::fleetd::fleet_runtime::adapters::peer_process::{
-    peer_in_live_attempt, AttemptProcess, Fact, PlatformFacts,
+    fleet_process, recorded_processes, Fact, PlatformFacts,
 };
 use horch_core::fleetd::fleet_runtime::adapters::request_wire::Outcome;
 use horch_core::fleetd::fleet_runtime::domain::requests::Kind;
-use horch_core::fleetd::task_execution::adapters::sqlite::open_attempts_with_persona;
-use horch_core::fleetd::task_execution::domain::task::Recorded;
 use horch_core::runtime::RuntimeContext;
 use horch_core::taskledger;
 use serde_json::{Map, Value};
@@ -52,7 +45,6 @@ pub enum IdeaCommand {
     Cancel(cancel::CancelArgs),
 }
 
-/// `horch idea`.
 pub fn run(ctx: &RuntimeContext, command: IdeaCommand) -> Result<ExitCode> {
     match command {
         IdeaCommand::Add(args) => add::run(ctx, args),
@@ -66,10 +58,6 @@ pub fn run(ctx: &RuntimeContext, command: IdeaCommand) -> Result<ExitCode> {
     }
 }
 
-/// Send 1 operator request of `kind` with the channel client, or write a
-/// request file when fleetd is down. An applied request gives its result
-/// to `print`, and exits 0. A refused request prints its reason on stderr,
-/// and exits 1. A queued request prints its id and its file, and exits 0.
 fn send(
     ctx: &RuntimeContext,
     command: &str,
@@ -98,23 +86,15 @@ fn send(
     }
 }
 
-/// The text of `key` in the result of a request, else `-`.
 fn text<'a>(result: &'a Value, key: &str) -> &'a str {
     result.get(key).and_then(Value::as_str).unwrap_or("-")
 }
 
-/// The first guard of `horch idea approve`, `horch idea add --direct` and
-/// `horch feature abandon` (SR-5, FR-10): `Some(exit 1)` when the process
-/// tree of this process holds the recorded process of a live attempt.
-/// The fact is the peer process fact of the channel server, never an
-/// environment variable. A fact that is unknown refuses too: a guard whose
-/// fact is unknown does not hold. With no live attempt, nothing can hold
-/// this process. The checks of fleetd at the server stay the wall.
 pub(crate) fn refuse_inside_fleet_attempt(ctx: &RuntimeContext, command: &str) -> Option<ExitCode> {
     let reason = match attempt_fact(ctx) {
         Fact::No => return None,
         Fact::Yes(attempts) => format!(
-            "this process runs inside the fleet attempt {}",
+            "this process is a fleet process of attempt {}",
             attempts.join(", ")
         ),
         Fact::Unknown => {
@@ -127,7 +107,6 @@ pub(crate) fn refuse_inside_fleet_attempt(ctx: &RuntimeContext, command: &str) -
     Some(ExitCode::from(1))
 }
 
-/// Is this process in a live attempt of the ledger, read-only.
 fn attempt_fact(ctx: &RuntimeContext) -> Fact {
     let Ok(store) = taskledger::open_existing_read_only(ctx) else {
         return Fact::Unknown;
@@ -135,26 +114,8 @@ fn attempt_fact(ctx: &RuntimeContext) -> Fact {
     let Some(store) = store else {
         return Fact::No;
     };
-    let Ok(rows) = open_attempts_with_persona(store.conn()) else {
-        return Fact::Unknown;
-    };
-    let mut attempts = Vec::with_capacity(rows.len());
-    for (row, _) in rows {
-        let Some(Recorded {
-            pid,
-            pid_start: Some(start),
-        }) = row.process
-        else {
-            return Fact::Unknown;
-        };
-        attempts.push(AttemptProcess {
-            attempt: row.id,
-            wrapper_pid: pid,
-            wrapper_start: start,
-        });
+    match recorded_processes(store.conn()) {
+        Ok(Some((recorded, _))) => fleet_process(std::process::id(), &recorded, &PlatformFacts),
+        Ok(None) | Err(_) => Fact::Unknown,
     }
-    if attempts.is_empty() {
-        return Fact::No;
-    }
-    peer_in_live_attempt(std::process::id(), &attempts, &PlatformFacts)
 }

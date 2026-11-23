@@ -1,7 +1,3 @@
-//! The concern service for macOS: 2 launchd agents. The 1st keeps
-//! `horch fleetd` alive. The 2nd runs `horch fleetd check` every 30 s, the
-//! hang detection of macOS (PL-5).
-
 use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -13,9 +9,6 @@ pub use crate::unix::service::{os_user_home, write_definition};
 
 pub const MANAGER: &str = "launchctl";
 
-/// The exit statuses of a `launchctl bootout` of a label that is not
-/// loaded: 3 (`ESRCH`, "No such process") and 113 ("Could not find
-/// specified service").
 const NOT_LOADED: &[i32] = &[3, 113];
 
 pub fn default_folder(home: &Path) -> PathBuf {
@@ -47,9 +40,6 @@ pub fn definitions(spec: &Spec) -> io::Result<Vec<(PathBuf, String)>> {
     ])
 }
 
-/// Unloads the check agent, then fleetd, then loads fleetd, then the check
-/// agent. A `bootout` of a label that is not loaded exits with
-/// [`NOT_LOADED`].
 pub fn ensure_steps(spec: &Spec) -> Vec<Step> {
     let labels = [spec.label.clone(), check_label(spec)];
     let bootout = labels.iter().rev().map(|label| Step {
@@ -87,14 +77,11 @@ fn plist_path(spec: &Spec, label: &str) -> PathBuf {
     spec.folder.join(format!("{label}.plist"))
 }
 
-/// The launchd domain of the GUI session of this user.
 fn domain() -> String {
     // SAFETY: getuid has no preconditions and cannot fail.
     format!("gui/{}", unsafe { libc::getuid() })
 }
 
-/// A launchd agent plist with `label`, `program` and the env of `spec`, and
-/// the keys `extra`.
 fn plist(spec: &Spec, label: &str, program: &[&str], extra: &str) -> String {
     let mut text = String::from(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\

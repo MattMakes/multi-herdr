@@ -1,19 +1,3 @@
-//! The e2e tests of plans through the binary: FR-3, FR-4 and FM-10
-//! (`docs/tickets/fleetd-p6/58-e2e-plans.md`).
-//!
-//! Each test makes its own ledger, fleet root and git project in a temp
-//! folder, and runs a test `horch fleetd` with the fake herdr and the fake
-//! idea-lead. `horch idea add` adds 1 idea. The fake idea-lead writes
-//! `assumptions.md`, `spec.md` and `requirements.yaml` (R1 and R2), and the
-//! test approves the assumptions with `horch idea approve`. In `ticketing`,
-//! the plan comes from the fake (`ticket_cycle`), or the test writes it in
-//! the idea folder as the sub-orchestrator does. fleetd validates it and
-//! writes `plan.verdict.json`.
-//!
-//! Each test waits for an event of the ledger or of a file, never for a
-//! time. Each test sets `HORCH_TEST_DOCS_FIXTURE` to an empty local folder,
-//! so no test uses the network.
-
 #![cfg(unix)]
 
 use std::os::unix::fs::PermissionsExt;
@@ -25,20 +9,14 @@ use horch_e2e::harness::{fixtures, wait_for_or, Harness};
 use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
 
-/// The `fleet.toml` of each test: 1 pass each second.
 const FLEET_TOML: &str = "pass_period_s = 1\n";
 
-/// The keys of the fake idea-lead that bring an idea to `ticketing` with
-/// no plan: the test writes the plan.
 const TO_TICKETING: &str = "clarify,specify";
 
-/// The text of the idea of each test.
 const IDEA: &str = "Write 1 line in fake.txt.";
 
-/// The mode of each file that the test writes in an idea folder.
 const FILE_MODE: u32 = 0o600;
 
-/// The mode of each folder that the test makes in an idea folder.
 const DIR_MODE: u32 = 0o700;
 
 fn text(o: &Output) -> String {
@@ -50,7 +28,6 @@ fn text(o: &Output) -> String {
     )
 }
 
-/// A C1 ticket with the kind `kind` that owns `file`.
 fn ticket(key: &str, kind: &str, file: &str) -> String {
     format!(
         "# {key}: Write {file}\n\n\
@@ -64,7 +41,6 @@ fn ticket(key: &str, kind: &str, file: &str) -> String {
     )
 }
 
-/// 1 task of plan.yaml.
 struct Task<'a> {
     key: &'a str,
     kind: &'a str,
@@ -91,20 +67,14 @@ impl Task<'_> {
     }
 }
 
-/// A fleet with a test fleetd and 1 idea of `horch idea add`.
 struct World {
     h: Harness,
     idea: String,
 }
 
 impl World {
-    /// The fleet, with `scenario` as the keys of each fake agent, and its
-    /// 1 idea.
     fn new(name: &str, scenario: &str) -> World {
         let mut h = Harness::new(name).with_git();
-        // The ledger is in the state folder and the fleet root is next to
-        // it, with no FLEET_ROOT: a pane gets only HORCH_STATE_DIR and
-        // HORCH_DATA_DIR, and its process finds the same paths there.
         let fleet = h.state.join("fleet");
         std::fs::create_dir_all(&fleet).unwrap();
         std::fs::write(fleet.join("fleet.toml"), FLEET_TOML).unwrap();
@@ -118,14 +88,11 @@ impl World {
             "HORCH_QUOTA_FILE",
             fixtures().join("quota/all-ok.json").to_string_lossy(),
         );
-        // No test uses the network for the docs sync of fleetd.
         let docs = h.root.join("docs-fixture");
         std::fs::create_dir_all(&docs).unwrap();
         h.set("HORCH_TEST_DOCS_FIXTURE", docs.to_string_lossy());
-        // `exec`: each pane of the fake herdr runs its command.
         h.set("HORCH_FAKE_SCENARIO", format!("exec,{scenario}"));
         h.fleet_workspace();
-        // Plan validation refuses a plan when the project declares no gates.
         std::fs::write(
             h.project.join("fleet.toml"),
             "[gates]\nfast = \"true\"\nfull = \"true\"\n",
@@ -141,9 +108,6 @@ impl World {
 
         let o = w.h.run(&["idea", "add", IDEA]);
         assert!(o.status.success(), "horch idea add: {}", text(&o));
-        // fleetd can add other ideas, for example 1 for each agent CLI of
-        // the host that fails its conformance check: find the idea.md of
-        // this idea.
         w.idea = w.wait("the idea row", || {
             w.rows("SELECT id FROM ideas ORDER BY id")
                 .into_iter()
@@ -174,19 +138,14 @@ impl World {
         assert!(o.status.success(), "git {}: {}", args.join(" "), text(&o));
     }
 
-    /// The idea folder.
     fn folder(&self) -> PathBuf {
         self.h.state.join("fleet").join("ideas").join(&self.idea)
     }
 
-    /// Write `name` in the idea folder as the sub-orchestrator does: a
-    /// temp file in the folder, then a rename, so fleetd never reads half
-    /// a file.
     fn write(&self, name: &str, text: &str) {
         let path = self.folder().join(name);
         let parent = path.parent().unwrap();
         std::fs::create_dir_all(parent).unwrap();
-        // SR-6 refuses a folder that is wider than 0700.
         std::fs::set_permissions(parent, std::fs::Permissions::from_mode(DIR_MODE)).unwrap();
         let tmp = self
             .folder()
@@ -196,7 +155,6 @@ impl World {
         std::fs::rename(&tmp, &path).unwrap();
     }
 
-    /// Write the ticket of each task, then plan.yaml with `tasks`.
     fn write_plan(&self, tasks: &[Task<'_>]) -> String {
         for t in tasks {
             self.write(
@@ -221,8 +179,6 @@ impl World {
         plan
     }
 
-    /// The rows of `sql`, each row its columns joined with 1 space. No rows
-    /// while the ledger does not exist yet.
     fn rows(&self, sql: &str) -> Vec<String> {
         let Ok(conn) =
             Connection::open_with_flags(self.h.ledger_db(), OpenFlags::SQLITE_OPEN_READ_ONLY)
@@ -269,13 +225,11 @@ impl World {
         });
     }
 
-    /// plan.verdict.json, when fleetd wrote it.
     fn verdict(&self) -> Option<Value> {
         let text = std::fs::read_to_string(self.folder().join("plan.verdict.json")).ok()?;
         serde_json::from_str(&text).ok()
     }
 
-    /// The `rule` of each problem of the refused plan.verdict.json.
     fn wait_refused(&self) -> (Value, Vec<String>) {
         let v = self.wait("a refused plan.verdict.json", || {
             self.verdict().filter(|v| v["valid"] == Value::Bool(false))
@@ -291,7 +245,6 @@ impl World {
         (v, rules)
     }
 
-    /// The tasks of the idea, each "task_id work_kind".
     fn tasks(&self) -> Vec<String> {
         self.rows(&format!(
             "SELECT task_id, IFNULL(work_kind, '-') FROM tasks WHERE idea_id = '{}'
@@ -300,8 +253,6 @@ impl World {
         ))
     }
 
-    /// The refused plan wrote nothing of itself in the ledger, and the idea
-    /// stays in `ticketing` with 1 more phase attempt.
     fn assert_nothing_committed(&self) {
         assert_eq!(
             self.state().as_deref(),
@@ -331,7 +282,6 @@ impl World {
         );
     }
 
-    /// What a failed wait shows.
     fn context(&self) -> String {
         let show =
             |title: &str, sql: &str| format!("{title}:\n  {}\n", self.rows(sql).join("\n  "));
@@ -362,14 +312,11 @@ impl World {
         .concat()
     }
 
-    /// Wait for `what`: `f` gives a value.
     fn wait<T>(&self, what: &str, f: impl FnMut() -> Option<T>) -> T {
         wait_for_or(what, f, || self.context())
     }
 }
 
-/// FR-3: a plan with no task for the requirement R2 is refused. Nothing of
-/// it reaches the ledger.
 #[test]
 fn fr3_plan_missing_a_requirement_is_rejected() {
     let w = World::new("p6-plans-fr3-missing", TO_TICKETING);
@@ -386,9 +333,6 @@ fn fr3_plan_missing_a_requirement_is_rejected() {
     w.assert_nothing_committed();
 }
 
-/// FR-3: a valid plan of 2 tasks commits each task, its dependency, its
-/// covers, the requirements and the plan hash, and the idea goes to
-/// `in_progress`.
 #[test]
 fn fr3_valid_plan_commits_each_task() {
     let w = World::new("p6-plans-fr3-valid", TO_TICKETING);
@@ -451,8 +395,6 @@ fn fr3_valid_plan_commits_each_task() {
     });
 }
 
-/// FR-4: a task of a judgment kind with no judge task is refused, and
-/// nothing of the plan reaches the ledger.
 #[test]
 fn fr4_judgment_task_without_judge_is_refused() {
     let w = World::new("p6-plans-fr4", TO_TICKETING);
@@ -468,10 +410,6 @@ fn fr4_judgment_task_without_judge_is_refused() {
     w.assert_nothing_committed();
 }
 
-/// FM-10: the fake idea-lead writes a plan whose 2 tasks wait for each
-/// other. fleetd refuses it with the `dag` rule, commits nothing, and a new
-/// ticketing process starts after the refusal, with the errors in
-/// plan.verdict.json and in `horch idea show`.
 #[test]
 fn fm10_cycle_is_refused_and_ticketing_reruns() {
     let w = World::new("p6-plans-fm10", "clarify,specify,ticket_cycle");

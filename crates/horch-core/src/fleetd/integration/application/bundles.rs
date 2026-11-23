@@ -1,30 +1,3 @@
-//! The use cases of bundles and their bisect (tickets 29 and 30).
-//!
-//! `docs/specs/fleetd/design.md`, "The bundle", "The bundle state machine"
-//! (`building`, `gating`), "A moved tip drops a bundle", FM-36 and I12:
-//! - [`advance`] is the pass part. When a feature has no open bundle and 1
-//!   or more `ready` task branches, it writes 1 `building` bundle on the
-//!   feature tip with 1 member for each branch in queue order, moves each
-//!   member to `in_bundle` and queues the `bundle_build` job, all in the
-//!   transaction of the pass.
-//! - Each later pass reads the row of each `building` and `gating` bundle
-//!   and the row of its job. It never waits for a job. A passed build moves
-//!   the bundle to `gating` and queues the fast gate. A conflict sends the
-//!   member to `conflicted`; another failure or a moved feature tip drops
-//!   the bundle, and its members go back to `ready`. An abandoned run of
-//!   either job runs again.
-//! - The verdict of the fast gate (ticket 30): a pass moves the bundle to
-//!   `passed`, due after `bundle_passed_limit_s`. A failure moves it to
-//!   `failed`, and the bisect writes 1 child bundle with `parent_id` for
-//!   each half, built and gated in the same way. A failed bundle of 1
-//!   member sends its branch to `gate_failed`; [`failed_gate`] names the
-//!   gate job whose result names the gate output.
-//! - Each step reads the rows again, so after a restart each bundle goes on
-//!   from its row: no bundle is built 2 times, and no member stays
-//!   `in_bundle` for ever (FM-36).
-//! - A bundle past the time limit of its state has 1 needs-you item, and
-//!   the item ends when the bundle is no longer past it.
-
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -55,22 +28,17 @@ use crate::fleetd::worktree_custody::application::gate_tree::{self, GateTreeRequ
 use crate::taskledger::model::Actor;
 use crate::taskledger::runs;
 
-/// The kind of the needs-you item of a bundle past its time limit.
 pub const OVERDUE_KIND: &str = "bundle_overdue";
 
-/// The key of the needs-you item of the bundle `id` past its limit.
 pub fn overdue_key(id: i64) -> String {
     format!("{OVERDUE_KIND}:{id}")
 }
 
-/// What [`advance`] works with: the job context of the pass, and the git
-/// gateway that reads the tips of the feature branch and of the members.
 pub struct Bundles<'a> {
     pub jobs: &'a JobCtx<'a>,
     pub git: &'a dyn IntegrationGitGateway,
 }
 
-/// The time limits of the bundle states in `config`.
 pub fn limits(config: &FleetConfig) -> Limits {
     let jobs = &config.job_limit_s;
     Limits {
@@ -88,7 +56,6 @@ fn by_fleetd(text: &str) -> Cause<'_> {
     }
 }
 
-/// The repository, the branch and the run of a feature.
 struct Target {
     repo: PathBuf,
     branch: String,
@@ -101,16 +68,10 @@ impl Target {
     }
 }
 
-/// The pass part of bundles, in the transaction `tx` of part 2 at the fleet
-/// clock `clock`: form the new bundles, step each `building` and `gating`
-/// bundle, and keep 1 needs-you item for each bundle past its limit.
 pub fn advance(b: &Bundles<'_>, tx: &Connection, clock: FleetSeconds) -> Result<()> {
     advance_in(b, tx, clock, None, None)
 }
 
-/// [`advance`] for the work budget of 1 pass: form bundles only for the
-/// features of `features`, and step only the bundles of `bundles`. `None`
-/// is each row.
 pub fn advance_in(
     b: &Bundles<'_>,
     tx: &Connection,
@@ -132,11 +93,6 @@ pub fn advance_in(
     overdue_items(b.jobs, tx, clock)
 }
 
-/// The build job of a bundle is a separate process: a pass can drop the
-/// bundle while the job runs, and the job can still write the candidate
-/// ref after the drop. The ids of the dropped bundles whose build job has
-/// not ended, or passed with a candidate that the row does not record yet.
-/// A pass follows them, so [`advance_in`] records each such candidate.
 pub fn late_builds(conn: &Connection) -> Result<Vec<i64>> {
     let mut ids = Vec::new();
     for (id, job) in rows::dropped_without_candidate(conn)? {
@@ -153,10 +109,6 @@ pub fn late_builds(conn: &Connection) -> Result<Vec<i64>> {
     Ok(ids)
 }
 
-/// Record the candidate of the passed build job of each dropped bundle of
-/// [`late_builds`] on its row, so the deletion of candidate refs deletes
-/// the ref. A recorded bundle has its `candidate_tip`, so it is recorded 1
-/// time.
 fn late_candidates(ctx: &JobCtx<'_>, tx: &Connection, bundles: Option<&[i64]>) -> Result<()> {
     for id in late_builds(tx)? {
         if bundles.is_some_and(|ids| !ids.contains(&id)) {
@@ -186,8 +138,6 @@ fn late_candidates(ctx: &JobCtx<'_>, tx: &Connection, bundles: Option<&[i64]>) -
     Ok(())
 }
 
-/// The repository and the branch of `feature_id`, or `None` when the
-/// feature has no branch or no run.
 fn target(tx: &Connection, feature_id: &str) -> Result<Option<Target>> {
     let Some(branch) = rows::feature(tx, feature_id)?.and_then(|f| f.branch) else {
         return Ok(None);
@@ -203,9 +153,6 @@ fn head_tip(b: &Bundles<'_>, t: &Target, branch: &str) -> Result<Option<String>>
     b.git.tip(&t.repo, &format!("refs/heads/{branch}"))
 }
 
-/// Write 1 `building` bundle of the `ready` task branches of `feature_id`
-/// on the tip of its branch `branch`, when the feature has no open bundle.
-/// A branch that git does not have waits; its `ready` limit names it.
 fn form(
     b: &Bundles<'_>,
     tx: &Connection,
@@ -254,22 +201,12 @@ fn form(
     Ok(())
 }
 
-/// The kind of the needs-you item of a `ready` task branch that git no
-/// longer has and whose work fleetd cannot find in its feature.
 pub const NO_TIP_KIND: &str = "branch_tip_missing";
 
-/// The key of the needs-you item of the task branch `branch` with no tip.
 pub fn no_tip_key(branch: &str) -> String {
     format!("{NO_TIP_KIND}:{branch}")
 }
 
-/// The tip of the `ready` task branch `name` for a bundle on `base`: the
-/// tip of its ref. When git no longer has the ref, as after the old path
-/// landed it and removed its tree, the tip that the ledger recorded for it
-/// (its `seen_tip`, its rescue ref, else the tip of its newest tree row)
-/// when that tip is already in `base`: the bundle then lands it with no
-/// candidate commit. Else `None`, with 1 needs-you item, so the branch does
-/// not wait in `ready` with no word.
 fn member_tip(
     b: &Bundles<'_>,
     tx: &Connection,
@@ -308,9 +245,6 @@ fn member_tip(
     Ok(None)
 }
 
-/// The tip that the ledger recorded for the task branch `name` that git no
-/// longer has: its `seen_tip`, else the tip of its rescue ref, else the tip
-/// of its newest tree row. `None` when none is known.
 pub(crate) fn recorded_tip(
     git: &dyn IntegrationGitGateway,
     tx: &Connection,
@@ -328,8 +262,6 @@ pub(crate) fn recorded_tip(
     }
 }
 
-/// The rows of 1 new bundle: its members in queue order and the tip of
-/// each, on `base_tip`; `parent_id` is the failed bundle of a bisect part.
 struct Part<'p> {
     feature_id: &'p str,
     base_tip: &'p str,
@@ -338,8 +270,6 @@ struct Part<'p> {
     tips: &'p [String],
 }
 
-/// Write the `building` bundle `part` with its members and queue its
-/// `bundle_build` job, in `tx`. Gives the id of the bundle.
 fn insert(
     ctx: &JobCtx<'_>,
     tx: &Connection,
@@ -372,8 +302,6 @@ fn insert(
     Ok(id)
 }
 
-/// Record the run of `queued` as the job of the bundle `id`, when it is a
-/// new run.
 fn set_job(ctx: &JobCtx<'_>, tx: &Connection, id: i64, queued: &Queued, why: &str) -> Result<()> {
     if let Queued::New(job) = queued {
         rows::set_bundle_fact(tx, ctx.guard, id, BundleFact::JobId(*job), by_fleetd(why))?;
@@ -381,7 +309,6 @@ fn set_job(ctx: &JobCtx<'_>, tx: &Connection, id: i64, queued: &Queued, why: &st
     Ok(())
 }
 
-/// 1 step of the `building` or `gating` bundle `id`.
 fn step(b: &Bundles<'_>, tx: &Connection, clock: FleetSeconds, id: i64) -> Result<()> {
     let bundle = rows::bundle(tx, id)?.with_context(|| format!("no bundle {id}"))?;
     let Some(t) = target(tx, &bundle.feature_id)? else {
@@ -438,8 +365,6 @@ fn step(b: &Bundles<'_>, tx: &Connection, clock: FleetSeconds, id: i64) -> Resul
     }
 }
 
-/// What the run `job` of the build says. A bundle with no run has no
-/// candidate to wait for, so it is a failed build.
 fn build_fact(job: Option<&JobRow>) -> BuildFact {
     let Some(job) = job else {
         return BuildFact::Failed;
@@ -465,8 +390,6 @@ fn build_fact(job: Option<&JobRow>) -> BuildFact {
     }
 }
 
-/// Queue the next run of the abandoned build `job` of the bundle `id`, with
-/// the same input key, after its backoff.
 fn rebuild(
     ctx: &JobCtx<'_>,
     tx: &Connection,
@@ -484,9 +407,6 @@ fn rebuild(
     set_job(ctx, tx, id, &queued, "its build job ended abandoned")
 }
 
-/// Queue the fast gate of the `gating` bundle `bundle` on its candidate
-/// over its base tip. A pass calls it on each step: a run that is queued,
-/// running or has a verdict adds nothing, and an abandoned run runs again.
 fn gate(
     ctx: &JobCtx<'_>,
     tx: &Connection,
@@ -519,17 +439,12 @@ fn gate(
     };
     match exec_gate::queue(ctx, tx, &req, clock)? {
         Some(queued) => set_job(ctx, tx, bundle.id, &queued, "its fast gate is queued"),
-        // The gates of the feature hold for want of a sandbox.
         None => Ok(()),
     }
 }
 
-/// The word of the fast gate in `gate_runs`.
 const FAST_GATE: &str = "fast";
 
-/// Act on the verdict of the fast gate of the `gating` bundle `bundle`
-/// (ticket 30): no verdict queues the gate, a pass moves the bundle to
-/// `passed`, and a failure moves it to `failed` and bisects it.
 fn judge(
     b: &Bundles<'_>,
     tx: &Connection,
@@ -588,9 +503,6 @@ fn judge(
     }
 }
 
-/// The verdict of the fast gate of `bundle` on its candidate over its base
-/// tip, from its `gate_runs` row. A gate is pure, so the newest row of the
-/// same 2 tips is the verdict.
 fn verdict(tx: &Connection, bundle: &BundleRow) -> Result<Verdict> {
     let Some(tip) = bundle.candidate_tip.as_deref() else {
         return Ok(Verdict::Pending);
@@ -603,10 +515,6 @@ fn verdict(tx: &Connection, bundle: &BundleRow) -> Result<Verdict> {
     })
 }
 
-/// Write 1 child bundle of the failed `parent` with the members `half`, on
-/// the base tip of the parent. Each member stays `in_bundle`, with the due
-/// time of a new bundle. A member that git no longer has goes back to
-/// `ready`.
 fn bisect_part(
     b: &Bundles<'_>,
     tx: &Connection,
@@ -659,17 +567,12 @@ fn bisect_part(
     Ok(())
 }
 
-/// The failed fast gate that sent a task branch to `gate_failed`: the
-/// bundle of 1 member that failed, and its gate job. The result of the job
-/// names the output of the gate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FailedGate {
     pub bundle_id: i64,
     pub job_id: i64,
 }
 
-/// The newest failed gate of `branch` (ticket 33 gives its output to the
-/// fix attempt), or `None` when no failed bundle of 1 member holds it.
 pub fn failed_gate(conn: &Connection, branch: &str) -> Result<Option<FailedGate>> {
     let found = conn
         .query_row(
@@ -689,8 +592,6 @@ pub fn failed_gate(conn: &Connection, branch: &str) -> Result<Option<FailedGate>
     Ok(found)
 }
 
-/// Move the bundle `id` to `to` through `transition()`, and write the due
-/// time of `to` at `clock`.
 fn enter(
     ctx: &JobCtx<'_>,
     tx: &Connection,
@@ -715,7 +616,6 @@ fn enter(
     Ok(())
 }
 
-/// Drop `bundle` after `step`, and move each member to its state.
 fn leave(
     ctx: &JobCtx<'_>,
     tx: &Connection,
@@ -732,8 +632,6 @@ fn leave(
     Ok(())
 }
 
-/// Open 1 needs-you item for each bundle past the limit of its state, and
-/// end the item of each bundle that is no longer past it.
 fn overdue_items(ctx: &JobCtx<'_>, tx: &Connection, clock: FleetSeconds) -> Result<()> {
     let limits = limits(ctx.config);
     let overdue = |bundle: &BundleRow| {
@@ -776,7 +674,6 @@ fn overdue_items(ctx: &JobCtx<'_>, tx: &Connection, clock: FleetSeconds) -> Resu
     Ok(())
 }
 
-/// Each `open` or `ready` feature with a branch, as (id, branch), by id.
 fn live_features(conn: &Connection) -> Result<Vec<(String, String)>> {
     let mut stmt = conn.prepare(
         "SELECT id, branch FROM features
@@ -786,8 +683,6 @@ fn live_features(conn: &Connection) -> Result<Vec<(String, String)>> {
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// The SQL list of the words of `states`, for example `('building')`. The
-/// words are the fixed words of [`BundleState`].
 fn sql_list(states: impl IntoIterator<Item = BundleState>) -> String {
     let words: Vec<String> = states
         .into_iter()
@@ -796,7 +691,6 @@ fn sql_list(states: impl IntoIterator<Item = BundleState>) -> String {
     format!("({})", words.join(", "))
 }
 
-/// The ids of the bundles in 1 of `states`, by id.
 fn bundles_in(conn: &Connection, states: &[BundleState]) -> Result<Vec<i64>> {
     let sql = format!(
         "SELECT id FROM bundles WHERE state IN {} ORDER BY id",
@@ -807,7 +701,6 @@ fn bundles_in(conn: &Connection, states: &[BundleState]) -> Result<Vec<i64>> {
     Ok(ids.collect::<rusqlite::Result<_>>()?)
 }
 
-/// Whether `feature_id` has a bundle that is not ended.
 fn has_open_bundle(conn: &Connection, feature_id: &str) -> Result<bool> {
     let open = sql_list(BundleState::ALL.into_iter().filter(|s| s.is_open()));
     Ok(conn.query_row(
@@ -817,8 +710,6 @@ fn has_open_bundle(conn: &Connection, feature_id: &str) -> Result<bool> {
     )?)
 }
 
-/// The `ready` task branches of `feature_id`, in queue order: by
-/// `queue_seq`, then in the order of their rows.
 fn ready_branches(conn: &Connection, feature_id: &str) -> Result<Vec<String>> {
     let mut stmt = conn.prepare(
         "SELECT name FROM branches

@@ -1,11 +1,9 @@
-//! The hermetic end-to-end story of design section 16.5, one step at a time.
-//! `scripts/verify-telemetry-e2e.sh` runs it and keeps its `PASS <step>`
-//! lines. Every number comes from the fixture oracle, EXPECTED.md.
-
 use std::collections::HashSet;
 use std::path::Path;
 
-use horch_e2e::harness::{copy_tree, fixtures, Harness};
+use horch_core::execution::records::SessionLedger;
+use horch_e2e::harness::{copy_tree, fixtures, wait_for_or, Harness};
+use horch_e2e::ledger_seed::{seed_run, seed_task};
 use serde_json::Value;
 
 fn pass(step: &str) {
@@ -16,7 +14,6 @@ fn close(a: f64, b: f64) -> bool {
     (a - b).abs() < 1e-6
 }
 
-/// Copy a tree, keeping the first floor(n/2) lines of every `.jsonl`.
 fn copy_half(from: &Path, to: &Path) {
     if from.is_dir() {
         std::fs::create_dir_all(to).unwrap();
@@ -88,114 +85,128 @@ fn check_golden(name: &str, frame: &str) {
     assert_eq!(frame, want, "{name}");
 }
 
+fn stop_fleetd_and_jobs(h: &Harness) {
+    use horch_core::procid::{signal_same, start_time};
+    h.stop_fleetd();
+    let marks: Vec<String> = [Some(h.root.clone()), std::fs::canonicalize(&h.root).ok()]
+        .into_iter()
+        .flatten()
+        .map(|root| format!("{}/", root.display()))
+        .collect();
+    let jobs = || -> Vec<(u32, u64)> {
+        horch_e2e::process::commands_with_environment()
+            .into_iter()
+            .filter(|(_, l)| {
+                l.contains(" job run ") && marks.iter().any(|m| l.contains(m.as_str()))
+            })
+            .filter_map(|(pid, _)| Some((pid, start_time(pid)?)))
+            .collect()
+    };
+    let first = std::time::Instant::now();
+    horch_e2e::harness::wait_for("the jobs of fleetd to end", || {
+        let running = jobs();
+        let signal = if first.elapsed() < std::time::Duration::from_secs(10) {
+            15
+        } else {
+            9
+        };
+        for (pid, started) in &running {
+            signal_same(*pid, *started, signal);
+        }
+        running.is_empty().then_some(())
+    });
+}
+
 #[test]
 fn the_hermetic_story() {
     story(false);
 }
 
-/// The same story with an `ollama` that takes 7 s to start, longer than the
-/// 5 s production deadline. The harness deadline covers it, so the telemetry
-/// is the same. Its steps print nothing: the plain story prints them.
 #[test]
 fn the_hermetic_story_with_an_ollama_that_starts_in_7_s() {
     story(true);
 }
 
-/// The story of the module doc. `slow_ollama` delays every `ollama` call by
-/// 7 s and keeps the `PASS` lines quiet.
-fn story(slow_ollama: bool) {
-    let pass = |step: &str| {
-        if !slow_ollama {
-            pass(step);
-        }
-    };
-    let mut h = Harness::new("story");
-    if slow_ollama {
-        h.set("HORCH_FAKE_OLLAMA_DELAY_MS", "7000");
-    }
-    let f = fixtures();
-    let places = [
-        (f.join("claude"), h.home.join(".claude/projects")),
-        (f.join("codex/sessions"), h.home.join(".codex/sessions")),
-        (f.join("pi/sessions"), h.home.join(".pi/agent/sessions")),
-        (f.join("prime"), h.state.join("prime")),
-    ];
-
-    // 1. The clock, the 2 ledgers, and the first half of every transcript.
-    h.set("HORCH_NOW", "2026-09-28T18:00:00Z");
-    h.set(
+fn refused_launch_changes_nothing() {
+    let mut g = Harness::new("story-refused").with_git();
+    g.set(
+        "HORCH_LEDGER_DB",
+        g.state.join("ledger.sqlite3").to_string_lossy(),
+    );
+    g.set("HORCH_NO_WAKE", "1").set("HORCH_NO_WATCHDOG", "1");
+    g.set("HORCH_NOW", "2026-09-28T18:00:00Z");
+    g.set(
         "HORCH_PROBE_TIMEOUT_MS",
         horch_e2e::harness::DEADLINE.as_millis().to_string(),
     );
-    for (from, to) in &places {
-        copy_half(from, to);
-    }
-    for ledger in ["-work-alpha.json", "-work-beta.json"] {
-        let text = std::fs::read_to_string(f.join("ledgers").join(ledger)).unwrap();
-        std::fs::write(
-            h.state.join(ledger),
-            text.replace("{STATE}", &h.state.to_string_lossy()),
-        )
-        .unwrap();
-    }
-    pass("1 fixtures installed (first halves)");
-
-    // 2. One tick: EXPECTED.md stage 1.
-    let out = h.run(&["telemetry", "collect", "--once"]);
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
+    g.set(
+        "HORCH_QUOTA_FILE",
+        fixtures()
+            .join("quota/all-exhausted.json")
+            .to_string_lossy(),
     );
-    let ev = events(&h);
-    assert!(close(total(&ev), 0.0783506), "stage 1 total {}", total(&ev));
-    let snap: Value = serde_json::from_str(
-        &std::fs::read_to_string(h.state.join("telemetry/snapshot.json")).unwrap(),
+    g.set("HORCH_FAKE_SCENARIO", "exec");
+    let root = g.fleet_root();
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(
+        root.join("fleet.toml"),
+        "health_max_load_per_cpu = 1000000.0\npass_period_s = 1\n",
     )
     .unwrap();
-    let week: f64 = snap["rollups"]["7d"]["by_kind"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|r| r["cost_usd"].as_f64().unwrap())
-        .sum();
-    assert!(
-        close(week, 0.0783506 - 0.00049),
-        "stage 1, 7d window {week}"
-    );
-    pass("2 stage 1 totals equal EXPECTED.md");
-
-    // 4 (before 3): a collector that dies between the append and the cursor
-    // save, as `kill -9` would leave it: events written, cursors not, lock stale.
-    for (from, to) in &places {
-        copy_tree(from, to);
+    std::fs::write(
+        g.project.join("fleet.toml"),
+        "[gates]\nfast = \"true\"\nfull = \"true\"\n",
+    )
+    .unwrap();
+    for args in [
+        &["add", "fleet.toml"][..],
+        &["commit", "--quiet", "--no-gpg-sign", "-m", "gates"],
+    ] {
+        assert!(g.git_cmd(args).output().unwrap().status.success());
     }
-    h.set("HORCH_NOW", "2026-09-28T18:00:02Z");
-    h.set("HORCH_FAULT", "abort-after-append");
-    let crashed = h.run(&["telemetry", "collect", "--once"]);
-    assert!(!crashed.status.success(), "the fault must stop the tick");
-    assert!(
-        h.state.join("telemetry/collector.lock").is_dir(),
-        "a stale lock is left behind"
-    );
-    h.unset("HORCH_FAULT");
+    let workspace = g.fleet_workspace();
+    assert_eq!(workspace, "w1");
+    g.set("HORCH_WORKSPACE_ID", workspace);
 
-    // 3. The second halves are in; the next tick reaches stage 2, the stale
-    // lock is broken, and nothing is counted twice.
-    let out = h.run(&["telemetry", "collect", "--once"]);
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
+    let ticket = g.project.join("opus-1.md");
+    std::fs::write(&ticket, "# Opus\n**Check:** `true`\n").unwrap();
+    let run = seed_run(&g, "refused", Some(1), "w1:p1");
+    seed_task(&g, &run, &ticket, "opus");
+    g.serve_fleetd();
+    let shown = || {
+        let o = g.run(&["ledger", "show", "T-1", "--json"]);
+        String::from_utf8_lossy(&o.stdout).into_owned()
+    };
+    wait_for_or(
+        "the refusal of the launch",
+        || {
+            shown()
+                .contains("its spawn failed: REFUSED: opus cannot start.")
+                .then_some(())
+        },
+        shown,
     );
-    assert!(String::from_utf8_lossy(&out.stderr).contains("removed stale telemetry lock"));
-    let ev = events(&h);
-    assert!(close(total(&ev), 0.1565026), "stage 2 total {}", total(&ev));
-    no_duplicate_keys(&ev);
-    pass("3 stage 2 totals equal EXPECTED.md, no duplicate key");
-    pass("4 a collector killed mid-tick loses and repeats nothing");
+    let ledger = SessionLedger::for_project(&g.state, &g.project.to_string_lossy());
+    assert!(ledger.read().unwrap().is_empty(), "no session record");
+    let pane_calls: Vec<String> = g
+        .calls_of("herdr")
+        .iter()
+        .map(|c| c["argv"].to_string())
+        .filter(|a| a.contains("\"split\"") || a.contains("\"run\""))
+        .collect();
+    assert!(
+        pane_calls.is_empty(),
+        "no pane split or run: {pane_calls:?}"
+    );
+    assert!(!g
+        .state
+        .join("herdr-orchestration-w1")
+        .join("opus-1.brief.json")
+        .exists());
+    stop_fleetd_and_jobs(&g);
+}
 
-    // 5. The Claude probe, against today's real state.
+fn claude_probe_reads_exhausted(h: &mut Harness) {
     h.set("HORCH_FAKE_SCENARIO", "usage_exhausted");
     h.set("HORCH_NOW", "2026-09-28T18:30:00Z");
     let q: Value =
@@ -212,61 +223,9 @@ fn story(slow_ollama: bool) {
     assert_eq!(seven["resets_at"], "2026-10-02T13:59:59Z");
     assert!(h.violations().is_empty(), "{:?}", h.violations());
     h.unset("HORCH_FAKE_SCENARIO");
-    pass("5 quota --refresh: claude exhausted, 7d 1.00, no fake violation");
+}
 
-    // 6-8. The gate, on quota fixtures.
-    h.set("HORCH_NOW", "2026-09-28T18:00:00Z");
-    h.set("HORCH_PROJECT_DIR", "/work/alpha");
-    h.set("HORCH_WORKSPACE_ID", "w1");
-    let quota = |name: &str| {
-        fixtures()
-            .join("quota")
-            .join(format!("{name}.json"))
-            .to_string_lossy()
-            .into_owned()
-    };
-    h.set("HORCH_QUOTA_FILE", quota("claude-exhausted-codex-ok"));
-    let out = h.run(&["route", "opus"]);
-    assert!(String::from_utf8_lossy(&out.stdout).starts_with("SUBSTITUTED: opus runs on codex-sol"));
-    pass("6 route opus: SUBSTITUTED on codex-sol");
-    h.set("HORCH_QUOTA_FILE", quota("all-exhausted"));
-    let out = h.run(&["route", "opus"]);
-    assert_eq!(out.status.code(), Some(3));
-    assert!(String::from_utf8_lossy(&out.stdout).starts_with("REFUSED: opus cannot start."));
-    pass("7 route opus: REFUSED, exit 3");
-    let ledger = h.state.join("-work-alpha.json");
-    let before = std::fs::read(&ledger).unwrap();
-    let herdr_calls = h.calls_of("herdr").len();
-    let out = h.run(&["spawn", "opus", "--from-pane", "w1:p1"]);
-    assert_eq!(out.status.code(), Some(3));
-    assert_eq!(std::fs::read(&ledger).unwrap(), before);
-    assert_eq!(
-        h.calls_of("herdr").len(),
-        herdr_calls,
-        "no herdr call, so no pane split"
-    );
-    h.unset("HORCH_QUOTA_FILE");
-    h.unset("HORCH_WORKSPACE_ID");
-    pass("8 spawn opus: exit 3, ledger unchanged, no pane split");
-
-    // 9. One frame of the screen, from the stage 2 snapshot.
-    let out = h.run(&["telemetry", "render", "--size", "120x40", "--window", "7d"]);
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    check_golden("telemetry-e2e.txt", &String::from_utf8_lossy(&out.stdout));
-    if !slow_ollama {
-        println!("{}", String::from_utf8_lossy(&out.stdout));
-    }
-    assert!(
-        !h.calls_of("ollama").is_empty(),
-        "the local check ran ollama"
-    );
-    pass("9 render 120x40 equals golden/telemetry-e2e.txt");
-
-    // 10. Nothing that must not persist did (TEL-11).
+fn nothing_persists(h: &Harness) {
     for p in h
         .state_files()
         .into_iter()
@@ -282,18 +241,16 @@ fn story(slow_ollama: bool) {
             assert!(!text.contains(s), "{s} in {}", p.display());
         }
     }
-    pass("10 no content or identity in the state dir");
+}
 
-    // 11. horch usage agrees with horch cost, record by record (TEL-10).
+fn usage_agrees_with_cost(h: &mut Harness) {
     for project in ["/work/alpha", "/work/beta"] {
         h.set("HORCH_PROJECT_DIR", project);
         let usage: Value =
             serde_json::from_slice(&h.run(&["usage", "--json", "--project", project]).stdout)
                 .unwrap();
-        // A filter makes 1 report on stdout; this one covers every call.
-        let cost: Value =
-            serde_json::from_slice(&h.run(&["cost", "--json", "--since", "2000-01-01"]).stdout)
-                .unwrap();
+        let one_report_of_every_call = ["cost", "--json", "--since", "2000-01-01"];
+        let cost: Value = serde_json::from_slice(&h.run(&one_report_of_every_call).stdout).unwrap();
         for row in cost["rows"].as_array().unwrap() {
             let rec = usage["records"]
                 .as_array()
@@ -320,5 +277,140 @@ fn story(slow_ollama: bool) {
             ));
         }
     }
+}
+
+fn story(slow_ollama: bool) {
+    let pass = |step: &str| {
+        if !slow_ollama {
+            pass(step);
+        }
+    };
+    let mut h = Harness::new("story");
+    if slow_ollama {
+        h.set("HORCH_FAKE_OLLAMA_DELAY_MS", "7000");
+    }
+    let f = fixtures();
+    let places = [
+        (f.join("claude"), h.home.join(".claude/projects")),
+        (f.join("codex/sessions"), h.home.join(".codex/sessions")),
+        (f.join("pi/sessions"), h.home.join(".pi/agent/sessions")),
+        (f.join("prime"), h.state.join("prime")),
+    ];
+
+    h.set("HORCH_NOW", "2026-09-28T18:00:00Z");
+    h.set(
+        "HORCH_PROBE_TIMEOUT_MS",
+        horch_e2e::harness::DEADLINE.as_millis().to_string(),
+    );
+    for (from, to) in &places {
+        copy_half(from, to);
+    }
+    for ledger in ["-work-alpha.json", "-work-beta.json"] {
+        let text = std::fs::read_to_string(f.join("ledgers").join(ledger)).unwrap();
+        std::fs::write(
+            h.state.join(ledger),
+            text.replace("{STATE}", &h.state.to_string_lossy()),
+        )
+        .unwrap();
+    }
+    pass("1 fixtures installed (first halves)");
+
+    let out = h.run(&["telemetry", "collect", "--once"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let ev = events(&h);
+    assert!(close(total(&ev), 0.0783506), "stage 1 total {}", total(&ev));
+    let snap: Value = serde_json::from_str(
+        &std::fs::read_to_string(h.state.join("telemetry/snapshot.json")).unwrap(),
+    )
+    .unwrap();
+    let week: f64 = snap["rollups"]["7d"]["by_kind"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["cost_usd"].as_f64().unwrap())
+        .sum();
+    assert!(
+        close(week, 0.0783506 - 0.00049),
+        "stage 1, 7d window {week}"
+    );
+    pass("2 stage 1 totals equal EXPECTED.md");
+
+    for (from, to) in &places {
+        copy_tree(from, to);
+    }
+    h.set("HORCH_NOW", "2026-09-28T18:00:02Z");
+    h.set("HORCH_FAULT", "abort-after-append");
+    let crashed = h.run(&["telemetry", "collect", "--once"]);
+    assert!(!crashed.status.success(), "the fault must stop the tick");
+    assert!(
+        h.state.join("telemetry/collector.lock").is_dir(),
+        "a stale lock is left behind"
+    );
+    h.unset("HORCH_FAULT");
+
+    let out = h.run(&["telemetry", "collect", "--once"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stderr).contains("removed stale telemetry lock"));
+    let ev = events(&h);
+    assert!(close(total(&ev), 0.1565026), "stage 2 total {}", total(&ev));
+    no_duplicate_keys(&ev);
+    pass("3 stage 2 totals equal EXPECTED.md, no duplicate key");
+    pass("4 a collector killed mid-tick loses and repeats nothing");
+
+    claude_probe_reads_exhausted(&mut h);
+    pass("5 quota --refresh: claude exhausted, 7d 1.00, no fake violation");
+
+    h.set("HORCH_NOW", "2026-09-28T18:00:00Z");
+    h.set("HORCH_PROJECT_DIR", "/work/alpha");
+    h.set("HORCH_WORKSPACE_ID", "w1");
+    let quota = |name: &str| {
+        fixtures()
+            .join("quota")
+            .join(format!("{name}.json"))
+            .to_string_lossy()
+            .into_owned()
+    };
+    h.set("HORCH_QUOTA_FILE", quota("claude-exhausted-codex-ok"));
+    let out = h.run(&["route", "opus"]);
+    assert!(String::from_utf8_lossy(&out.stdout).starts_with("SUBSTITUTED: opus runs on codex-sol"));
+    pass("6 route opus: SUBSTITUTED on codex-sol");
+    h.set("HORCH_QUOTA_FILE", quota("all-exhausted"));
+    let out = h.run(&["route", "opus"]);
+    assert_eq!(out.status.code(), Some(3));
+    assert!(String::from_utf8_lossy(&out.stdout).starts_with("REFUSED: opus cannot start."));
+    pass("7 route opus: REFUSED, exit 3");
+    refused_launch_changes_nothing();
+    h.unset("HORCH_QUOTA_FILE");
+    h.unset("HORCH_WORKSPACE_ID");
+    pass("8 launch of opus: REFUSED, no record, no pane split");
+
+    let out = h.run(&["telemetry", "render", "--size", "120x40", "--window", "7d"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    check_golden("telemetry-e2e.txt", &String::from_utf8_lossy(&out.stdout));
+    if !slow_ollama {
+        println!("{}", String::from_utf8_lossy(&out.stdout));
+    }
+    assert!(
+        !h.calls_of("ollama").is_empty(),
+        "the local check ran ollama"
+    );
+    pass("9 render 120x40 equals golden/telemetry-e2e.txt");
+
+    nothing_persists(&h);
+    pass("10 no content or identity in the state dir");
+
+    usage_agrees_with_cost(&mut h);
     pass("11 usage --json equals cost --json per record");
 }

@@ -1,14 +1,3 @@
-//! The `fast_gate` and `full_gate` jobs and the gate tree of a feature
-//! (docs/specs/fleetd/design.md, "Between features" and "The kinds of
-//! job"; docs/tickets/fleetd-p4/28-gate-jobs.md, MAP.md Q18, Q19, Q24 and
-//! Q26).
-//!
-//! Each test makes its own git repository and ledger in [`world_base`],
-//! not below the temp folder of this process: the gate sandbox lets a gate
-//! write its temp folder, so a path there proves no refusal. A job process is a small command started through the launcher,
-//! and the executor runs in the test process with the recorded pid, as
-//! `horch job run` runs it. The test of the time limit starts this test
-//! binary as the job process.
 #![cfg(unix)]
 
 use std::path::{Path, PathBuf};
@@ -53,20 +42,14 @@ use rusqlite::{Connection, Transaction, TransactionBehavior};
 
 const FEATURE: &str = "F-1";
 
-/// The variable that makes this test binary the job process of the time
-/// limit test: `<ledger path>|<job id>`.
 const JOB_CHILD: &str = "HORCH_GATE_JOBS_CHILD";
-
-// ─── the world of a test ────────────────────────────────────────────────
 
 struct World {
     dir: tempfile::TempDir,
     conn: Connection,
     config: FleetConfig,
     run: Run,
-    /// The repository, as its canonical path.
     repo: PathBuf,
-    /// The tip of `main`.
     main: String,
 }
 
@@ -77,8 +60,6 @@ fn cause(text: &str) -> Cause<'_> {
     }
 }
 
-/// A ledger of the current schema with the run `r1` and the feature
-/// [`FEATURE`] on `fleet/r1`, and a repository with 1 commit on `main`.
 fn world() -> World {
     let dir = tempfile::tempdir_in(world_base()).unwrap();
     let mut conn = open(&dir.path().join("ledger.sqlite3"));
@@ -91,7 +72,6 @@ fn world() -> World {
     git(&repo, &["add", "marker.txt"]);
     git(&repo, &["commit", "-q", "-m", "first"]);
     let main = git(&repo, &["rev-parse", "HEAD"]);
-    // The worktree_add job writes only the tree folder: its parent exists.
     std::fs::create_dir(repo.join(".worktrees")).unwrap();
     std::fs::create_dir_all(dir.path().join("fleet")).unwrap();
     let tx = conn.transaction().unwrap();
@@ -107,7 +87,6 @@ fn world() -> World {
         primary_branch: "main",
     };
     rows::insert_feature(&tx, None, &feature, cause("the run starts")).unwrap();
-    // FR-12: a task of the run needs an idea in flight of the run feature.
     let run_feature = format!("F-{:04}", 1);
     if rows::feature(&tx, &run_feature).unwrap().is_none() {
         let new = NewFeature {
@@ -135,9 +114,6 @@ fn world() -> World {
     }
 }
 
-/// A folder for the worlds of these tests outside the temp folder of this
-/// process, which the gate sandbox lets a gate write, and outside HOME,
-/// which the git sandbox of fleetd hides.
 fn world_base() -> PathBuf {
     let canon = |p: PathBuf| p.canonicalize().unwrap_or(p);
     let temp = canon(std::env::temp_dir());
@@ -158,8 +134,6 @@ fn open(db: &Path) -> Connection {
     conn
 }
 
-/// Run git in `dir` for the test itself, with no config of the user, and
-/// give its trimmed output. A failed call fails the test.
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
         .arg("-C")
@@ -190,7 +164,6 @@ fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
-/// The sandbox profiles of a test: no task check runs in these tests.
 struct NoProfiles;
 
 impl SandboxProfiles for NoProfiles {
@@ -204,7 +177,6 @@ impl SandboxProfiles for NoProfiles {
     }
 }
 
-/// A gate sandbox that this host does not have.
 fn no_sandbox(
     _cmd: horch_platform::start::Command,
     _writable: &[PathBuf],
@@ -213,9 +185,6 @@ fn no_sandbox(
     Err(NotSupported::new("sandbox", "test").because("the test host has no sandbox"))
 }
 
-/// Whether this host has the gate sandbox. A Linux host with no `bwrap`
-/// has none: the test then proves only that the gate does not run
-/// (MAP.md of fleetd-p4, Q-A).
 fn has_sandbox() -> bool {
     match exec_gate::sandbox_gap(sandboxed) {
         None => true,
@@ -251,8 +220,6 @@ impl World {
         out
     }
 
-    /// A commit on `branch` from `from` with each file of `files`. Gives
-    /// its tip.
     fn commit(&self, branch: &str, from: &str, files: &[(&str, &str)]) -> String {
         git(&self.repo, &["checkout", "-q", "-B", branch, from]);
         for (name, text) in files {
@@ -265,8 +232,6 @@ impl World {
         tip
     }
 
-    /// A commit on `branch` from `main` whose project `fleet.toml` has the
-    /// gates `gates` and whose `marker.txt` is `marker`.
     fn tip_with(&self, branch: &str, gates: &str, marker: &str) -> String {
         let main = self.main.clone();
         self.commit(
@@ -287,8 +252,6 @@ impl World {
         gate_tree::path(&self.repo, FEATURE)
     }
 
-    /// The gate tree of [`FEATURE`], made by its `worktree_add` job and
-    /// observed, as a pass observes it.
     fn gate_tree(&mut self) -> trees::WorktreeRow {
         let repo = self.repo.clone();
         let main = self.main.clone();
@@ -313,7 +276,6 @@ impl World {
             .unwrap()
     }
 
-    /// A bundle of 1 task branch of [`FEATURE`] on `base_tip`.
     fn bundle(&mut self, base_tip: &str) -> i64 {
         let run = self.run.clone();
         let tx = self.conn.transaction().unwrap();
@@ -341,7 +303,6 @@ impl World {
         id
     }
 
-    /// Queue the gate `kind` of `subject` on `tip` over `base_tip`.
     fn queue_gate(
         &mut self,
         kind: Kind,
@@ -369,9 +330,6 @@ impl World {
         }
     }
 
-    /// The run `id` to its end: its process starts as `true` through the
-    /// launcher, as part 3 of a pass starts it, and its executor runs in
-    /// this process with the recorded pid.
     fn run(&mut self, id: i64) -> JobRow {
         let spec = LaunchSpec {
             program: "true".into(),
@@ -405,9 +363,6 @@ impl World {
         self.job(id)
     }
 
-    /// The executor of the gate `row` with the sandbox `sandbox` on a
-    /// read-only connection, then its facts recorded in 1 transaction, as
-    /// the ingest of its result file records them. Give its outcome.
     fn gate_with(&mut self, row: &JobRow, sandbox: GateSandbox) -> Outcome {
         let job = Store::open_read_only(&self.db()).unwrap();
         let ran = exec_gate::run_in(job.conn(), row, sandbox).unwrap();
@@ -416,8 +371,6 @@ impl World {
         ran.outcome
     }
 
-    /// Start the run `id` through the launcher, as part 3 of a pass starts
-    /// it. Give the started row.
     fn start(&mut self, id: i64) -> JobRow {
         let spec = LaunchSpec {
             program: "true".into(),
@@ -440,7 +393,6 @@ impl World {
         self.job(id)
     }
 
-    /// End each run from its result file, as a pass of fleetd ends it.
     fn ingest(&mut self) -> Vec<(i64, State)> {
         let config = self.config.clone();
         let ctx = JobCtx {
@@ -451,8 +403,6 @@ impl World {
         jobs::end_from_files(&ctx, &mut self.conn).unwrap()
     }
 
-    /// The `result` of the newest gate run of [`FEATURE`] on `tip` over
-    /// `base`.
     fn gate_result(&self, gate: &str, tip: &str, base: &str) -> Option<String> {
         let row = rows::gate_run_of(&self.conn, FEATURE, gate, tip, base)
             .unwrap()
@@ -472,7 +422,6 @@ impl World {
         scans::scan_processes(&items, &mut Cursor::new("pass"), &mut clock).facts
     }
 
-    /// Reap and scan until the process of the run `id` is gone.
     fn wait_gone(&self, runner: &mut JobRunner<'_>, id: i64) -> Vec<ProcessFact> {
         let until = Instant::now() + Duration::from_secs(20);
         loop {
@@ -493,17 +442,6 @@ fn text(row: &JobRow) -> String {
     outcome(row).map(|o| o.text).unwrap_or_default()
 }
 
-fn alive(pid: &str) -> bool {
-    Command::new("kill")
-        .args(["-0", pid])
-        .stderr(std::process::Stdio::null())
-        .status()
-        .unwrap()
-        .success()
-}
-
-// ─── the gate tree ──────────────────────────────────────────────────────
-
 #[test]
 fn gate_tree_is_a_custody_row_with_no_task() {
     let mut w = world();
@@ -518,7 +456,6 @@ fn gate_tree_is_a_custody_row_with_no_task() {
     assert!(w.gate_path().is_dir());
     assert_eq!(git(&w.gate_path(), &["rev-parse", "HEAD"]), w.main);
 
-    // The next request of the feature finds the tree: no second row.
     let repo = w.repo.clone();
     let main = w.main.clone();
     let run_id = w.run.run_id.clone();
@@ -534,16 +471,12 @@ fn gate_tree_is_a_custody_row_with_no_task() {
         .unwrap();
     assert!(matches!(again, GateTree::Ready(ref r) if r.worktree_id == tree.worktree_id));
 
-    // The end of the feature gives the tree to custody, which rescues and
-    // removes it.
     assert!(w
         .tx(|ctx, tx| gate_tree::release(ctx, tx, &repo, FEATURE, "its feature is merged"))
         .unwrap());
     let row = trees::get(&w.conn, &tree.worktree_id).unwrap().unwrap();
     assert_eq!(row.state, WorktreeState::Orphaned);
 }
-
-// ─── the gates ──────────────────────────────────────────────────────────
 
 #[test]
 fn fast_gate_runs_the_declared_command_on_the_candidate_tip() {
@@ -607,8 +540,6 @@ fn full_gate_runs_on_the_feature_tip() {
         Some("fail")
     );
 
-    // A feature tip that does not contain the fetched primary tip waits for
-    // the rebase: the gate does not run, and the run has no verdict.
     let primary = w.commit("main", &main, &[("other.txt", "x\n")]);
     std::fs::remove_file(tree.join("seen.txt")).unwrap();
     let id = w.new_gate(Kind::FullGate, FEATURE, &feature, &primary);
@@ -637,7 +568,6 @@ fn passed_gate_of_1_key_is_used_again() {
         other => panic!("expected the passed run again, got {other:?}"),
     }
 
-    // A fail of a gate that ran to its end is used again.
     let fail = w.tip_with("b", "[gates]\nfast = \"true\"\nfull = \"false\"\n", "b");
     let id = w.new_gate(Kind::FullGate, FEATURE, &fail, &main);
     assert_eq!(w.run(id).state, State::Failed);
@@ -646,7 +576,6 @@ fn passed_gate_of_1_key_is_used_again() {
         other => panic!("expected the failed run again, got {other:?}"),
     }
 
-    // A fail with no verdict runs again.
     let none = w.tip_with("c", "[gates]\nfast = \"true\"\n", "c");
     let id = w.new_gate(Kind::FullGate, FEATURE, &none, &main);
     assert_eq!(w.run(id).state, State::Failed);
@@ -792,7 +721,6 @@ fn gate_with_no_sandbox_does_not_run_and_holds_the_feature_with_1_item() {
         "no gate of a held feature is queued"
     );
 
-    // A later pass that finds a sandbox ends the hold.
     let ended = w
         .tx(|ctx, tx| exec_gate::end_hold(ctx, tx, FEATURE))
         .unwrap();
@@ -801,10 +729,6 @@ fn gate_with_no_sandbox_does_not_run_and_holds_the_feature_with_1_item() {
     assert!(open_items(&w.conn).unwrap().iter().all(|i| i.key != key));
 }
 
-/// A gate result file counts only for the job that fleetd started: a file
-/// of a job that does not exist, a file of a job that is not running, and
-/// a file whose job id is not the job of its name change no gate run and
-/// end no job.
 #[test]
 fn gate_result_file_with_another_job_id_changes_nothing() {
     let mut w = world();
@@ -827,11 +751,8 @@ fn gate_result_file_with_another_job_id_changes_nothing() {
         data: None,
     };
     let root = w.fleet_root();
-    // No job has this id.
     job_result_file::write(&root, &passed(started.id + 1000, 1)).unwrap();
-    // The job exists, but fleetd did not start it.
     job_result_file::write(&root, &passed(queued.id, queued.run)).unwrap();
-    // The name is the started job, but the payload names another job.
     let path = job_result_file::path(&root, started.id, started.run);
     let body = serde_json::to_vec(&passed(queued.id, started.run)).unwrap();
     std::fs::write(&path, body).unwrap();
@@ -844,13 +765,9 @@ fn gate_result_file_with_another_job_id_changes_nothing() {
     assert_eq!(w.job(queued.id).state, queued.state);
 }
 
-// ─── the time limit ─────────────────────────────────────────────────────
-
-/// The job process of the time limit test: `horch job run <id>` of the
-/// ledger and the run of [`JOB_CHILD`].
 fn job_child(value: &str) {
     let (db, id) = value.rsplit_once('|').unwrap();
-    let mut conn = open(Path::new(db));
+    let conn = open(Path::new(db));
     let config = FleetConfig::default();
     let ctx = JobCtx {
         guard: None,
@@ -864,7 +781,7 @@ fn job_child(value: &str) {
     };
     let _ = jobs::run_job(
         &ctx,
-        &mut conn,
+        &conn,
         id.parse().unwrap(),
         std::process::id(),
         &checks,
@@ -873,6 +790,29 @@ fn job_child(value: &str) {
 
 #[test]
 fn gate_at_its_limit_is_abandoned_and_its_group_killed() {
+    gate_stop_kills_its_group(
+        "gate_at_its_limit_is_abandoned_and_its_group_killed",
+        10,
+        false,
+    );
+}
+
+#[test]
+fn gate_first_seen_past_its_grace_gets_the_term_and_its_group_killed() {
+    let past_grace = 10 + i64::try_from(FleetConfig::default().stop_grace_s).unwrap();
+    gate_stop_kills_its_group(
+        "gate_first_seen_past_its_grace_gets_the_term_and_its_group_killed",
+        past_grace,
+        false,
+    );
+}
+
+#[test]
+fn gate_job_stopped_in_its_git_ends_its_git_sandbox() {
+    gate_stop_kills_its_group("gate_job_stopped_in_its_git_ends_its_git_sandbox", 10, true);
+}
+
+fn gate_stop_kills_its_group(test: &str, stop_at: i64, hang_git: bool) {
     if let Ok(value) = std::env::var(JOB_CHILD) {
         job_child(&value);
         return;
@@ -884,27 +824,41 @@ fn gate_at_its_limit_is_abandoned_and_its_group_killed() {
     w.config.job_limit_s.fast_gate = 10;
     w.gate_tree();
     let tree = w.gate_path();
-    let pid_file = tree.join("sleep.pid");
-    let gates = "[gates]\nfast = \"sleep 600 & echo $! > sleep.pid; wait\"\nfull = \"true\"\n";
+    let beat_file = tree.join("beat");
+    let marker = format!("gate-group-marker-{}-{stop_at}", std::process::id());
+    let gate_marker = if hang_git { "no-marker" } else { &marker };
+    let gates = format!(
+        "[gates]\nfast = \"sh -c 'sleep 600; :' {gate_marker} & i=0; \
+         while :; do i=$((i+1)); echo $i > beat; sleep 0.1; done\"\nfull = \"true\"\n"
+    );
+    let mut vars = Vec::new();
+    if hang_git {
+        let fake = w.dir.path().join(&marker);
+        let script = format!(
+            "#!/bin/sh\ni=0\nwhile :; do i=$((i+1)); echo $i > '{}'; sleep 0.1; done\n",
+            beat_file.display()
+        );
+        std::fs::write(&fake, script).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        vars.push(("HORCH_GIT_BIN".into(), fake.into_os_string()));
+    }
     let main = w.main.clone();
-    let tip = w.tip_with("slow", gates, "slow");
+    let tip = w.tip_with("slow", &gates, "slow");
     let bundle = w.bundle(&main).to_string();
     let id = w.new_gate(Kind::FastGate, &bundle, &tip, &main);
 
-    // Part 3 of a pass starts the job process: this test binary.
     let spec = LaunchSpec {
         program: std::env::current_exe().unwrap(),
-        args: vec![
-            "--exact".into(),
-            "gate_at_its_limit_is_abandoned_and_its_group_killed".into(),
-            "--nocapture".into(),
-        ],
+        args: vec!["--exact".into(), test.into(), "--nocapture".into()],
         cwd: None,
         env_rule: EnvRule {
-            vars: vec![(
+            vars: std::iter::once((
                 JOB_CHILD.into(),
                 format!("{}|{id}", w.db().display()).into(),
-            )],
+            ))
+            .chain(vars)
+            .collect(),
         },
         detach: false,
         output: None,
@@ -923,27 +877,29 @@ fn gate_at_its_limit_is_abandoned_and_its_group_killed() {
     assert_eq!(w.job(id).deadline, Some(FleetSeconds(10)));
 
     let until = Instant::now() + Duration::from_secs(60);
-    let sleep_pid = loop {
-        if let Ok(text) = std::fs::read_to_string(&pid_file) {
-            if !text.trim().is_empty() {
-                break text.trim().to_string();
-            }
+    let first = loop {
+        if let Some(beat) = beat(&beat_file) {
+            break beat;
         }
-        assert!(Instant::now() < until, "the gate command started");
+        assert!(Instant::now() < until, "the command that hangs started");
         std::thread::sleep(Duration::from_millis(50));
     };
-    assert!(alive(&sleep_pid));
+    while beat(&beat_file) == Some(first) {
+        assert!(Instant::now() < until, "the heartbeat advances");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(!marked(&marker).is_empty(), "the command that hangs runs");
 
-    // At the deadline the pass stops the job process; its group goes too.
     let facts = w.facts();
     let seen = w
-        .tx(|ctx, tx| jobs::observe(ctx, tx, &facts, FleetSeconds(10)))
+        .tx(|ctx, tx| jobs::observe(ctx, tx, &facts, FleetSeconds(stop_at)))
         .unwrap();
     assert_eq!(seen.stops.len(), 1);
+    assert!(!seen.stops[0].kill, "the first stop is the TERM");
     assert!(jobs::stop(&seen.stops[0]));
     let facts = w.wait_gone(&mut runner, id);
     let seen = w
-        .tx(|ctx, tx| jobs::observe(ctx, tx, &facts, FleetSeconds(11)))
+        .tx(|ctx, tx| jobs::observe(ctx, tx, &facts, FleetSeconds(stop_at + 1)))
         .unwrap();
     assert_eq!(seen.ended, vec![(id, State::Abandoned)]);
     assert_eq!(w.job(id).state, State::Abandoned);
@@ -954,8 +910,413 @@ fn gate_at_its_limit_is_abandoned_and_its_group_killed() {
     );
 
     let until = Instant::now() + Duration::from_secs(10);
-    while alive(&sleep_pid) {
-        assert!(Instant::now() < until, "the gate group was killed");
+    loop {
+        let left = marked(&marker);
+        if left.is_empty() {
+            break;
+        }
+        assert!(
+            Instant::now() < until,
+            "each process of the command that hangs was killed: {left:?}"
+        );
         std::thread::sleep(Duration::from_millis(50));
+    }
+    let stopped = beat(&beat_file);
+    std::thread::sleep(Duration::from_secs(1));
+    assert_eq!(beat(&beat_file), stopped, "the heartbeat stops");
+}
+
+fn beat(path: &Path) -> Option<u64> {
+    std::fs::read_to_string(path).ok()?.trim().parse().ok()
+}
+
+#[cfg(target_os = "linux")]
+fn marked(marker: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir("/proc").unwrap().flatten() {
+        let Ok(raw) = std::fs::read(entry.path().join("cmdline")) else {
+            continue;
+        };
+        let line = String::from_utf8_lossy(&raw).replace('\0', " ");
+        if line.contains(marker) {
+            found.push(format!("{} {line}", entry.file_name().to_string_lossy()));
+        }
+    }
+    found
+}
+
+#[cfg(not(target_os = "linux"))]
+fn marked(marker: &str) -> Vec<String> {
+    let out = Command::new("ps")
+        .args(["-axww", "-o", "pid=,command="])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|line| line.contains(marker))
+        .map(|line| line.trim().to_string())
+        .collect()
+}
+
+mod tree_end {
+    use super::*;
+
+    use horch_core::fleetd::fleet_runtime::adapters::scans::{FolderFact, Presence};
+    use horch_core::fleetd::fleet_runtime::application::jobs::JobKey;
+    use horch_core::fleetd::worktree_custody::adapters::git::{
+        worktree_list, CliWorktreeGit, ListResult,
+    };
+    use horch_core::fleetd::worktree_custody::adapters::rescue_git::rescue_key;
+    use horch_core::fleetd::worktree_custody::adapters::sqlite::NewWorktree;
+    use horch_core::fleetd::worktree_custody::application::reconcile::{
+        reconcile_worktrees, Facts, Listed, Report, WorkDir,
+    };
+    use horch_core::taskledger::model::WorktreeStatus;
+    use horch_core::taskledger::util;
+
+    impl World {
+        fn tree_facts(&self) -> Facts {
+            let rows = trees::in_states(&self.conn, &WorktreeState::ALL).unwrap();
+            let folders = rows
+                .iter()
+                .map(|r| FolderFact {
+                    key: r.worktree_id.clone(),
+                    presence: if Path::new(&r.path).is_dir() {
+                        Presence::Present
+                    } else {
+                        Presence::Missing
+                    },
+                })
+                .collect();
+            let mut entries: Vec<String> = std::fs::read_dir(self.repo.join(".worktrees"))
+                .unwrap()
+                .map(|e| e.unwrap().path().display().to_string())
+                .collect();
+            entries.sort();
+            let live: Vec<trees::WorktreeRow> = rows
+                .into_iter()
+                .filter(|r| r.state != WorktreeState::Removed)
+                .collect();
+            let gw = CliWorktreeGit::new("git", self.fleet_root())
+                .reading(std::slice::from_ref(&self.repo));
+            let ran = worktree_list(&gw, &self.repo, &live);
+            assert!(ran.outcome.passed, "{}", ran.outcome.text);
+            let result: ListResult = serde_json::from_value(ran.data.unwrap()).unwrap();
+            Facts {
+                folders,
+                work_dirs: vec![WorkDir {
+                    repo: self.repo.display().to_string(),
+                    folders: entries,
+                }],
+                lists: vec![Listed {
+                    repo: self.repo.display().to_string(),
+                    job: 0,
+                    seen_at: util::now(),
+                    result,
+                }],
+            }
+        }
+
+        fn pass_at(&mut self, clock: i64) -> Report {
+            let facts = self.tree_facts();
+            self.tx(|ctx, tx| reconcile_worktrees(ctx, tx, &facts, FleetSeconds(clock)))
+                .unwrap()
+        }
+
+        fn runs_of(&self, kind: Kind, id: &str) -> Vec<JobRow> {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT id FROM jobs WHERE kind = ?1 AND subject = ?2 ORDER BY id")
+                .unwrap();
+            let ids: Vec<i64> = stmt
+                .query_map([kind.as_str(), id], |r| r.get(0))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect();
+            ids.into_iter().map(|id| self.job(id)).collect()
+        }
+
+        fn only_run(&self, kind: Kind, id: &str) -> i64 {
+            let runs = self.runs_of(kind, id);
+            assert_eq!(runs.len(), 1, "{runs:?}");
+            runs[0].id
+        }
+
+        fn tree_row(&self, id: &str) -> trees::WorktreeRow {
+            trees::get(&self.conn, id).unwrap().unwrap()
+        }
+
+        fn rescue_refs(&self, id: &str) -> Vec<String> {
+            let out = git(
+                &self.repo,
+                &[
+                    "for-each-ref",
+                    "--format=%(refname)",
+                    &format!("refs/horch/rescue/{id}/"),
+                ],
+            );
+            out.lines().map(str::to_string).collect()
+        }
+
+        fn open_kinds(&self) -> Vec<String> {
+            open_items(&self.conn)
+                .unwrap()
+                .into_iter()
+                .map(|i| i.kind)
+                .collect()
+        }
+
+        fn orphan(&mut self, name: &str, task: Option<&str>) -> PathBuf {
+            let path = self.repo.join(".worktrees").join(name);
+            let path_s = path.display().to_string();
+            let branch = format!("fleet/{name}");
+            git(
+                &self.repo,
+                &["worktree", "add", "-q", "-b", &branch, &path_s, "main"],
+            );
+            let new = NewWorktree {
+                worktree_id: name.to_string(),
+                task_id: task.map(str::to_string),
+                worker_id: None,
+                repo_root: self.repo.display().to_string(),
+                path: path_s,
+                branch,
+                base: "main".to_string(),
+                base_commit: Some(self.main.clone()),
+                status: WorktreeStatus::Open,
+                mode: None,
+            };
+            self.tx(|_, tx| trees::insert_orphan(tx, None, &new, cause("test")))
+                .unwrap();
+            path
+        }
+
+        fn task_of_merged_idea(&mut self) -> String {
+            let run = self.run.clone();
+            let new = NewTask::work("t1", "t1.md", "dev");
+            let task = tasks::add(&self.conn, &run, &new, Actor::Orchestrator)
+                .unwrap()
+                .task_id;
+            self.conn
+                .execute("UPDATE ideas SET state = 'merged'", [])
+                .unwrap();
+            task
+        }
+
+        fn rescue(&mut self, id: &str, clock: i64) -> Report {
+            let report = self.pass_at(clock);
+            assert_eq!(report.rescues, [id], "{report:?}");
+            let job = self.only_run(Kind::Rescue, id);
+            let ended = self.run(job);
+            assert_eq!(ended.state, State::Passed, "{}", text(&ended));
+            let report = self.pass_at(clock);
+            assert_eq!(self.tree_row(id).state, WorktreeState::Rescued);
+            report
+        }
+    }
+
+    struct InTree(std::process::Child);
+
+    impl InTree {
+        fn start(dir: &Path) -> InTree {
+            let child = Command::new("sleep")
+                .arg("300")
+                .current_dir(dir)
+                .spawn()
+                .unwrap();
+            InTree(child)
+        }
+
+        fn end(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    impl Drop for InTree {
+        fn drop(&mut self) {
+            self.end();
+        }
+    }
+
+    #[test]
+    fn released_gate_tree_is_rescued_then_removed_and_its_rescue_ref_stays() {
+        let mut w = world();
+        let tree = w.gate_tree();
+        let id = tree.worktree_id.clone();
+        let repo = w.repo.clone();
+        std::fs::write(w.gate_path().join("unique.txt"), "unique\n").unwrap();
+        assert!(w
+            .tx(|ctx, tx| gate_tree::release(ctx, tx, &repo, FEATURE, "its feature is merged"))
+            .unwrap());
+
+        let report = w.rescue(&id, 0);
+        let rescue_ref = w.tree_row(&id).rescue_ref.unwrap();
+        assert_eq!(
+            git(&w.repo, &["show", &format!("{rescue_ref}:unique.txt")]),
+            "unique"
+        );
+
+        assert_eq!(report.removals, std::slice::from_ref(&id), "{report:?}");
+        let ended = w.run(w.only_run(Kind::WorktreeRemove, &id));
+        assert_eq!(ended.state, State::Passed, "{}", text(&ended));
+        w.pass_at(0);
+        let row = w.tree_row(&id);
+        assert_eq!(row.state, WorktreeState::Removed);
+        assert_eq!(row.status.as_str(), "cleaned");
+        assert!(!w.gate_path().exists());
+        let listed = git(&w.repo, &["worktree", "list", "--porcelain"]);
+        assert!(!listed.contains("gate-F-1"), "{listed}");
+        assert_eq!(w.rescue_refs(&id), [format!("refs/horch/rescue/{id}/1")]);
+        assert_eq!(
+            w.only_run(Kind::Rescue, &id),
+            w.runs_of(Kind::Rescue, &id)[0].id
+        );
+        assert!(w.open_kinds().is_empty(), "{:?}", w.open_kinds());
+    }
+
+    #[test]
+    fn rescued_tree_with_no_task_that_nobody_gave_up_stays() {
+        let mut w = world();
+        let path = w.orphan("stray", None);
+        std::fs::write(path.join("notes.txt"), "mine\n").unwrap();
+
+        let report = w.rescue("stray", 0);
+
+        assert!(report.removals.is_empty(), "{report:?}");
+        for clock in [10, 1_000] {
+            let report = w.pass_at(clock);
+            assert!(report.removals.is_empty(), "{report:?}");
+        }
+        assert!(w.runs_of(Kind::WorktreeRemove, "stray").is_empty());
+        assert_eq!(w.tree_row("stray").state, WorktreeState::Rescued);
+        assert_eq!(
+            std::fs::read_to_string(path.join("notes.txt")).unwrap(),
+            "mine\n"
+        );
+    }
+
+    #[test]
+    fn rescue_queued_at_a_newer_head_than_the_row_is_the_only_rescue() {
+        let mut w = world();
+        let path = w.orphan("moved", None);
+        let main = w.main.clone();
+        w.tx(|_, tx| trees::set_facts(tx, "moved", &main, false, None, "old"))
+            .unwrap();
+        std::fs::write(path.join("b.txt"), "b\n").unwrap();
+        git(&path, &["add", "b.txt"]);
+        git(&path, &["commit", "-q", "-m", "b"]);
+        let head = git(&path, &["rev-parse", "HEAD"]);
+        let repo = w.repo.display().to_string();
+        let input_key = rescue_key(&path.display().to_string(), &head);
+        let key = JobKey {
+            kind: Kind::Rescue,
+            subject: "moved",
+            input_key: &input_key,
+        };
+        let job = match w.tx(|ctx, tx| jobs::queue(ctx, tx, &key, Some(&repo), FleetSeconds(0))) {
+            Ok(Queued::New(id)) => id,
+            other => panic!("expected a new rescue run, got {other:?}"),
+        };
+        let ended = w.run(job);
+        assert_eq!(ended.state, State::Passed, "{}", text(&ended));
+
+        for clock in [0, 10, 1_000] {
+            let report = w.pass_at(clock);
+            assert!(report.rescues.is_empty(), "{report:?}");
+        }
+
+        assert_eq!(w.tree_row("moved").state, WorktreeState::Rescued);
+        assert_eq!(w.runs_of(Kind::Rescue, "moved").len(), 1);
+        assert_eq!(w.rescue_refs("moved"), ["refs/horch/rescue/moved/1"]);
+    }
+
+    fn merged_and_rescued(w: &mut World) -> PathBuf {
+        let task = w.task_of_merged_idea();
+        let path = w.orphan("done", Some(&task));
+        let report = w.rescue("done", 0);
+        assert_eq!(report.removals, ["done"], "{report:?}");
+        path
+    }
+
+    #[test]
+    fn removal_refused_by_a_process_in_the_tree_runs_again_after_it_ends() {
+        let mut w = world();
+        let path = merged_and_rescued(&mut w);
+        let mut child = InTree::start(&path);
+        let first = w.run(w.only_run(Kind::WorktreeRemove, "done"));
+        assert_eq!(first.state, State::Failed);
+        assert!(
+            text(&first).contains("have their working folder in the tree"),
+            "{}",
+            text(&first)
+        );
+
+        let report = w.pass_at(10);
+        assert!(report.removals.is_empty(), "{report:?}");
+        assert!(w.open_kinds().is_empty(), "{:?}", w.open_kinds());
+        assert_eq!(w.tree_row("done").state, WorktreeState::Rescued);
+        child.end();
+
+        let report = w.pass_at(40);
+
+        assert_eq!(report.removals, ["done"], "{report:?}");
+        let runs = w.runs_of(Kind::WorktreeRemove, "done");
+        assert_eq!(runs.len(), 2, "{runs:?}");
+        assert_eq!(runs[1].input_key, runs[0].input_key);
+        let ended = w.run(runs[1].id);
+        assert_eq!(ended.state, State::Passed, "{}", text(&ended));
+        w.pass_at(40);
+        assert_eq!(w.tree_row("done").state, WorktreeState::Removed);
+        assert!(!path.exists());
+        assert_eq!(w.rescue_refs("done"), ["refs/horch/rescue/done/1"]);
+        assert!(w.open_kinds().is_empty(), "{:?}", w.open_kinds());
+    }
+
+    #[test]
+    fn removal_refused_by_a_process_at_the_limit_opens_1_item_and_stops() {
+        let mut w = world();
+        let path = merged_and_rescued(&mut w);
+        let _child = InTree::start(&path);
+        let limit = w.config.abandoned_run_limit;
+        let mut clock = 0;
+        for n in 1..=limit {
+            let runs = w.runs_of(Kind::WorktreeRemove, "done");
+            assert_eq!(runs.len() as u64, n, "{runs:?}");
+            let ended = w.run(runs.last().unwrap().id);
+            assert_eq!(ended.state, State::Failed, "{}", text(&ended));
+            clock += 1_000;
+            w.pass_at(clock);
+        }
+
+        for _ in 0..2 {
+            clock += 1_000;
+            let report = w.pass_at(clock);
+            assert!(report.removals.is_empty(), "{report:?}");
+        }
+        assert_eq!(w.runs_of(Kind::WorktreeRemove, "done").len() as u64, limit);
+        assert_eq!(w.open_kinds(), ["remove_failed"]);
+        assert_eq!(w.tree_row("done").state, WorktreeState::Rescued);
+        assert!(path.is_dir());
+    }
+
+    #[test]
+    fn removal_refused_for_a_changed_file_is_not_run_again() {
+        let mut w = world();
+        let path = merged_and_rescued(&mut w);
+        std::fs::write(path.join("late.txt"), "late\n").unwrap();
+        let ended = w.run(w.only_run(Kind::WorktreeRemove, "done"));
+        assert_eq!(ended.state, State::Failed, "{}", text(&ended));
+
+        for clock in [10, 1_000, 10_000] {
+            let report = w.pass_at(clock);
+            assert!(report.removals.is_empty(), "{report:?}");
+        }
+        assert_eq!(w.runs_of(Kind::WorktreeRemove, "done").len(), 1);
+        assert_eq!(w.open_kinds(), ["remove_failed"]);
+        assert_eq!(
+            std::fs::read_to_string(path.join("late.txt")).unwrap(),
+            "late\n"
+        );
     }
 }

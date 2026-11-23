@@ -1,15 +1,3 @@
-//! The idea is an entity of the 1 door, and the feature table of the door
-//! has the exits `open` -> `merged` and `ready` -> `open`
-//! (docs/specs/fleetd/design.md, "Ledger", rule 1 "One door"; "The idea
-//! state machine"; "The feature state machine";
-//! docs/tickets/fleetd-p6/04-door.md).
-//!
-//! Each state change of an idea goes through `transition()` with 1 event
-//! that names the entity and the cause (OR-2). A parked idea resumes only to
-//! the state it left (docs/tickets/fleetd-p6/MAP.md, Q10). Each test makes
-//! its own temporary ledger. No test reads the clock, the load or the
-//! limits of the machine.
-
 use horch_core::fleetd::fleet_runtime::application::ledger::{transition, Cause, DoorError, Moved};
 use horch_core::fleetd::fleet_runtime::domain::ledger::{
     decide, refused_key, Decision, Entity, EXITS, REFUSED_KIND,
@@ -24,8 +12,6 @@ use rusqlite::Connection;
 
 const FEATURE: &str = "F-0001";
 
-/// The states that a parked idea can have left: each state that is not
-/// terminal and not `parked`.
 const LEFT: [&str; 7] = [
     "captured",
     "clarifying",
@@ -36,10 +22,6 @@ const LEFT: [&str; 7] = [
     "integrating",
 ];
 
-/// The column "Leaves when" of the idea table of the design, with the
-/// choices of MAP.md of fleetd-p6 (Q9: the amend after approval; Q10: the
-/// resume of a parked idea). Each state that is not terminal also leaves to
-/// `parked` and `cancelled`.
 fn design_exits() -> Vec<(&'static str, &'static str)> {
     let mut exits = vec![
         ("captured", "clarifying"),
@@ -66,8 +48,6 @@ fn design_exits() -> Vec<(&'static str, &'static str)> {
     exits.sort_unstable();
     exits
 }
-
-// ─── the world of a test ────────────────────────────────────────────────
 
 struct World {
     _dir: tempfile::TempDir,
@@ -106,7 +86,6 @@ impl World {
         self.store.conn()
     }
 
-    /// A new idea of [`FEATURE`], in its first state.
     fn idea(&mut self) -> String {
         self.ideas += 1;
         let id = format!("I-{:04}", self.ideas);
@@ -121,8 +100,6 @@ impl World {
         id
     }
 
-    /// Put the idea `id` in `state` with no event: the set-up of a test,
-    /// not a move.
     fn put(&self, id: &str, state: &str) {
         let sql = "UPDATE ideas SET state = ?2 WHERE id = ?1";
         assert_eq!(self.conn().execute(sql, [id, state]).unwrap(), 1);
@@ -175,7 +152,6 @@ impl World {
         .collect()
     }
 
-    /// The needs-you items of the row `id` of `entity`: key, kind, state.
     fn items(&self, entity: Entity, id: &str) -> Vec<(String, String, String)> {
         let mut stmt = self
             .conn()
@@ -190,7 +166,6 @@ impl World {
     }
 }
 
-/// 1 event row: its kind, states, cause and text.
 #[derive(Debug, Clone, PartialEq)]
 struct Ev {
     kind: String,
@@ -200,8 +175,6 @@ struct Ev {
     text: String,
 }
 
-/// Assert that the move of the idea `id` to `to` is refused: the row does
-/// not change, 1 event records the refusal, and 1 needs-you item is open.
 fn assert_refused(w: &mut World, id: &str, to: &str) {
     let from = w.state(Entity::Idea, id);
     let before = w.events(Entity::Idea, id).len();
@@ -233,8 +206,6 @@ fn assert_refused(w: &mut World, id: &str, to: &str) {
     );
 }
 
-// ─── the tests ──────────────────────────────────────────────────────────
-
 #[test]
 fn each_exit_of_the_design_is_allowed() {
     let mut table: Vec<(&str, &str)> = EXITS
@@ -257,7 +228,6 @@ fn each_exit_of_the_design_is_allowed() {
     for (from, to) in design_exits() {
         let id = w.idea();
         if from == "parked" {
-            // The state that the idea left before it was parked.
             let left = if to == "cancelled" { "in_progress" } else { to };
             w.put(&id, left);
             assert_eq!(
@@ -309,7 +279,6 @@ fn an_illegal_idea_transition_is_refused_and_goes_to_needs_you() {
     let mut w = world();
     let id = w.idea();
     let other = w.idea();
-    // The refusal and a legal move of another idea share 1 pass.
     let (refused, legal) = w
         .store
         .immediate(|tx| {
@@ -346,21 +315,15 @@ fn an_illegal_idea_transition_is_refused_and_goes_to_needs_you() {
     assert_eq!(e.kind, "transition");
     assert_eq!(w.items(Entity::Idea, &id).len(), 1);
 
-    // An exit of the table is refused for a parked idea that did not leave
-    // that state: it resumes only to the state it left (Q10).
     let parked = w.idea();
     w.put(&parked, "clarifying");
     w.moved(Entity::Idea, &parked, "parked").unwrap();
     assert_refused(&mut w, &parked, "in_progress");
-    // A refused move does not change the state that the idea left.
     assert_eq!(
         w.moved(Entity::Idea, &parked, "clarifying").unwrap(),
         Moved::Changed
     );
 
-    // A parked idea with no event of its park has no known state to
-    // resume to, so it does not resume (a guard whose fact is unknown does
-    // not hold).
     let unknown = w.idea();
     w.put(&unknown, "parked");
     assert_refused(&mut w, &unknown, "captured");
@@ -428,8 +391,6 @@ fn idea_event_names_the_entity() {
         "the text names the entity, the row and both states"
     );
 
-    // The store reads the row back, and each requirement write is 1 event
-    // of the idea.
     let row = ideas_store::idea(w.conn(), &id).unwrap().unwrap();
     assert_eq!(
         (row.feature_id.as_str(), row.state.as_str()),

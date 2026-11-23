@@ -1,26 +1,3 @@
-//! horch idea amend: the amendment of an idea before approval, after
-//! approval and after merge (ticket 19 of fleetd-p6).
-//!
-//! `docs/specs/fleetd/design.md`, Ideas, "Amendments": before
-//! `awaiting_approval` an amendment joins the interview; after approval it
-//! becomes a revise with its own approval; once the idea is merged, it
-//! becomes a new idea with `depends_on`. [`amend_idea`] (`AmendIdea`)
-//! writes its rows in the caller's write transaction and returns the file
-//! to write after the commit (each effect is a committed row first).
-//!
-//! - `captured`, `clarifying`: 1 file in `amendments/`, and the idea
-//!   stays. The sub-orchestrator reads it in its phase.
-//! - `awaiting_approval`: 1 file in `amendments/`, and the idea goes back
-//!   to `clarifying`, as a revise does, so the assumptions that you
-//!   approve include the amendment.
-//! - `specifying` to `integrating`: 1 file in `amendments/`, and the idea
-//!   moves to `awaiting_approval` for that change (MAP.md, Q9). Its tasks
-//!   that are not started wait; running tasks go on.
-//! - `merged`, `cancelled`: a new idea in a new feature, with
-//!   `depends_on: [I-NNNN]` (`AddIdea`).
-//! - `parked`: refused. A parked idea resumes only to the state that it
-//!   left (MAP.md, Q10).
-
 use anyhow::{anyhow, bail, Result};
 use rusqlite::Connection;
 
@@ -38,29 +15,19 @@ use crate::fleetd::ideas::domain::idea_folder::FILE_LIMIT;
 use crate::fleetd::integration::application::new_features::Project;
 use crate::taskledger::model::Actor;
 
-/// The cause of the event of an amendment.
 pub const AMENDED_CAUSE: &str = "you amended the idea";
 
-/// The source of a new idea from an amend after merge.
 pub const AMEND_SOURCE: &str = "horch idea amend";
 
-/// What [`amend_idea`] did.
 #[derive(Debug)]
 pub enum Amended {
-    /// The text is the next amendment of the idea; write it after the
-    /// commit.
     Amendment(Amendment),
-    /// The idea is merged or cancelled: a new idea that depends on it.
-    /// Write its idea.md after the commit (`write_idea_file`).
     NewIdea(Added),
-    /// Nothing changed. The text is what you read.
     Refused(String),
 }
 
-/// What an amend does to an idea in a state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Step {
-    /// 1 amendment, and the idea moves to the state, or stays (`None`).
     Amendment(Option<&'static str>),
     NewIdea,
     Refused,
@@ -76,9 +43,6 @@ fn step(state: &str) -> Step {
     }
 }
 
-/// `AmendIdea`: your text `text` for `idea`, whose folder is `folder`. A
-/// merged or cancelled idea gets a new idea in a new feature of `project`.
-/// An empty text and a text over 64 KiB are refused, and write nothing.
 pub fn amend_idea(
     tx: &Connection,
     ctx: &JobCtx<'_>,

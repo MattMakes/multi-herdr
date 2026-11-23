@@ -1,16 +1,3 @@
-//! The repair pass of a push attempt (docs/specs/fleetd/design.md,
-//! "Supervision, liveness and reconciliation", "Finishing without
-//! reporting is closed at both ends"; FM-6; docs/tickets/fleetd-p4/
-//! 15-repair-pass.md).
-//!
-//! The agent of a push attempt exits with commits since its base and with
-//! no `result.json` and no question file: the wrapper resumes its session 1
-//! time with the fixed line, and records the repair as 1 event on the
-//! attempt. Each test binds 1 task of its own temporary ledger to a push
-//! attempt. The facts of the tree and the outbox come from the test; the
-//! repair event and the attempt rows come from the ledger. No test starts a
-//! `horch` binary or reads the clock of this machine.
-
 use horch_core::fleetd::fleet_runtime::adapters::sqlite::has_fact;
 use horch_core::fleetd::fleet_runtime::application::jobs::JobCtx;
 use horch_core::fleetd::fleet_runtime::application::ledger::{record, Cause};
@@ -29,7 +16,6 @@ use horch_core::taskledger::tasks::{self, NewTask};
 use horch_core::taskledger::workers::NewWorker;
 use horch_core::taskledger::Store;
 
-/// 1 ledger with 1 task bound to its first push attempt.
 struct World {
     _tmp: tempfile::TempDir,
     store: Store,
@@ -39,7 +25,7 @@ struct World {
 impl World {
     fn new() -> World {
         let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().canonicalize().unwrap();
+        let root = horch_platform::path::canonicalize(tmp.path()).unwrap();
         let mut store = Store::open(&root.join("ledger.sqlite3")).unwrap();
         let run = store
             .immediate(|tx| {
@@ -52,7 +38,6 @@ impl World {
                         ..Default::default()
                     },
                 )?;
-                // FR-12: a task needs an idea in flight of the feature of its run.
                 horch_core::taskledger::schema::run_idea(
                     tx,
                     &run.run_id,
@@ -88,7 +73,6 @@ impl World {
         }
     }
 
-    /// The attempt as the wrapper sees it when its agent exits.
     fn attempt(&mut self, facts: RepairFacts) -> Attempt<'_> {
         Attempt {
             store: &mut self.store,
@@ -110,8 +94,6 @@ impl World {
             .unwrap()
     }
 
-    /// The attempt count of the task, its attempt rows, and the state of
-    /// the attempt.
     fn attempts(&self) -> (i64, i64, String) {
         let conn = self.store.conn();
         let task = tasks::get(conn, &self.bound.task_id).unwrap();
@@ -133,8 +115,6 @@ impl World {
     }
 }
 
-/// 1 push attempt: the facts of its tree and outbox come from the test,
-/// its repair event from the ledger. A resume only records its line.
 struct Attempt<'a> {
     store: &'a mut Store,
     id: String,
@@ -193,8 +173,6 @@ fn exited_with_commits() -> RepairFacts {
     }
 }
 
-/// 1 repair pass of the attempt of `w` with `facts`: what it did and the
-/// lines it resumed with.
 fn pass(w: &mut World, facts: RepairFacts) -> (Repaired, Vec<String>) {
     let mut attempt = w.attempt(facts);
     let done = repair_pass(&mut attempt).unwrap();
@@ -251,7 +229,6 @@ fn exit_with_no_commits_runs_no_repair() {
 fn second_repair_of_1_attempt_never_runs() {
     let mut w = World::new();
     assert_eq!(pass(&mut w, exited_with_commits()).1, [REPAIR_LINE]);
-    // The resumed agent exits again with no result: no second repair.
     assert_eq!(
         pass(&mut w, exited_with_commits()),
         (Repaired::No, Vec::new())

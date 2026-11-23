@@ -1,28 +1,14 @@
-//! Typed wrapper around the `herdr` CLI, replacing the shell's `herdr ... | jq`
-//! pipelines.
-//!
-//! Verified against herdr 0.6.1 and re-checked against 0.8.0. The splitting and
-//! messaging surface is deliberately limited to what 0.6.1 advertises: no `pane
-//! current`, and no `--env` or `--ratio` on `pane split`.
-//!
-//! The tab and `pane move` calls that `horch tile` needs arrived later and are
-//! verified against 0.8.2. They
-//! are additions, so a caller that never tiles still only needs 0.6.1.
-
 use std::ffi::OsStr;
 use std::fmt;
-use std::io::Read;
 use std::path::PathBuf;
-use std::process::{Child, Output, Stdio};
-use std::sync::mpsc;
-use std::thread::JoinHandle;
+use std::process::Output;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context, Result};
-use horch_platform::group::{Contained, NotResumed};
 use horch_platform::start;
 use serde::Deserialize;
 
+use crate::workspace::exec::{is_timeout, output_within};
 use crate::workspace::model::*;
 
 #[derive(Debug, Deserialize)]
@@ -86,9 +72,6 @@ struct WorkspaceCreateResult {
     root_pane: Pane,
 }
 
-/// A `herdr` command that exited non-zero, with herdr's own stderr, which is
-/// what actually explains a failure. Typed so the CLI can tell a herdr failure
-/// from any other without reading the message (ARC-22).
 #[derive(Debug)]
 pub struct HerdrFailed {
     pub command: String,
@@ -109,18 +92,14 @@ impl fmt::Display for HerdrFailed {
 
 impl std::error::Error for HerdrFailed {}
 
-/// Handle to the `herdr` executable.
 #[derive(Debug, Clone)]
 pub struct Herdr {
     bin: PathBuf,
-    /// When set, a call that has not finished by then is killed and fails.
     timeout: Option<Duration>,
-    /// When set, a call still running at this instant is killed and fails.
     deadline: Option<Instant>,
 }
 
 impl Herdr {
-    /// A handle that runs `bin`. The CLI passes `ctx.bins.harness.herdr`.
     pub fn with_bin(bin: impl Into<PathBuf>) -> Self {
         Self {
             bin: bin.into(),
@@ -129,18 +108,11 @@ impl Herdr {
         }
     }
 
-    /// The same handle, with the calls that go through `output` and `json`
-    /// bounded: a herdr that has not answered after `timeout` is killed and
-    /// the call fails. `server_reachable`, `wait_output` and
-    /// `integration_status` are not bounded.
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = Some(timeout);
         self
     }
 
-    /// The same handle, with the same calls as [`Herdr::with_timeout`] cut
-    /// off at `deadline`. With a timeout too, a call stops at the earlier of
-    /// the two. `None`: no deadline.
     pub fn until(mut self, deadline: Option<Instant>) -> Self {
         self.deadline = deadline;
         self
@@ -160,9 +132,7 @@ impl Herdr {
         }
     }
 
-    /// Run `herdr <args>`, returning stdout. Errors carry herdr's own stderr,
-    /// which is what actually explains a failure.
-    fn output<S: AsRef<OsStr>>(&self, args: &[S]) -> Result<String> {
+    pub(crate) fn output<S: AsRef<OsStr>>(&self, args: &[S]) -> Result<String> {
         let out = self.run(args).map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 anyhow!("herdr CLI not found on PATH. Install it with `herdr-install`, or see https://herdr.dev/docs/install/")
@@ -185,7 +155,6 @@ impl Herdr {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
 
-    /// Run `herdr <args>` and decode the `{"result": ...}` envelope it prints.
     fn json<T: for<'de> Deserialize<'de>, S: AsRef<OsStr>>(&self, args: &[S]) -> Result<T> {
         let stdout = self.output(args)?;
         let envelope: Envelope<T> = serde_json::from_str(stdout.trim())
@@ -193,7 +162,6 @@ impl Herdr {
         Ok(envelope.result)
     }
 
-    /// True when the herdr server answers at all. Cheap reachability probe.
     pub fn server_reachable(&self) -> bool {
         start::command(&self.bin)
             .args(["workspace", "list"])
@@ -202,8 +170,6 @@ impl Herdr {
             .unwrap_or(false)
     }
 
-    /// `herdr pane get <id>`. Accepts the internal id herdr exports as
-    /// `HERDR_PANE_ID` (e.g. `p_2`) and upgrades it to the public ids.
     pub fn pane_get(&self, id: &str) -> Result<Pane> {
         let r: PaneResult = self.json(&["pane", "get", id])?;
         Ok(r.pane)
@@ -214,8 +180,6 @@ impl Herdr {
         Ok(r.panes)
     }
 
-    /// The pid of the process that herdr started in `pane`: `shell_pid` of
-    /// `herdr pane process-info`. A herdr that has no `process-info` fails.
     pub fn pane_shell_pid(&self, pane: &str) -> Result<u32> {
         let r: ProcessInfoResult = self.json(&["pane", "process-info", "--pane", pane])?;
         Ok(r.process_info.shell_pid)
@@ -233,9 +197,6 @@ impl Herdr {
         Ok(r.pane.pane_id)
     }
 
-    /// `herdr pane run` submits text and Enter atomically. Safe for launching a
-    /// command into a fresh shell; not safe for a TUI in raw mode, which is why
-    /// [`crate::messaging::delivery::send_line`] exists.
     pub fn pane_run(&self, pane: &str, command: &str) -> Result<()> {
         self.output(&["pane", "run", pane, command])?;
         Ok(())
@@ -256,7 +217,6 @@ impl Herdr {
         Ok(())
     }
 
-    /// True when the pane still exists.
     pub fn pane_exists(&self, pane: &str) -> bool {
         self.pane_get(pane).is_ok()
     }
@@ -273,10 +233,6 @@ impl Herdr {
         Ok(r.layout)
     }
 
-    /// `herdr tab list --workspace <ws>`, in tab-strip order.
-    ///
-    /// Always scoped to a workspace: without `--workspace` herdr returns the tabs
-    /// of every workspace it has open.
     pub fn tab_list(&self, workspace_id: &str) -> Result<Vec<Tab>> {
         let r: TabListResult = self.json(&["tab", "list", "--workspace", workspace_id])?;
         let mut tabs = r.tabs;
@@ -284,24 +240,29 @@ impl Herdr {
         Ok(tabs)
     }
 
-    /// `herdr workspace list`.
+    pub fn tab_new(
+        &self,
+        _workspace_id: &str,
+        _label: &str,
+        _cwd: Option<&str>,
+    ) -> Result<(String, String)> {
+        Err(crate::workspace::host::Unsupported {
+            call: "tab_new",
+            backend: crate::runtime::Backend::Herdr,
+        }
+        .into())
+    }
+
     pub fn workspace_list(&self) -> Result<Vec<Workspace>> {
         let r: WorkspaceListResult = self.json(&["workspace", "list"])?;
         Ok(r.workspaces)
     }
 
-    /// `herdr tab focus <tab>`. The only way to focus a specific pane's tab:
-    /// `pane focus` moves to a NEIGHBOUR, not to an id.
     pub(crate) fn tab_focus(&self, tab_id: &str) -> Result<()> {
         self.output(&["tab", "focus", tab_id])?;
         Ok(())
     }
 
-    /// `herdr pane focus --direction <d> --pane <origin>`.
-    ///
-    /// One step to a neighbour. herdr answers with exit 0 and `changed: false,
-    /// reason: "no_neighbor"` when nothing sits on that side, so a caller learns
-    /// it has run out of room without an error.
     pub(crate) fn pane_focus(&self, origin: &str, direction: FocusDir) -> Result<Focus> {
         let r: FocusResult = self.json(&[
             "pane",
@@ -314,22 +275,7 @@ impl Herdr {
         Ok(r.focus)
     }
 
-    /// Walk the focus of `tab` to `target`, one neighbour at a time.
-    ///
-    /// Returns false rather than erroring when the focus cannot be placed: the
-    /// caller is restoring a view, and a view that cannot be restored must never
-    /// fail the operation that moved it.
-    ///
-    /// WARNING: like `tab focus`, this pulls the whole workspace into view.
-    ///
-    /// The step budget is the pane count, which is more than any walk needs: each
-    /// step closes the larger of the two axis gaps, so the focus reaches any pane
-    /// of a two-row grid in at most two moves. The budget only has to stop a walk
-    /// that oscillates because herdr picked a different neighbour than the
-    /// geometry suggested.
     pub fn pane_focus_walk(&self, tab: &str, target: &str) -> Result<bool> {
-        // `pane layout` reports the whole tab that holds the pane it is asked
-        // about, so the target doubles as the probe for its own tab.
         let layout = self.pane_layout(Some(target))?;
         if layout.tab_id != tab {
             Ok(false)
@@ -338,12 +284,8 @@ impl Herdr {
         }
     }
 
-    /// The loop of [`Herdr::pane_focus_walk`] inside the target's tab: at most
-    /// 1 step per pane of `layout`.
     fn walk(&self, mut layout: Layout, target: &str) -> Result<bool> {
         for _ in 0..layout.panes.len() {
-            // `Arrived` and `Stuck` both end the walk; the check below tells
-            // them apart.
             let Walk::Step { from, direction } = next_step(&layout, target) else {
                 break;
             };
@@ -356,16 +298,6 @@ impl Herdr {
         Ok(layout.focused_pane_id.as_deref() == Some(target))
     }
 
-    /// `herdr pane move <pane> --tab <tab> --split <d> [--target-pane <target>]
-    /// [--ratio <r>] --no-focus`.
-    ///
-    /// Keeps the pane id and the running process (verified against herdr 0.8.2).
-    /// `ratio` is the share
-    /// the TARGET pane keeps, so the moved pane gets `1 - ratio`.
-    ///
-    /// A move into the tab the pane already occupies is refused with
-    /// `changed: false, reason: "same_tab"`: repositioning a pane inside its own
-    /// tab means moving it out and back.
     pub(crate) fn pane_move(
         &self,
         pane: &str,
@@ -389,7 +321,6 @@ impl Herdr {
         }
         if let Some(ratio) = ratio {
             args.push("--ratio".into());
-            // Match herdr's own four-decimal storage of split ratios.
             args.push(format!("{ratio:.4}"));
         }
         args.push("--no-focus".into());
@@ -397,11 +328,6 @@ impl Herdr {
         Ok(r.move_result)
     }
 
-    /// `herdr pane move <pane> --new-tab --label <label> --no-focus`.
-    ///
-    /// The new tab holds only the moved pane, and its id comes back as
-    /// `created_tab`. This form takes neither `--split` nor `--ratio`; the label
-    /// flag is `--label`, not `--tab-label`.
     pub(crate) fn pane_move_new_tab(&self, pane: &str, label: &str) -> Result<Move> {
         let r: MoveResult = self.json(&[
             "pane",
@@ -415,17 +341,7 @@ impl Herdr {
         Ok(r.move_result)
     }
 
-    /// Move the divider on `direction` side of `pane` by `amount`, a fraction of
-    /// the split container that owns it.
-    ///
-    /// The reply carries the post-resize layout, so a caller adjusting several
-    /// dividers can re-plan against real geometry instead of predicting it. It
-    /// also carries `changed`, which goes false when herdr refuses the move -
-    /// that is how a caller discovers the minimum pane width rather than
-    /// hard-coding one.
     pub(crate) fn pane_resize(&self, pane: &str, direction: &str, amount: f64) -> Result<Resize> {
-        // herdr stores split ratios to four decimal places; matching that here
-        // keeps the request and what it can actually honour in step.
         let amount = format!("{amount:.4}");
         let r: ResizeResult = self.json(&[
             "pane",
@@ -467,19 +383,11 @@ impl Herdr {
         Ok(())
     }
 
-    /// Show an operator notification through the existing herdr boundary.
     pub fn notification_show(&self, title: &str, body: &str) -> Result<()> {
         self.output(&["notification", "show", title, "--body", body])?;
         Ok(())
     }
 
-    /// `herdr pane wait-output <pane> --match <needle> --source recent-unwrapped
-    /// --timeout <ms>`. Returns false on timeout rather than erroring.
-    ///
-    /// herdr 0.8.2 has no top-level `wait`: the old `herdr wait output` exits 2
-    /// with `unknown command: wait`, which read as a timeout and failed every
-    /// `horch smoke messaging`. Any failure other than herdr's `timeout` error
-    /// is now an error. The source is the one the smoke failure dump prints.
     pub fn wait_output(&self, pane: &str, needle: &str, timeout_ms: u64) -> Result<bool> {
         let timeout = timeout_ms.to_string();
         let args = [
@@ -501,7 +409,6 @@ impl Herdr {
             .with_context(|| format!("herdr {} failed ({})", args.join(" "), out.status))
     }
 
-    /// `herdr integration status`, or None when the subcommand is unavailable.
     pub fn integration_status(&self) -> Option<String> {
         start::command(&self.bin)
             .args(["integration", "status"])
@@ -511,21 +418,11 @@ impl Herdr {
             .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
     }
 
-    /// `herdr agent prompt <target> <text>`: herdr writes the text as one
-    /// bracketed paste plus an encoded Enter, atomically, even while the agent
-    /// is mid-turn. Fails when herdr sees no agent in the pane.
     pub fn agent_prompt(&self, pane: &str, text: &str) -> Result<()> {
         self.output(&["agent", "prompt", pane, text])?;
         Ok(())
     }
 
-    /// `herdr pane report-agent <pane> --source <source> --agent <agent>
-    /// --state <state> --seq <seq>` (herdr 0.8.2): `state` is `idle`,
-    /// `working`, `blocked` or `unknown`. herdr keeps the report with the
-    /// highest `seq` of a source, so a report with a lower one is stale.
-    /// For a harness herdr does not detect itself (Prime). The pane id
-    /// comes first: herdr 0.8.2 answers `unknown option: <source>` when it
-    /// comes last, as its `--help` shows it (live check X2, 2026-10-07).
     pub fn report_agent(
         &self,
         pane: &str,
@@ -551,9 +448,6 @@ impl Herdr {
         Ok(())
     }
 
-    /// `herdr pane release-agent <pane> --source <source> --agent <agent>
-    /// --seq <seq>`: the end of [`Herdr::report_agent`]'s reports, so herdr
-    /// stops showing that agent in the pane.
     pub fn release_agent(&self, pane: &str, source: &str, agent: &str, seq: u64) -> Result<()> {
         let seq = seq.to_string();
         self.output(&[
@@ -571,18 +465,13 @@ impl Herdr {
     }
 }
 
-/// What a focus walk does next, read from the layout alone.
 #[derive(Debug, PartialEq, Eq)]
 enum Walk {
-    /// The target has the focus.
     Arrived,
-    /// No focus, a pane missing from the layout, or no direction leads on.
     Stuck,
-    /// Move the focus from pane `from` toward `direction`.
     Step { from: String, direction: FocusDir },
 }
 
-/// The next move of a walk of the focus of `layout` to `target`.
 fn next_step(layout: &Layout, target: &str) -> Walk {
     let Some(from) = layout.focused_pane_id.as_deref() else {
         return Walk::Stuck;
@@ -597,8 +486,6 @@ fn next_step(layout: &Layout, target: &str) -> Walk {
     }
 }
 
-/// The direction of 1 step from pane `from` toward pane `to` of `layout`.
-/// `None` when either pane is not in the layout, or no direction leads on.
 fn step_between(layout: &Layout, from: &str, to: &str) -> Option<FocusDir> {
     let rect = |id: &str| {
         layout
@@ -610,15 +497,10 @@ fn step_between(layout: &Layout, from: &str, to: &str) -> Option<FocusDir> {
     crate::workspace::tile::step_toward(&rect(from)?, &rect(to)?)
 }
 
-/// `no_neighbor`, or a step that landed back on `from`: either way the walk
-/// is not converging, so it stops instead of spinning.
 fn stalled(step: &Focus, from: &str) -> bool {
     !step.changed || step.focused_pane_id.as_deref() == Some(from)
 }
 
-/// Read a `herdr pane wait-output` result: success is a match; herdr's
-/// `{"error":{"code":"timeout",...}}` on stderr is no match; anything else
-/// (a missing pane, an unknown command) is an error.
 fn wait_outcome(success: bool, stderr: &str) -> Result<bool> {
     if success {
         Ok(true)
@@ -629,249 +511,10 @@ fn wait_outcome(success: bool, stderr: &str) -> Result<bool> {
     }
 }
 
-/// Whether `stderr` is herdr's `{"error":{"code":"timeout",...}}`.
-fn is_timeout(stderr: &str) -> bool {
-    serde_json::from_str::<serde_json::Value>(stderr.trim())
-        .is_ok_and(|v| v["error"]["code"].as_str() == Some("timeout"))
-}
-
-/// The most a bounded call reads from each of stdout and stderr.
-const OUTPUT_CAP: u64 = 1024 * 1024;
-
-/// The error for a call that reached its stop: the push deadline when
-/// `at_deadline`, else `timeout`.
-fn stop_error(at_deadline: bool, timeout: Duration) -> std::io::Error {
-    let message = if at_deadline {
-        "herdr did not answer inside the push budget".to_string()
-    } else {
-        format!("herdr did not answer within {} ms", timeout.as_millis())
-    };
-    limit_error(message, std::io::ErrorKind::TimedOut)
-}
-
-fn limit_error(message: String, kind: std::io::ErrorKind) -> std::io::Error {
-    std::io::Error::new(kind, message)
-}
-
-/// A reader's channel and its thread.
-type Reader = (mpsc::Receiver<std::io::Result<Vec<u8>>>, JoinHandle<()>);
-
-/// The error for a stream that read past [`OUTPUT_CAP`], if one did.
-fn over_cap(collected: &[Option<Vec<u8>>]) -> Option<std::io::Error> {
-    collected
-        .iter()
-        .flatten()
-        .any(|b| b.len() as u64 > OUTPUT_CAP)
-        .then(|| {
-            limit_error(
-                format!("herdr printed more than {OUTPUT_CAP} bytes"),
-                std::io::ErrorKind::InvalidData,
-            )
-        })
-}
-
-/// Read at most [`OUTPUT_CAP`] + 1 bytes of `pipe`, then send them. The
-/// reader ends when the pipe closes or the cap is hit; a caller waits for it
-/// only for [`READER_GRACE`].
-fn read_capped(pipe: Option<impl Read + Send + 'static>) -> std::io::Result<Reader> {
-    let (sender, receiver) = mpsc::channel();
-    let handle = std::thread::Builder::new().spawn(move || {
-        let mut bytes = Vec::new();
-        let read = match pipe {
-            Some(pipe) => pipe
-                .take(OUTPUT_CAP + 1)
-                .read_to_end(&mut bytes)
-                .map(|_| ()),
-            None => Ok(()),
-        };
-        let _ = sender.send(read.map(|()| bytes));
-    })?;
-    Ok((receiver, handle))
-}
-
-/// The most a finished call waits for its reader threads after the child is
-/// killed. A reader still blocked then is left to end with its pipe: a
-/// descendant that escaped containment can hold the pipe open.
-const READER_GRACE: Duration = Duration::from_millis(200);
-
-fn join_readers(handles: Vec<JoinHandle<()>>) {
-    let until = Instant::now() + READER_GRACE;
-    for handle in handles {
-        while !handle.is_finished() && Instant::now() < until {
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        if handle.is_finished() {
-            let _ = handle.join();
-        }
-    }
-}
-
-/// Kill and reap `child`. A failure of either is a warning, not an error:
-/// the call has already failed and the caller goes on.
-///
-/// On macOS and Linux the child leads its own process group, so one signal
-/// also ends every descendant that holds a pipe. The leader is still
-/// unreaped here, so its pid cannot belong to another process: the group
-/// signal reaches only this call's descendants.
-///
-/// On Windows this kills the child only. The job of [`kill_tree_and_reap`]
-/// kills its descendants. When the job cannot be set up, the child is still
-/// suspended and has started no descendant, so the child alone is enough.
-fn kill_and_reap(child: &mut Child) -> std::io::Result<()> {
-    if !horch_platform::group::kill_child_group(child) {
-        eprintln!("horch: could not kill herdr");
-    }
-    reap_within(child, REAP_GRACE).inspect_err(|e| eprintln!("horch: could not reap herdr: {e}"))
-}
-
-/// Kill every process in `job`, then kill and reap `child`, as
-/// [`kill_and_reap`] does. A failed kill of the job is a warning.
-fn kill_tree_and_reap(job: &Contained, child: &mut Child) -> std::io::Result<()> {
-    if !job.terminate() {
-        eprintln!("horch: could not kill the herdr process tree");
-    }
-    kill_and_reap(child)
-}
-
-/// The most a failed call waits for its killed child to be reaped.
-const REAP_GRACE: Duration = Duration::from_secs(1);
-
-/// Reap `child` by polling, never by a blocking wait: a child that does not
-/// exit within `grace` is an error, so the call still returns.
-fn reap_within(child: &mut Child, grace: Duration) -> std::io::Result<()> {
-    let until = Instant::now() + grace;
-    loop {
-        if child.try_wait()?.is_some() {
-            return Ok(());
-        }
-        if Instant::now() >= until {
-            return Err(limit_error(
-                format!(
-                    "herdr did not exit within {} ms of the kill",
-                    grace.as_millis()
-                ),
-                std::io::ErrorKind::TimedOut,
-            ));
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-}
-
-/// An error of [`Contained::start`], with herdr named where the platform
-/// names only the child process.
-fn name_herdr(error: std::io::Error) -> std::io::Error {
-    if error
-        .get_ref()
-        .is_some_and(|inner| inner.is::<NotResumed>())
-    {
-        std::io::Error::other("could not resume herdr")
-    } else {
-        error
-    }
-}
-
-/// Run `command` with one `timeout` for the exit and for both pipes. The
-/// call stops at the earlier of `timeout` and the absolute `deadline`. On
-/// that stop, or when either pipe passes the cap, the child is killed and the
-/// call fails. On Windows the child starts suspended inside a job, and the
-/// whole tree is killed. Every platform then waits at most [`READER_GRACE`]
-/// for the readers.
-fn output_within(
-    mut command: start::Command,
-    timeout: Duration,
-    deadline: Option<Instant>,
-) -> std::io::Result<Output> {
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let timeout_end = Instant::now().checked_add(timeout).ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "herdr timeout is too large",
-        )
-    })?;
-    let stop = deadline.map_or(timeout_end, |deadline| deadline.min(timeout_end));
-    // On Windows the child starts suspended, so it cannot start a descendant
-    // before the job holds it.
-    Contained::prepare(&mut command);
-    let mut child = command.spawn()?;
-    let job = match Contained::start(&child) {
-        Ok(job) => job,
-        Err(error) => {
-            let _ = kill_and_reap(&mut child);
-            return Err(name_herdr(error));
-        }
-    };
-    let ((stdout_rx, stdout_thread), (stderr_rx, stderr_thread)) = match (
-        read_capped(child.stdout.take()),
-        read_capped(child.stderr.take()),
-    ) {
-        (Ok(stdout), Ok(stderr)) => (stdout, stderr),
-        (Err(error), _) | (_, Err(error)) => {
-            let _ = kill_tree_and_reap(&job, &mut child);
-            return Err(error);
-        }
-    };
-    let readers = [stdout_rx, stderr_rx];
-    let threads = vec![stdout_thread, stderr_thread];
-    let mut collected: [Option<Vec<u8>>; 2] = [None, None];
-    let mut exited = false;
-    let failure = loop {
-        let mut read_failure = None;
-        for (slot, reader) in collected.iter_mut().zip(&readers) {
-            match reader.try_recv() {
-                Ok(Ok(bytes)) if slot.is_none() => *slot = Some(bytes),
-                Ok(Err(error)) => read_failure = Some(error),
-                _ => {}
-            }
-        }
-        if read_failure.is_some() {
-            break read_failure;
-        }
-        if let Some(error) = over_cap(&collected) {
-            break Some(error);
-        }
-        if !exited {
-            exited = match horch_platform::group::exited_without_reap(&mut child) {
-                Ok(exited) => exited,
-                Err(error) => {
-                    let _ = kill_tree_and_reap(&job, &mut child);
-                    join_readers(threads);
-                    return Err(error);
-                }
-            };
-        }
-        if exited && collected.iter().all(Option::is_some) {
-            break None;
-        }
-        if Instant::now() >= stop {
-            break Some(stop_error(stop < timeout_end, timeout));
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    };
-    if let Some(error) = failure {
-        let _ = kill_tree_and_reap(&job, &mut child);
-        join_readers(threads);
-        return Err(error);
-    }
-    join_readers(threads);
-    let [stdout, stderr] = collected;
-    Ok(Output {
-        status: child.wait()?,
-        stdout: stdout.unwrap_or_default(),
-        stderr: stderr.unwrap_or_default(),
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::process::Command;
 
-    /// A fake herdr that runs `body`, already run once. macOS scans a new
-    /// executable at its first exec for seconds (up to 35 s under load),
-    /// which would race every timed call. The warm run exits before `body`.
     #[cfg(unix)]
     fn script_in(body: &str) -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::tempdir().unwrap();
@@ -886,16 +529,6 @@ mod tests {
         (dir, script)
     }
 
-    #[test]
-    fn a_child_that_does_not_resume_is_named_herdr() {
-        let error = name_herdr(std::io::Error::other(NotResumed));
-        assert_eq!(error.to_string(), "could not resume herdr");
-        let other = name_herdr(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
-        assert_eq!(other.kind(), std::io::ErrorKind::PermissionDenied);
-    }
-
-    /// The answer of real herdr 0.9.4 to `pane process-info`, cut to 1
-    /// foreground process.
     #[cfg(unix)]
     #[test]
     fn pane_shell_pid_reads_the_shell_pid_of_process_info() {
@@ -908,185 +541,6 @@ mod tests {
         assert!(herdr.pane_shell_pid("wG1:p1").is_err());
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn a_descendant_that_keeps_stdout_open_past_the_deadline_fails_the_call() {
-        let (_dir, script) = script_in("sleep 4 &\nexit 0");
-        let started = Instant::now();
-        let herdr = Herdr::with_bin(&script).with_timeout(Duration::from_millis(1000));
-        assert!(herdr.pane_list("w1").is_err());
-        assert!(started.elapsed() < Duration::from_secs(3));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_descendant_holding_stdout_is_killed_with_the_call() {
-        let (dir, script) = script_in("sleep 30 &\necho $! > \"$(dirname \"$0\")/pid\"\nexit 0");
-        let herdr = Herdr::with_bin(&script).with_timeout(Duration::from_millis(1500));
-        assert!(herdr.pane_list("w1").is_err());
-        // A loaded machine can kill the script before it writes its pid:
-        // then no process was left to leak.
-        let Ok(pid) = std::fs::read_to_string(dir.path().join("pid")) else {
-            return;
-        };
-        let gone = (0..40).any(|_| {
-            let dead = !Command::new("kill")
-                .args(["-0", pid.trim()])
-                .output()
-                .unwrap()
-                .status
-                .success();
-            if !dead {
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            dead
-        });
-        assert!(gone, "descendant {pid} is still running");
-    }
-
-    /// A stream that never ends is read only to 1 byte past the cap, so the
-    /// call can stop it: no timing is involved.
-    #[test]
-    fn a_reader_stops_1_byte_past_the_cap_of_an_endless_stream() {
-        let (receiver, handle) = read_capped(Some(std::io::repeat(0))).unwrap();
-        let bytes = receiver.recv().unwrap().unwrap();
-        handle.join().unwrap();
-        assert_eq!(bytes.len() as u64, OUTPUT_CAP + 1);
-    }
-
-    /// A herdr that prints past the cap on either stream fails the call with
-    /// InvalidData. [`script_in`] warms the script, so the scan at its first
-    /// exec does not race the call's timeout.
-    #[cfg(unix)]
-    #[test]
-    fn a_herdr_that_prints_more_than_the_cap_fails_the_call() {
-        for stream in ["", ">&2"] {
-            let (_dir, script) = script_in(&format!("head -c 3000000 /dev/zero {stream}"));
-            let error =
-                output_within(start::command(&script), Duration::from_secs(5), None).unwrap_err();
-            assert_eq!(error.kind(), std::io::ErrorKind::InvalidData, "{stream}");
-            assert!(error.to_string().contains("more than"), "{error}");
-        }
-    }
-
-    /// Output past the cap on stdout or on stderr fails the call with
-    /// InvalidData; output at the cap does not.
-    #[test]
-    fn output_past_the_cap_on_either_stream_is_invalid_data() {
-        let at_cap = Some(vec![0; OUTPUT_CAP as usize]);
-        let past = Some(vec![0; OUTPUT_CAP as usize + 1]);
-        assert!(over_cap(&[at_cap.clone(), at_cap.clone()]).is_none());
-        assert!(over_cap(&[None, at_cap.clone()]).is_none());
-        for collected in [[past.clone(), None], [at_cap, past]] {
-            let error = over_cap(&collected).unwrap();
-            assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
-            assert!(
-                error.to_string().contains("more than 1048576 bytes"),
-                "{error}"
-            );
-        }
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn a_descendant_holding_stdout_does_not_outlive_the_timeout() {
-        let mut command = start::command("cmd");
-        command.args(["/c", "start /b ping -n 30 127.0.0.1 & exit 0"]);
-        let started = Instant::now();
-        let error = output_within(command, Duration::from_millis(1000), None).unwrap_err();
-        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
-        // The call joins its readers: it returns only once the tree is dead.
-        assert!(started.elapsed() < Duration::from_secs(10));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn reaping_a_child_that_does_not_exit_returns_inside_the_grace() {
-        let mut command = Command::new("sleep");
-        command.arg("30");
-        std::os::unix::process::CommandExt::process_group(&mut command, 0);
-        let mut child = command.spawn().unwrap();
-        let started = Instant::now();
-        let error = reap_within(&mut child, Duration::from_millis(200)).unwrap_err();
-        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
-        assert!(started.elapsed() < Duration::from_secs(5));
-        kill_and_reap(&mut child).unwrap();
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_stalled_herdr_fails_with_timed_out_after_the_deadline() {
-        let (_dir, script) = script_in("exec sleep 30");
-        let started = Instant::now();
-        let error =
-            output_within(start::command(&script), Duration::from_millis(500), None).unwrap_err();
-        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
-        assert!(error.to_string().contains("did not answer"), "{error}");
-        assert!(started.elapsed() >= Duration::from_millis(400));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_timeout_too_large_for_an_instant_is_rejected_before_spawning() {
-        let (_dir, script) = script_in("exit 0");
-        let error = output_within(start::command(&script), Duration::MAX, None).unwrap_err();
-        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_herdr_that_outlasts_the_timeout_is_killed() {
-        let (dir, script) = script_in("echo $$ > \"$(dirname \"$0\")/pid\"\nexec sleep 60");
-        let pidfile = dir.path().join("pid");
-
-        let started = Instant::now();
-        let herdr = Herdr::with_bin(&script).with_timeout(Duration::from_millis(2000));
-        assert!(herdr.pane_list("w1").is_err());
-
-        assert!(started.elapsed() < Duration::from_secs(10));
-        let Ok(pid) = std::fs::read_to_string(&pidfile) else {
-            return;
-        };
-        let alive = Command::new("kill")
-            .args(["-0", pid.trim()])
-            .output()
-            .unwrap();
-        assert!(!alive.status.success(), "herdr {pid} is still running");
-    }
-
-    /// A herdr call that outlives the deadline is killed and fails at once;
-    /// one that answers in time returns its output (#67).
-    #[cfg(unix)]
-    #[test]
-    fn a_call_past_the_deadline_is_killed() {
-        let (_stuck_dir, stuck_script) = script_in("sleep 10");
-        let (_quick_dir, quick_script) = script_in("echo hi");
-        let stuck =
-            Herdr::with_bin(stuck_script).until(Some(Instant::now() + Duration::from_millis(300)));
-        let started = Instant::now();
-        let err = stuck.pane_get("w1:p1").unwrap_err().to_string();
-        assert!(started.elapsed() < Duration::from_secs(3), "{err}");
-        assert!(err.contains("push budget"), "{err}");
-        let quick =
-            Herdr::with_bin(quick_script).until(Some(Instant::now() + Duration::from_secs(10)));
-        assert_eq!(quick.output(&["x"]).unwrap(), "hi\n");
-    }
-
-    /// With a timeout and a deadline, the earlier one stops the call.
-    #[cfg(unix)]
-    #[test]
-    fn a_deadline_before_the_timeout_stops_the_call() {
-        let (_dir, script) = script_in("sleep 10");
-        let herdr = Herdr::with_bin(&script)
-            .with_timeout(Duration::from_secs(10))
-            .until(Some(Instant::now() + Duration::from_millis(300)));
-        let started = Instant::now();
-        let err = herdr.pane_get("w1:p1").unwrap_err().to_string();
-        assert!(started.elapsed() < Duration::from_secs(3), "{err}");
-        assert!(err.contains("push budget"), "{err}");
-    }
-
-    /// The three answers herdr 0.8.2 gives, verbatim.
     #[test]
     fn wait_outcome_tells_a_timeout_from_an_error() {
         assert!(wait_outcome(true, "").unwrap());
@@ -1117,8 +571,6 @@ mod tests {
         assert_eq!(r.result.root_pane.pane_id, "w7-1");
     }
 
-    /// herdr has reported the agent session under several shapes across
-    /// versions; all of them must resolve.
     #[test]
     fn agent_session_id_handles_every_known_shape() {
         let cases = [
@@ -1138,9 +590,6 @@ mod tests {
         }
     }
 
-    /// The real 0.8.2 reply, trimmed. Two fields are conditional and must not be
-    /// required: `source_layout` is absent when the move emptied and so closed the
-    /// source tab, and `created_tab` is present only for `--new-tab`.
     #[test]
     fn parses_a_pane_move_that_closed_its_source_tab() {
         let raw = r#"{"result":{"type":"pane_move","move_result":{
@@ -1159,8 +608,6 @@ mod tests {
         assert!(m.reason.is_none());
     }
 
-    /// herdr declines a move rather than failing the call, so the reason is the
-    /// only way a caller learns that nothing happened.
     #[test]
     fn parses_a_declined_pane_move_with_its_reason() {
         let raw = r#"{"result":{"move_result":{"changed":false,"reason":"same_tab",
@@ -1184,8 +631,6 @@ mod tests {
         );
     }
 
-    /// A tiler has to know the focused pane to hand focus back, and the zoom
-    /// state because herdr refuses to move panes in a zoomed tab.
     #[test]
     fn a_layout_reports_the_focused_pane_and_the_zoom_state() {
         let raw = r#"{"result":{"layout":{"workspace_id":"w0","tab_id":"w0:t1",
@@ -1198,9 +643,6 @@ mod tests {
         assert!(r.result.layout.zoomed);
     }
 
-    /// The real 0.8.2 `pane focus --direction` reply, trimmed. The walk reads
-    /// three things from it: whether the focus moved, where it moved to, and
-    /// the layout, which saves a `pane layout` call between steps.
     #[test]
     fn parses_a_pane_focus_reply_with_its_layout() {
         let raw = r#"{"result":{"type":"pane_focus_direction","focus":{
@@ -1220,8 +662,6 @@ mod tests {
         assert!(r.result.focus.reason.is_none());
     }
 
-    /// At the edge of a tab herdr declines with exit 0 rather than failing, so
-    /// `reason` is the only way the walk learns it has run out of room.
     #[test]
     fn parses_a_declined_pane_focus_at_the_edge_of_a_tab() {
         let raw = r#"{"result":{"focus":{"changed":false,"reason":"no_neighbor",
@@ -1233,7 +673,6 @@ mod tests {
         assert_eq!(r.result.focus.reason.as_deref(), Some("no_neighbor"));
     }
 
-    /// Older herdr omits both, and the wrapper still has to parse the reply.
     #[test]
     fn a_layout_without_focus_or_zoom_still_parses() {
         let raw = r#"{"result":{"layout":{"workspace_id":"w0","tab_id":"w0:t1",
@@ -1262,8 +701,6 @@ mod tests {
         std::fs::read_to_string(path).unwrap()
     }
 
-    /// Every wire shape that `Herdr` parses has a JSON sample under
-    /// `tests/fixtures/herdr/`; each one parses into the model types.
     #[test]
     fn arc_19_herdr_parsing_contract() {
         let r: Envelope<PaneResult> = serde_json::from_str(&fixture("pane_get.json")).unwrap();
@@ -1321,11 +758,6 @@ mod tests {
         assert_eq!(r.result.root_pane.tab_id.as_deref(), Some("w7:t1"));
     }
 
-    /// A fake herdr for [`Herdr::pane_focus_walk`]: tab `w1:t1` holds `panes`
-    /// (id, x) side by side, `focus` is the focused pane, and `moves` maps
-    /// the origin of each `pane focus` call to the pane herdr then focuses.
-    /// An origin with no move is `no_neighbor`. Each focus call appends a
-    /// line to `calls`.
     #[cfg(unix)]
     fn walk_herdr(
         panes: &[(&str, i64)],

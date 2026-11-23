@@ -1,11 +1,3 @@
-//! The jobs table at work: the queue, the job process, the observation of
-//! each run, the bound on abandoned runs and `requeue`
-//! (docs/specs/fleetd/design.md, "Long work is a job. A pass never waits
-//! for it" and "The kinds of job"; docs/tickets/fleetd-p1/17-jobs.md).
-//!
-//! Each test uses a temp ledger. A job process is a small command (`true`,
-//! `sleep`) started through the launcher.
-
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -39,7 +31,6 @@ struct World {
     config: FleetConfig,
 }
 
-/// A temp ledger of the current schema with the default `fleet.toml`.
 fn world() -> World {
     let dir = tempfile::tempdir().unwrap();
     let mut conn = Connection::open(dir.path().join("ledger.sqlite3")).unwrap();
@@ -52,7 +43,6 @@ fn world() -> World {
 }
 
 impl World {
-    /// Run `f` in 1 committed transaction, as part 2 of a pass.
     fn tx<T>(&mut self, f: impl FnOnce(&JobCtx<'_>, &Transaction<'_>) -> T) -> T {
         let tx = self
             .conn
@@ -105,7 +95,6 @@ impl World {
             .collect()
     }
 
-    /// Part 3: start each due run as `program args`, at `clock`.
     fn start_due(&mut self, runner: &mut JobRunner<'_>, clock: i64, program: &str, args: &[&str]) {
         let spec = LaunchSpec {
             program: program.into(),
@@ -130,7 +119,6 @@ impl World {
         }
     }
 
-    /// Part 1: the process facts of the running runs.
     fn facts(&self) -> Vec<ProcessFact> {
         let items = jobs::processes(&self.conn).unwrap();
         let start = Instant::now();
@@ -143,7 +131,6 @@ impl World {
         scans::scan_processes(&items, &mut Cursor::new("pass"), &mut clock).facts
     }
 
-    /// Reap and scan until the process of the run `id` is gone.
     fn wait_gone(&self, runner: &mut JobRunner<'_>, id: i64) -> Vec<ProcessFact> {
         let until = Instant::now() + Duration::from_secs(10);
         loop {
@@ -164,8 +151,6 @@ impl World {
             .unwrap()
     }
 
-    /// 1 run of the due run `id` whose process is `true`: it ends with no
-    /// result, so a pass at `clock` finds it gone.
     fn lose_run(&mut self, runner: &mut JobRunner<'_>, id: i64, clock: i64) {
         self.start_due(runner, clock, "true", &[]);
         assert_eq!(self.row(id).state, State::Running);
@@ -174,19 +159,14 @@ impl World {
         assert_eq!(seen.ended, vec![(id, State::Abandoned)]);
     }
 
-    /// The queued run of `kind` and `subject`.
     fn active(&self, kind: Kind, subject: &str) -> Option<JobRow> {
         jobs_store::active(&self.conn, kind, subject).unwrap()
     }
 
-    /// A task with the check `check` and a worktree folder, held by a
-    /// worker of the Claude harness.
     fn task(&mut self, check: &str) -> String {
         self.task_of(check, Some("claude"))
     }
 
-    /// A task with the check `check` and a worktree folder, held by a
-    /// worker of `harness`, or by no worker.
     fn task_of(&mut self, check: &str, harness: Option<&str>) -> String {
         let n: i64 = self
             .conn
@@ -201,7 +181,6 @@ impl World {
             },
         )
         .unwrap();
-        // FR-12: a task needs an idea in flight of the feature of its run.
         horch_core::taskledger::schema::run_idea(
             &self.conn,
             &run.run_id,
@@ -240,13 +219,10 @@ impl World {
         task.task_id
     }
 
-    /// The job process of the run `id`: started as `true` through the
-    /// launcher, then `run_job` in this process with the recorded pid.
     fn run_job(&mut self, runner: &mut JobRunner<'_>, id: i64, clock: i64) -> State {
         self.run_job_in(runner, id, clock, &TestProfile)
     }
 
-    /// [`World::run_job`] with the sandbox profiles `profiles`.
     fn run_job_in(
         &mut self,
         runner: &mut JobRunner<'_>,
@@ -263,7 +239,7 @@ impl World {
         };
         let written = jobs::run_job(
             &ctx,
-            &mut self.conn,
+            &self.conn,
             id,
             me,
             &CheckRunner {
@@ -279,8 +255,6 @@ impl World {
     }
 }
 
-/// The sandbox profile of a test: each worker gets the plain shell in the
-/// worktree. Only a test uses it.
 struct TestProfile;
 
 impl SandboxProfiles for TestProfile {
@@ -314,7 +288,6 @@ fn pure_job_result_is_used_again_and_effect_job_runs_again() {
     let launcher = Launcher;
     let mut runner = JobRunner::new(&launcher);
 
-    // A pure run that passed is used again for its input key.
     let green = w.task("true");
     let id = new_id(w.queue(Kind::TaskCheck, &green, "tip1", 0));
     assert_eq!(w.run_job(&mut runner, id, 0), State::Passed);
@@ -324,7 +297,6 @@ fn pure_job_result_is_used_again_and_effect_job_runs_again() {
     assert_eq!(row.id, id);
     assert!(outcome(&row).unwrap().passed);
 
-    // A pure run that failed with a verdict is used again too.
     let red = w.task("false");
     let id = new_id(w.queue(Kind::TaskCheck, &red, "tip1", 0));
     assert_eq!(w.run_job(&mut runner, id, 0), State::Failed);
@@ -334,8 +306,6 @@ fn pure_job_result_is_used_again_and_effect_job_runs_again() {
         Queued::Reused(r) if r.id == id
     ));
 
-    // An effect run that passed is never used again: the next need is the
-    // next run of the same key.
     let id = new_id(w.queue(Kind::Push, "F-1", "tipA", 0));
     w.start_due(&mut runner, 0, "true", &[]);
     let facts = w.wait_gone(&mut runner, id);
@@ -346,8 +316,6 @@ fn pure_job_result_is_used_again_and_effect_job_runs_again() {
     assert_eq!(w.row(again).run, 2);
     assert_eq!(w.row(again).state, State::Queued);
 
-    // A kind with no executor yet fails with no verdict, and its next need
-    // is a new run.
     let id = new_id(w.queue(Kind::DocsSync, "claude", "1.0", 0));
     assert_eq!(w.run_job(&mut runner, id, 0), State::Failed);
     let o = outcome(&w.row(id)).unwrap();
@@ -401,7 +369,6 @@ fn job_abandoned_3_times_goes_on_the_needs_you_list_and_requeue_resets_it() {
         "requeue resolves the item"
     );
     assert_eq!(w.due(150), vec![fourth]);
-    // The count starts again: the next lost run waits 30 s, not 480 s.
     w.lose_run(&mut runner, fourth, 150);
     let fifth = w.active(Kind::Push, "F-1").unwrap();
     assert_eq!(fifth.abandoned_runs, 1);
@@ -418,7 +385,6 @@ fn running_job_with_a_lost_process_runs_again_after_restart() {
         w.start_due(&mut runner, 0, "sleep", &["60"]);
         let row = w.row(id);
         assert_eq!(row.state, State::Running);
-        // fleetd stops, and the job process is lost with it.
         let lost = Stop {
             job_id: id,
             pid: row.pid.unwrap(),
@@ -431,7 +397,6 @@ fn running_job_with_a_lost_process_runs_again_after_restart() {
     };
     assert_eq!(row.deadline, Some(FleetSeconds(600)));
 
-    // A new fleetd: a new connection and a new runner.
     let path = w.dir.path().join("ledger.sqlite3");
     w.conn = Connection::open(&path).unwrap();
     let facts = w.facts();
@@ -465,7 +430,6 @@ fn job_past_its_deadline_is_marked_to_stop_and_ends_abandoned() {
     let late = w.observe(&facts, 30);
     assert!(late.stops[0].kill, "past stop_grace_s the group is killed");
 
-    // Part 3 stops the group; the next pass finds the process gone.
     assert!(jobs::stop(&stop[0]));
     let facts = w.wait_gone(&mut runner, id);
     let seen = w.observe(&facts, 31);
@@ -486,7 +450,6 @@ fn second_queue_of_1_kind_and_subject_while_1_runs_adds_no_row() {
     w.start_due(&mut runner, 0, "sleep", &["60"]);
     assert!(matches!(w.queue(Kind::TaskCheck, "T-1", "tip2", 1), Queued::Active(r) if r.id == id));
     assert_eq!(w.rows(), 1);
-    // Another subject or another kind is another job.
     new_id(w.queue(Kind::TaskCheck, "T-2", "tip1", 1));
     new_id(w.queue(Kind::Fetch, "T-1", "tip1", 1));
     assert_eq!(w.rows(), 3);
@@ -530,9 +493,6 @@ fn new_input_key_starts_a_new_count() {
     assert_eq!(next.not_before, Some(FleetSeconds(120)));
 }
 
-/// Each job kind has a time limit, so no job runs without one: the fixed
-/// contracts of `task_check`, `fetch` and `push`, and the `job_limit_s` key
-/// of each other kind.
 #[test]
 fn each_job_kind_has_a_time_limit() {
     let config = FleetConfig::default();
@@ -552,7 +512,6 @@ fn each_job_kind_has_a_time_limit() {
     assert_eq!(limit(Kind::BundleBuild), 600);
     assert_eq!(limit(Kind::Rebase), 600);
 
-    // A test `fleet.toml` sets the limit of each Phase 4 kind.
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
         dir.path().join(config_file::FILE_NAME),
@@ -573,15 +532,11 @@ fn each_job_kind_has_a_time_limit() {
     assert_eq!(got, vec![11, 12, 13, 14, 15]);
 }
 
-/// `run_job` sends `bundle_build`, `fast_gate`, `full_gate`, `fetch`,
-/// `push`, `rebase` and `trial_merge` to the router of the integration
-/// context. A `trial_merge` whose input key is not 2 tips has no verdict.
 #[test]
 fn integration_kinds_route_to_the_integration_router() {
     let mut w = world();
     let launcher = Launcher;
     let mut runner = JobRunner::new(&launcher);
-    // The feature F-1: the push executor records its result on it.
     w.tx(|_, tx| {
         let new = NewFeature {
             id: "F-1",
@@ -618,10 +573,6 @@ fn integration_kinds_route_to_the_integration_router() {
     assert_eq!(got.text, "the input key \"tips\" is not 2 tips");
 }
 
-/// A check runs in the sandbox profile of the worker of its task, never
-/// with the rights of fleetd (SR-4). In Phase 1 only a Codex worker has a
-/// profile: the sandbox of its pane, as `finish` runs it (#181). A task
-/// with no worker, or with a worker with no profile, gets no check.
 #[cfg(unix)]
 #[test]
 fn check_runs_only_in_the_sandbox_profile_of_its_worker() {
@@ -629,7 +580,6 @@ fn check_runs_only_in_the_sandbox_profile_of_its_worker() {
     let mut w = world();
     let launcher = Launcher;
     let mut runner = JobRunner::new(&launcher);
-    // A stand-in for `codex`: it records its args and runs nothing.
     let args = w.dir.path().join("codex-args");
     let bin = w.dir.path().join("codex");
     let script = format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n", args.display());

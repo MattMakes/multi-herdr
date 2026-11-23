@@ -1,5 +1,4 @@
 #!/bin/zsh
-# Sends the standing note once to each running builder, and the task note once to each worker of a task that has one.
 cd /Users/MASCOTT/projects/mh/multi-herdr
 P=ai_docs/plans/fleetd-build
 horch ledger status --run fleetd-build 2>&1 | grep -E '^T-[0-9]+ +running ' | grep -v 'codex-reviewer' | awk '{print $1" "$4}' | while read tt rr; do

@@ -1,14 +1,3 @@
-//! The wiring of Phase 5 into the pass of fleetd: the operator token, the
-//! channel server, the request files, the outbox and wrapper files and the
-//! job result files (docs/tickets/fleetd-p5/41-pass-wiring-phase5.md).
-//!
-//! `docs/specs/fleetd/design.md`, Migration plan item 7, "The command
-//! channel" and "Workspace layout and file protocol"; RR-5, RR-8, SR-5,
-//! SR-6, FM-15, FM-23 and Q3 of `docs/tickets/fleetd-p5/MAP.md`.
-//!
-//! Each test uses a temp ledger at generation 1 and a temp fleet root, and
-//! runs the start and the passes as library calls with no herdr snapshot.
-//! The time of a budget comes from a test clock, never from the host.
 #![cfg(unix)]
 
 use std::collections::BTreeMap;
@@ -60,16 +49,12 @@ use horch_platform::channel::Stream;
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 
-// ─── the world ──────────────────────────────────────────────────────────
-
-/// A temp ledger at generation 1, a fleet root and 1 run.
 struct World {
     _temp: tempfile::TempDir,
     dir: PathBuf,
     conn: Connection,
     run: Run,
     config: FleetConfig,
-    /// The calls of the `task_cancel` handler.
     calls: Arc<AtomicUsize>,
 }
 
@@ -95,7 +80,6 @@ fn world() -> World {
         ..Default::default()
     };
     let run = runs::create(&conn, &dir, &new_run).unwrap();
-    // FR-12: a task needs an idea in flight of the feature of its run.
     horch_core::taskledger::schema::run_idea(
         &conn,
         &run.run_id,
@@ -129,8 +113,6 @@ impl World {
         }
     }
 
-    /// The program of each job process: it exits at once and writes no
-    /// result file. The test writes the result file.
     fn job_program(&self) -> PathBuf {
         let path = self.dir.join("job.sh");
         if !path.exists() {
@@ -140,7 +122,6 @@ impl World {
         path
     }
 
-    /// Handlers with 1 handler for `task_cancel` that counts its calls.
     fn handlers(&self) -> Handlers {
         let calls = Arc::clone(&self.calls);
         let mut handlers = Handlers::new();
@@ -169,7 +150,6 @@ impl World {
         self.conn.query_row(sql, [], |r| r.get(0)).unwrap()
     }
 
-    /// A worker of the run in state `working`, with the agent `agent`.
     fn worker(&self, agent: Option<Recorded>) -> String {
         let new = NewWorker {
             run_id: self.run.run_id.clone(),
@@ -192,8 +172,6 @@ impl World {
         id
     }
 
-    /// A task `name` bound to a worker with the agent `agent`: 1 live
-    /// attempt. Gives the task id and the attempt id.
     fn claimed_task(&self, name: &str, agent: Option<Recorded>) -> (String, String) {
         let ticket = format!("tickets/{name}.md");
         let mut new = NewTask::work(name, &ticket, "dev");
@@ -217,7 +195,6 @@ impl World {
         (task.task_id, attempt)
     }
 
-    /// The folder of attempt `attempt` (`<task id>/A<n>`) of task `task`.
     fn attempt_dir(&self, task: &str, attempt: &str) -> PathBuf {
         let a = attempt.rsplit_once('/').map_or(attempt, |(_, a)| a);
         self.root()
@@ -231,8 +208,6 @@ impl World {
         self.attempt_dir(task, attempt).join("outbox")
     }
 
-    /// The `request_id` `id` as a request file with `token`, written as the
-    /// client writes it while fleetd is down.
     fn put_request(&self, id: &str, token: &str) -> PathBuf {
         let dir = requests_dir(&self.root());
         make_dir(&dir);
@@ -244,7 +219,6 @@ impl World {
         path
     }
 
-    /// The state of the `requests` row of `id`.
     fn request_state(&self, id: &str) -> Option<String> {
         self.conn
             .query_row(
@@ -256,7 +230,6 @@ impl World {
     }
 }
 
-/// Make the folder `dir` and its parents with mode 0700.
 fn make_dir(dir: &Path) {
     fs::create_dir_all(dir).unwrap();
     let mut d = Some(dir);
@@ -307,7 +280,6 @@ fn new_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
-/// 1 progress line of `attempt` of `task`.
 fn progress_line(task: &str, attempt: &str, text: &str) -> String {
     ProgressLine {
         task: task.into(),
@@ -320,12 +292,10 @@ fn progress_line(task: &str, attempt: &str, text: &str) -> String {
     .unwrap()
 }
 
-/// The attempt part `A<n>` of an attempt id.
 fn short(attempt: &str) -> &str {
     attempt.rsplit_once('/').map_or(attempt, |(_, a)| a)
 }
 
-/// A process of the test that sleeps.
 struct Proc(Child);
 
 impl Proc {
@@ -349,8 +319,6 @@ impl Drop for Proc {
     }
 }
 
-/// The outside of the tests: no herdr snapshot, no health hold, no
-/// worktree folder.
 struct Fake;
 
 impl Outside for Fake {
@@ -379,10 +347,6 @@ fn run(pass: &mut Pass<'_>, w: &mut World) -> PassReport {
     pass.run(&mut w.conn).unwrap()
 }
 
-// ─── the start ──────────────────────────────────────────────────────────
-
-/// At its start fleetd makes the operator token (mode 0600), and its
-/// channel applies an operator request with that token.
 #[test]
 fn fleetd_start_makes_the_token_and_serves_the_channel() {
     let mut w = world();
@@ -422,8 +386,6 @@ fn fleetd_start_makes_the_token_and_serves_the_channel() {
     assert_eq!(w.request_state(&id).as_deref(), Some("applied"));
 }
 
-/// A request file that a `horch` command wrote while fleetd was down is
-/// applied at the start, 1 time, and archived.
 #[test]
 fn request_file_written_while_fleetd_is_down_is_applied_at_start() {
     let mut w = world();
@@ -447,8 +409,6 @@ fn request_file_written_while_fleetd_is_down_is_applied_at_start() {
     assert_eq!(w.calls(), 1, "a pass applies the request no second time");
 }
 
-/// A token file that fails its checks opens 1 needs-you item, and no
-/// operator request is applied until it is corrected.
 #[test]
 fn bad_token_file_opens_1_needs_you_item_and_refuses_operator_requests() {
     let mut w = world();
@@ -480,10 +440,6 @@ fn bad_token_file_opens_1_needs_you_item_and_refuses_operator_requests() {
     assert_eq!(w.count(&open), 0, "the item ends when the file is correct");
 }
 
-// ─── the files of the attempts ──────────────────────────────────────────
-
-/// The pass reads the outbox and the wrapper files of a live attempt and
-/// writes their rows: the progress line, the result and the heartbeat.
 #[test]
 fn pass_ingests_progress_result_and_heartbeat() {
     let mut w = world();
@@ -505,6 +461,7 @@ fn pass_ingests_progress_result_and_heartbeat() {
         acceptance_self_check: Vec::new(),
         notes_for_next: None,
         handoff: None,
+        unlanded: None,
     };
     write_mode(
         &outbox.join("result.json"),
@@ -516,6 +473,7 @@ fn pass_ingests_progress_result_and_heartbeat() {
         attempt: short(&attempt).into(),
         pid: None,
         pgid: None,
+        wrapper: None,
         mux_pane: None,
         proc_state: None,
         agent_state: None,
@@ -563,13 +521,6 @@ fn pass_ingests_progress_result_and_heartbeat() {
     );
 }
 
-/// At its first pass fleetd makes the outbox of each live attempt that has
-/// none, with mode 0700, so an old worker writes files from then (Q3).
-/// RR-11 in exec mode: the wrapper ends a push attempt at a usage limit
-/// and writes `exit.json` with the outcome hint `quota`. The agent exited
-/// before fleetd recorded its wrapper. The pass ends the attempt by rung 5
-/// at once, with `quota`, which burns no attempt, and not with `no_result`
-/// or `launch_failed`.
 #[test]
 fn exit_with_the_quota_hint_ends_the_attempt_with_quota() {
     let mut w = world();
@@ -634,10 +585,6 @@ fn first_pass_makes_the_outbox_of_each_live_attempt() {
     assert_eq!(meta.permissions().mode() & 0o777, 0o700);
 }
 
-// ─── the job result files ───────────────────────────────────────────────
-
-/// A job process writes its result file and exits; the next pass ends the
-/// run from the file, not as abandoned, and archives the file.
 #[test]
 fn pass_ends_a_job_from_its_result_file() {
     let mut w = world();
@@ -685,19 +632,11 @@ fn pass_ends_a_job_from_its_result_file() {
         .exists());
 }
 
-// ─── the scan budget ────────────────────────────────────────────────────
-
-/// With 10000 live attempts that each have a progress line, 1 pass reads
-/// only the outboxes of its scan budget, and still writes its heartbeat
-/// well inside the hang limit. The next pass continues at the cursor.
 #[test]
 fn heartbeat_stays_under_its_limit_with_10000_outboxes() {
     const N: usize = 10_000;
     let mut w = world();
-    // A clock that moves 10 ms at each reading: a scan of 100 ms reads
-    // about 10 outboxes.
     w.config.scan_budget_ms = 100;
-    // 1 live agent for each attempt, so that no attempt ends.
     let agent = Proc::sleep();
     let worker = w.worker(Some(agent.recorded()));
     let tx = w.conn.transaction().unwrap();

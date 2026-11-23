@@ -1,15 +1,3 @@
-//! `horch rescue drop <ref>`: the operator deletes a rescue ref
-//! (`docs/specs/fleetd/design.md`, "No work is lost", I10, FM-40; ticket 43
-//! of `docs/tickets/fleetd-p4/`).
-//!
-//! The command shows the ref, its class, its size and its files. It sends 1
-//! `rescue_drop` request, and fleetd commits 1 event (RR-5, T-885). Then
-//! the command deletes the ref with `git update-ref -d <ref> <tip>` and
-//! reads it back. A drop that dies after the commit is completed by the next
-//! drop, with no second event. A caller that is a ledger worker and not the
-//! orchestrator is refused on the client side. fleetd needs the operator
-//! token, which a worker sandbox cannot read (SR-8).
-
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::process::ExitCode;
@@ -43,7 +31,6 @@ pub enum RescueCommand {
     },
 }
 
-/// `horch rescue`.
 pub fn run(ctx: &RuntimeContext, command: RescueCommand) -> Result<ExitCode> {
     match command {
         RescueCommand::Drop { rescue_ref } => {
@@ -54,8 +41,6 @@ pub fn run(ctx: &RuntimeContext, command: RescueCommand) -> Result<ExitCode> {
     }
 }
 
-/// Drop the rescue ref `name` of the repository `repo`, and give the last
-/// line.
 fn drop_ref(ctx: &RuntimeContext, repo: &Path, name: &str) -> Result<String> {
     let store = taskledger::open_existing_read_only(ctx)?
         .context("the task ledger does not exist. fleetd creates it at its start")?;
@@ -104,10 +89,6 @@ fn drop_ref(ctx: &RuntimeContext, repo: &Path, name: &str) -> Result<String> {
     ))
 }
 
-/// Refuse a caller that is a ledger worker and not the orchestrator. The
-/// caller is found as `horch ledger waive` finds it: its worker id, else the
-/// worker of the active run in its pane, so a worker that unsets
-/// `HORCH_WORKER_ID` is still known.
 fn refuse_worker(ctx: &RuntimeContext, store: &Store) -> Result<()> {
     let pane = ctx.herdr.pane.as_ref().map(|p| p.as_str().to_string());
     let caller = worker_id_opt(ctx).or_else(|| {
@@ -126,7 +107,6 @@ fn refuse_worker(ctx: &RuntimeContext, store: &Store) -> Result<()> {
     Ok(())
 }
 
-/// The files of the commits that `tip` reaches and no branch reaches.
 fn files_of(git: &CliWorktreeGit, repo: &Path, tip: &str) -> Result<Vec<String>> {
     let out = git.git(
         repo,
@@ -146,14 +126,16 @@ fn files_of(git: &CliWorktreeGit, repo: &Path, tip: &str) -> Result<Vec<String>>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use horch_core::fleetd::fleet_runtime::adapters::channel_server::ChannelServer;
+    use horch_core::fleetd::fleet_runtime::adapters::token_file;
+    use horch_core::fleetd::fleet_runtime::application::requests::Handlers;
+    use horch_core::fleetd::fleet_runtime::domain::ledger::Generation;
     use horch_core::runtime::MapEnv;
     use horch_core::taskledger::runs::{self, NewRun};
     use horch_core::taskledger::workers::NewWorker;
     use std::path::PathBuf;
     use std::process::Command;
 
-    /// A temp project with 1 commit on `main`, its ledger with 1 active run,
-    /// and the state folders. No path is the live ledger or state.
     struct World {
         dir: tempfile::TempDir,
         project: PathBuf,
@@ -219,9 +201,25 @@ mod tests {
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
+    fn serve_rescue_drop(w: &World) -> ChannelServer {
+        let ctx = w.ctx(&[]);
+        let conn = rusqlite::Connection::open(&ctx.paths.ledger_db).unwrap();
+        let pid = std::process::id();
+        let start = horch_platform::process::start_time(pid).unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO fleetd (id, generation, pid, pid_start, started_at, fleet_clock_s, clock_ticked_at)
+             VALUES (1, 1, ?1, ?2, ?3, 0, ?3)",
+            rusqlite::params![pid, start as i64, horch_core::taskledger::util::now()],
+        )
+        .unwrap();
+        std::fs::create_dir_all(&ctx.paths.fleet_root).unwrap();
+        token_file::ensure(&ctx.paths.fleet_root).unwrap();
+        let mut handlers = Handlers::new();
+        handlers.insert(Kind::RescueDrop, |_tx, _payload| Ok(json!({})));
+        ChannelServer::start(&ctx.paths.fleet_root, conn, Generation(1), handlers).unwrap()
+    }
+
     impl World {
-        /// A context in the project, with the temp ledger and state, and
-        /// the environment `extra`.
         fn ctx(&self, extra: &[(&str, &str)]) -> RuntimeContext {
             let s = |p: PathBuf| p.to_string_lossy().into_owned();
             let root = self.dir.path();
@@ -236,7 +234,6 @@ mod tests {
             RuntimeContext::from_env(&env).unwrap()
         }
 
-        /// Add a worker row of `kind` in `pane` to the run, and give its id.
         fn worker(&self, kind: WorkerKind, pane: &str) -> String {
             let mut store = taskledger::open(&self.ctx(&[])).unwrap();
             store
@@ -255,8 +252,6 @@ mod tests {
                 .unwrap()
         }
 
-        /// Commit `file` on a side branch, write a rescue ref of that tip as
-        /// fleetd does, and delete the branch: only the ref holds the work.
         fn unique_ref(&self, file: &str) -> (String, String) {
             git(&self.project, &["checkout", "-q", "-b", "side"]);
             std::fs::write(self.project.join(file), "x\n").unwrap();
@@ -286,6 +281,7 @@ mod tests {
     #[test]
     fn drop_deletes_the_ref_and_verifies_it() {
         let w = world();
+        let _fleetd = serve_rescue_drop(&w);
         let (name, tip) = w.unique_ref("b.txt");
         let line = drop_ref(&w.ctx(&[]), &w.project, &name).unwrap();
         assert_eq!(
@@ -293,7 +289,6 @@ mod tests {
             format!("dropped {name} at {tip}; it reads back no tip")
         );
         assert_eq!(w.tip(&name), None);
-        // A second drop finds no ref and changes nothing.
         let err = drop_ref(&w.ctx(&[]), &w.project, &name).unwrap_err();
         assert!(format!("{err:#}").contains("does not exist"), "{err:#}");
     }
@@ -310,19 +305,17 @@ mod tests {
     #[test]
     fn worker_caller_is_refused() {
         let w = world();
+        let _fleetd = serve_rescue_drop(&w);
         let (name, tip) = w.unique_ref("b.txt");
         let worker = w.worker(WorkerKind::Worker, "p_7");
-        // By HORCH_WORKER_ID.
         let ctx = w.ctx(&[("HORCH_WORKER_ID", &worker)]);
         let err = drop_ref(&ctx, &w.project, &name).unwrap_err();
         assert!(format!("{err:#}").contains("only the operator"), "{err:#}");
-        // By its pane, with no HORCH_WORKER_ID.
         let ctx = w.ctx(&[("HERDR_PANE_ID", "p_7")]);
         let err = drop_ref(&ctx, &w.project, &name).unwrap_err();
         assert!(format!("{err:#}").contains("only the operator"), "{err:#}");
         assert_eq!(w.tip(&name), Some(tip));
 
-        // The orchestrator, and a caller that is no worker, can drop.
         let orchestrator = w.worker(WorkerKind::Orchestrator, "p_1");
         let ctx = w.ctx(&[("HORCH_WORKER_ID", &orchestrator)]);
         assert!(refuse_worker(&ctx, &taskledger::open(&ctx).unwrap()).is_ok());

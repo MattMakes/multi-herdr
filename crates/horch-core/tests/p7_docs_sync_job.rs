@@ -1,13 +1,3 @@
-//! The `docs_sync` job (fleetd-p7 ticket 22): steps 1 and 2 of 1 sync as a
-//! job with no repository. The version command starts through the launcher
-//! (SR-7), and its text names the version folder under
-//! `<fleet root>/docs/<cli>/`.
-//!
-//! The docs runner is a fake of the port: no test uses the network. The
-//! version command is a script in a temp folder, not a real agent CLI. The
-//! job process is `true`, started through the launcher, and the executor
-//! runs in the test process with the recorded pid, as `horch job run <id>`
-//! runs it.
 #![cfg(unix)]
 
 use std::cell::RefCell;
@@ -33,12 +23,8 @@ use horch_core::taskledger::workers::Worker;
 use horch_platform::start::FORBIDDEN_ENV;
 use rusqlite::{Connection, TransactionBehavior};
 
-/// The text that the fake version command prints.
 const VERSION: &str = "1.2.3 (Fake CLI)";
 
-/// A fake docs runner: the version command is a script that prints
-/// [`VERSION`] and writes its environment to `env.txt`; a sync writes 1 page
-/// and CHANGES.md, or reports the pages of `fail` as failed.
 struct FakeDocs {
     bin: PathBuf,
     fail: Vec<&'static str>,
@@ -101,7 +87,6 @@ impl DocsSyncRunner for FakeDocs {
     }
 }
 
-/// No worker of these tests has a sandbox profile.
 struct NoProfiles;
 
 impl SandboxProfiles for NoProfiles {
@@ -128,19 +113,16 @@ fn world() -> World {
 }
 
 impl World {
-    /// The fleet root of the ledger: the folder `fleet` beside it, as the
-    /// ledger names its folder (symlinks resolved).
     fn root(&self) -> PathBuf {
-        self.dir.path().canonicalize().unwrap().join("fleet")
+        horch_platform::path::canonicalize(self.dir.path())
+            .unwrap()
+            .join("fleet")
     }
 
     fn row(&self, id: i64) -> JobRow {
         jobs_store::get(&self.conn, id).unwrap().unwrap()
     }
 
-    /// Queue a `docs_sync` run of `subject` with no repository, start its
-    /// job process through the launcher, run the executor with `docs`, and
-    /// end the run from its result file.
     fn run_docs_sync(&mut self, subject: &str, docs: &FakeDocs) -> JobRow {
         let ctx = JobCtx {
             guard: None,
@@ -184,7 +166,7 @@ impl World {
             docs: Some(docs),
             conformance: None,
         };
-        jobs::run_job_with(&ctx, &mut self.conn, id, pid, &runners)
+        jobs::run_job_with(&ctx, &self.conn, id, pid, &runners)
             .unwrap()
             .expect("the job process runs its row");
         jobs::end_from_files(&ctx, &mut self.conn).unwrap();
@@ -206,7 +188,6 @@ fn docs_sync_job_with_no_repository_is_a_valid_row() {
     let data = result_data(&row).expect("the run records its facts");
     assert_eq!(data["cli"], "fake");
     assert!(data["failed"].as_array().unwrap().is_empty());
-    // The pages go into the fleet root, not into a repository.
     let synced = docs.synced.borrow();
     assert_eq!(synced.len(), 1);
     assert_eq!(synced[0].2, w.root().join("docs"));

@@ -1,18 +1,9 @@
-//! The fleetd handlers of the last direct writers of the CLI (T-885):
-//! `worker_progress`, `worker_done`, `run_adopt`, `question_answer`, the
-//! `rescue_drop` handler of a ref that git confirms, and the dry run of
-//! `ledger_import`.
-//!
-//! Each test sends requests through `requests::handle` to a temp ledger at
-//! generation 1. Each handler writes the rows that its command wrote before,
-//! and refuses a payload that is not valid, with no row.
-
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use horch_core::fleetd::fleet_runtime::adapters::request_wire::{Outcome, Request};
-use horch_core::fleetd::fleet_runtime::application::handlers_cli::{self, CliHandlers};
+use horch_core::fleetd::fleet_runtime::application::handlers_cli;
 use horch_core::fleetd::fleet_runtime::application::handlers_custody::{self, Custody};
 use horch_core::fleetd::fleet_runtime::application::handlers_run;
 use horch_core::fleetd::fleet_runtime::application::requests::{handle, Handlers};
@@ -27,11 +18,9 @@ use horch_core::taskledger::{util, Store};
 use rusqlite::Connection;
 use serde_json::{json, Value};
 
-/// The 1 ref that git has in the tests of `rescue_drop`.
 const RESCUE_REF: &str = "refs/horch/rescue/branch/side/1";
 const TIP: &str = "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1";
 
-/// git has [`RESCUE_REF`] at [`TIP`] and no other ref.
 struct OneRef;
 
 impl RefTips for OneRef {
@@ -52,7 +41,7 @@ struct World {
 
 fn world() -> World {
     let tmp = tempfile::tempdir().unwrap();
-    let top = tmp.path().canonicalize().unwrap();
+    let top = horch_platform::path::canonicalize(tmp.path()).unwrap();
     let root = top.join("repo");
     let state = top.join("state");
     std::fs::create_dir_all(&root).unwrap();
@@ -80,12 +69,7 @@ fn world() -> World {
         .unwrap();
     let mut handlers = Handlers::new();
     handlers_run::register(&mut handlers);
-    handlers_cli::register(
-        &mut handlers,
-        CliHandlers {
-            state_root: state.clone(),
-        },
-    );
+    handlers_cli::register(&mut handlers);
     handlers_custody::register(
         &mut handlers,
         Arc::new(Custody {
@@ -160,7 +144,6 @@ impl World {
         self.conn.query_row(sql, [], |r| r.get(0)).unwrap()
     }
 
-    /// A new worker of the run with no task; gives its id.
     fn worker(&mut self) -> String {
         let run_id = self.run.run_id.clone();
         self.store
@@ -245,7 +228,6 @@ fn worker_done_ends_a_taskless_row_once() {
         .as_deref(),
         Some("done")
     );
-    // A retry finds the row ended and changes nothing.
     let r = w.applied(Kind::WorkerDone, json!({ "worker_id": id }));
     assert_eq!(r["ended"], json!(false));
     let why = w.refused(Kind::WorkerDone, json!({ "worker_id": "w-none" }));
@@ -284,13 +266,14 @@ fn run_adopt_gives_a_run_with_no_workspace_the_workspace_once() {
 }
 
 #[test]
-fn question_answer_checks_its_payload_and_answers_no_row_of_an_unknown_mail() {
+fn question_answer_checks_its_payload_and_refuses_a_mail_with_no_row() {
     let mut w = world();
-    std::fs::create_dir_all(&w.state).unwrap();
     let answer = |ws: &str, mail: &str, text: &str| json!({ "workspace": ws, "mail_id": mail, "text": text });
-    let r = w.applied(Kind::QuestionAnswer, answer("w1", "m-1", "use SQLite"));
-    assert_eq!(r["question_id"], Value::Null);
     for (payload, why) in [
+        (
+            answer("w1", "m-1", "use SQLite"),
+            "no question row waits for an answer to mail m-1",
+        ),
         (answer("../w1", "m-1", "x"), "is not valid"),
         (answer("w1", "../m", "x"), "is not valid"),
         (answer("w1", "m-1", ""), "is empty"),
@@ -315,7 +298,6 @@ fn rescue_drop_records_1_event_for_a_ref_that_git_confirms() {
     let facts = format!("SELECT count(*) FROM events WHERE entity_id = '{RESCUE_REF}'");
     let n = w.count(&facts);
     assert_eq!(n, 1);
-    // A second drop of the same ref at the same tip records nothing.
     let r = w.applied(Kind::RescueDrop, payload.clone());
     assert_eq!(r["recorded"], json!(false));
     assert_eq!(w.count(&facts), n);

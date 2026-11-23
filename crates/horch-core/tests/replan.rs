@@ -1,17 +1,3 @@
-//! The replan of a failed task: the sub-orchestrator of the feature
-//! replaces the task or sends it back 1 time, else it is escalated
-//! (docs/specs/fleetd/design.md, "The task state machine", `failed`;
-//! RR-6, FM-21; docs/tickets/fleetd-p6/31-replan.md).
-//!
-//! The sub-orchestrator writes `replan-<task key>.yaml` in the idea folder:
-//! `replace:` with new task entries, or `retry: <reason>`. fleetd checks a
-//! replace with the plan validator, then cancels the old task and adds the
-//! new tasks in 1 transaction.
-//!
-//! Each test makes its own temporary ledger and idea folder, and gives the
-//! fleet clock through the `fleetd` row. No test reads the clock, the load
-//! or the limits of the machine, and no test starts a process.
-
 #![cfg(unix)]
 
 use std::os::unix::fs::PermissionsExt;
@@ -43,9 +29,7 @@ use rusqlite::Connection;
 use serde_json::Value;
 
 const IDEA: &str = "I-0007";
-/// The feature of the run of the test: `F-<run rowid>` (MAP.md, Q5).
 const FEATURE: &str = "F-0001";
-/// The fleet clock when the test starts.
 const START: i64 = 1000;
 
 const ASSUMPTIONS: &str = "# Assumptions of I-0007
@@ -65,7 +49,6 @@ requirements:
     cites: [A2]
 ";
 
-/// `a`, `b` after `a`, the judgment task `doc` and its judge `doc-judge`.
 const PLAN: &str = "idea: I-0007
 repo: /fleet/repos/app
 feature: F-0001
@@ -102,7 +85,6 @@ tasks:
     outputs: [docs/sync.review.md]
 ";
 
-/// The replan of `a`: a new `a`, and `a-log` after it.
 const REPLACE_A: &str = "replace:
   - key: a
     title: Add backoff, in 2 steps
@@ -120,8 +102,6 @@ const REPLACE_A: &str = "replace:
     acceptance:
       - run: cargo test -p log
 ";
-
-// ─── the world of a test ────────────────────────────────────────────────
 
 struct World {
     dir: tempfile::TempDir,
@@ -149,8 +129,6 @@ fn profile(name: &str, provider: &str, model: &str, fallback: &str) -> RosterPro
     }
 }
 
-/// A ledger at fleet clock [`START`] with 1 run, its feature, and the idea
-/// [`IDEA`] with the committed plan [`PLAN`].
 fn world() -> World {
     let dir = tempfile::tempdir().unwrap();
     let mut store = Store::open(&dir.path().join("ledger.sqlite3")).unwrap();
@@ -244,7 +222,6 @@ impl World {
         self.ideas().join(IDEA)
     }
 
-    /// Write the file `name` of the idea folder, mode 0600.
     fn write(&self, name: &str, text: &str) {
         let path = self.folder().join(name);
         std::fs::write(&path, text).unwrap();
@@ -271,7 +248,6 @@ impl World {
             .unwrap();
     }
 
-    /// The use case at fleet clock `clock`, for the live task of `key`.
     fn replan(&mut self, key: &str, clock: i64) -> anyhow::Result<Replanned> {
         let id = self.live(key).id;
         let ideas = self.ideas();
@@ -294,7 +270,6 @@ impl World {
         replan_task(&mut self.store, &ctx, &id, FleetSeconds(clock))
     }
 
-    /// The task of `key` that is not `cancelled`.
     fn live(&self, key: &str) -> TaskRow {
         let rows = self.tasks(key);
         let live: Vec<TaskRow> = rows
@@ -305,7 +280,6 @@ impl World {
         live.into_iter().next().unwrap()
     }
 
-    /// Each task of `key`, oldest first.
     fn tasks(&self, key: &str) -> Vec<TaskRow> {
         let sql = "SELECT task_id, status, attempts, attempt_floor, replans, primary_persona
              FROM tasks WHERE idea_id = ?1 AND json_extract(spec_json, '$.key') = ?2
@@ -325,7 +299,6 @@ impl World {
         rows.collect::<rusqlite::Result<_>>().unwrap()
     }
 
-    /// The ids of the tasks that block task `id`.
     fn blockers(&self, id: &str) -> Vec<String> {
         let mut stmt = self
             .conn()
@@ -339,7 +312,6 @@ impl World {
         self.conn().query_row(sql, [], |r| r.get(0)).unwrap()
     }
 
-    /// The open needs-you items of task `id`.
     fn needs_you_of(&self, id: &str) -> i64 {
         self.conn()
             .query_row(
@@ -350,8 +322,6 @@ impl World {
             .unwrap()
     }
 
-    /// Each attempt of the live task of `key` ends `crashed` until rung 6
-    /// moves it out of `ready`: to `failed` or to `escalated`.
     fn fail(&mut self, key: &str) -> Requeue {
         loop {
             let id = self.live(key).id;
@@ -384,13 +354,10 @@ impl World {
 struct TaskRow {
     id: String,
     status: String,
-    /// The attempts since the last requeue.
     used: i64,
     replans: i64,
     profile: Option<String>,
 }
-
-// ─── the tests ──────────────────────────────────────────────────────────
 
 #[test]
 fn failed_task_is_replaced_in_1_transaction() {
@@ -401,8 +368,6 @@ fn failed_task_is_replaced_in_1_transaction() {
     assert_eq!(w.blockers(&b.id), vec![old.id.clone()]);
     w.write(&replan_file("a"), REPLACE_A);
 
-    // The fault seam: the insert of the 2nd new task fails. Nothing of the
-    // replan is in the ledger.
     w.conn()
         .execute_batch(
             "CREATE TEMP TRIGGER fault_on_2nd_new_task BEFORE INSERT ON main.tasks
@@ -421,7 +386,6 @@ fn failed_task_is_replaced_in_1_transaction() {
     assert_eq!(still.replans, 0);
     assert_eq!(w.blockers(&b.id), vec![old.id.clone()]);
 
-    // Without the fault, the replan commits as 1 unit.
     w.conn()
         .execute_batch("DROP TRIGGER temp.fault_on_2nd_new_task")
         .unwrap();
@@ -431,14 +395,12 @@ fn failed_task_is_replaced_in_1_transaction() {
     let keys: Vec<&str> = tasks.iter().map(|(k, _)| k.as_str()).collect();
     assert_eq!(keys, ["a", "a-log"]);
 
-    // The old task follows A cancel and counts the replan.
     let all_a = w.tasks("a");
     assert_eq!(all_a.len(), 2);
     assert_eq!(
         (all_a[0].status.as_str(), all_a[0].replans),
         ("cancelled", 1)
     );
-    // The new task replaces it: its own profile, and its 1 replan is used.
     let new_a = w.live("a");
     assert_eq!(new_a.status, "ready");
     assert_eq!(new_a.profile.as_deref(), Some("coder-codex"));
@@ -446,9 +408,7 @@ fn failed_task_is_replaced_in_1_transaction() {
     let log = w.live("a-log");
     assert_eq!((log.status.as_str(), log.replans), ("pending", 1));
     assert_eq!(w.blockers(&log.id), vec![new_a.id.clone()]);
-    // `b` waited on the old `a`; it now waits on the new `a`.
     assert_eq!(w.blockers(&b.id), vec![new_a.id.clone()]);
-    // Each new task covers its requirements.
     let covers = w.count(&format!(
         "SELECT count(*) FROM task_covers WHERE task_id IN ('{}', '{}') AND req_id = 'R1'",
         new_a.id, log.id
@@ -482,8 +442,6 @@ fn second_failure_after_a_replan_escalates() {
     w.write(&replan_file("a"), "retry: the ticket of a is fixed\n");
     assert_eq!(w.replan("a", START + 10).unwrap(), Replanned::Retried);
 
-    // The task fails again after its 1 replan: escalated, with 1 needs-you
-    // item, and no second replan.
     assert_eq!(w.fail("a"), Requeue::Escalated);
     let t = w.live("a");
     assert_eq!((t.status.as_str(), t.replans), ("escalated", 1));
@@ -491,8 +449,6 @@ fn second_failure_after_a_replan_escalates() {
     let err = w.replan("a", START + 20).unwrap_err();
     assert!(format!("{err:#}").contains("not failed"), "{err:#}");
 
-    // A task that a replace added fails: its replan is used, so it is
-    // escalated too. A chain of replans is bounded.
     let mut w = world();
     assert_eq!(w.fail("a"), Requeue::Failed);
     w.write(&replan_file("a"), REPLACE_A);
@@ -513,7 +469,6 @@ fn failed_task_past_replan_limit_escalates() {
     let limit = i64::try_from(w.config.replan_limit_s).unwrap();
     let id = w.live("a").id;
 
-    // Within the limit, with no replan file, the task waits for it.
     w.set_clock(START + limit - 1);
     assert_eq!(
         w.replan("a", START + limit - 1).unwrap(),
@@ -521,8 +476,6 @@ fn failed_task_past_replan_limit_escalates() {
     );
     assert_eq!(w.live("a").status, "failed");
 
-    // At the limit the replan file comes too late: the task is escalated
-    // with 1 needs-you item, and the file is not applied.
     w.write(&replan_file("a"), "retry: too late\n");
     w.set_clock(START + limit);
     assert_eq!(w.replan("a", START + limit).unwrap(), Replanned::Escalated);
@@ -540,7 +493,6 @@ fn replan_that_leaves_a_judgment_task_without_judge_is_refused_here_too() {
     let mut w = world();
     assert_eq!(w.fail("doc-judge"), Requeue::Failed);
     let judge = w.live("doc-judge");
-    // The replan replaces the judge task with a task that judges nothing.
     w.write(
         &replan_file("doc-judge"),
         "replace:
@@ -563,7 +515,6 @@ fn replan_that_leaves_a_judgment_task_without_judge_is_refused_here_too() {
             .any(|p| p.rule == "judges" && p.task.as_deref() == Some("doc")),
         "{problems:?}"
     );
-    // Nothing changed in the ledger; the verdict names the problem.
     let t = w.live("doc-judge");
     assert_eq!(
         (t.id.as_str(), t.status.as_str()),

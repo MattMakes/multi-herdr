@@ -1,29 +1,7 @@
-//! The note files of horch idea note: `ideas/I-NNNN/notes/<n>.json`, the
-//! writer of the sub-orchestrator and the reader of fleetd.
-//!
-//! `docs/specs/fleetd/design.md`, "Ideas" (The interview; How a worker's
-//! question is resolved, step 4), "Workspace layout and file protocol"
-//! (protocol rules 1, 5 and 7), A35. Requirements: FM-31, RR-12, SR-6.
-//!
-//! - A note is an immutable message of class worker. It never uses the
-//!   command channel or the request folder, and the writer writes no ledger
-//!   row.
-//! - The writer finds its own attempt by the parent chain of its process
-//!   ([`own_attempt`]), and refuses a caller that is not the live
-//!   sub-orchestrator attempt of the idea: [`NOT_THE_SUB_ORCHESTRATOR`].
-//! - `notes/` is made with mode 0700 when it is missing. Each note is
-//!   written 1 time with mode 0600: a temp file, fsync, then a hard link to
-//!   the next free number.
-//! - The reader reads each note with the protected file reader (SR-6), with
-//!   the idea folder as its root, so a link in the place of `notes/` or of a
-//!   note is refused. The idea of the payload must be the idea of the path.
-//!
-//! Windows gap: the platform gives no parent PID and no mode on Windows, so
-//! the writer is refused there and the reader rejects each note.
-
 use std::fs::DirBuilder;
 use std::io::{self, ErrorKind};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use anyhow::{bail, Context, Result};
 use horch_platform::channel::User;
@@ -33,67 +11,55 @@ use serde::{Deserialize, Serialize};
 use crate::fleetd::fleet_runtime::adapters::peer_process::ProcessFacts;
 use crate::fleetd::fleet_runtime::adapters::protected_files::{read_protected, Rule};
 use crate::fleetd::ideas::domain::idea_folder::{check_idea_id, is_idea_id, FILE_LIMIT};
-use crate::fleetd::task_execution::adapters::outbox_writer::{own_attempt, LiveAttempt};
+use crate::fleetd::task_execution::adapters::outbox_writer::{
+    own_attempt, starting, LiveAttempt, ATTEMPT_POLL, ATTEMPT_WAIT,
+};
 use crate::fleetd::task_execution::adapters::result_reader::AttemptRef;
 use crate::fleetd::task_execution::adapters::sqlite as attempts_store;
 use crate::fsx::{self, Created, FsxError};
 
-/// The folder of the notes in an idea folder.
 pub const NOTES: &str = "notes";
 
-/// The refusal of a process that is not the sub-orchestrator of the idea.
 pub const NOT_THE_SUB_ORCHESTRATOR: &str = "this process is not the sub-orchestrator attempt of";
 
-/// The mode of `notes/` and of each note.
 const DIR_MODE: u32 = 0o700;
 const FILE_MODE: u32 = 0o600;
 
-/// The most note numbers that 1 write tries after the highest one it saw,
-/// when other writers take them first.
 const NUMBER_TRIES: u32 = 64;
 
-/// How the sub-orchestrator handles the answer to a worker question
-/// (design, "How a worker's question is resolved", step 4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AnswerCase {
-    /// The approved assumptions or the spec cover it; the note cites the
-    /// line.
     Covered,
-    /// The answer changes an approved assumption: it goes to the operator.
     Revise,
-    /// The question shows a flaw in the plan: the task is replanned.
     Replan,
-    /// Nothing approved covers it: a new assumption, marked as an own
-    /// decision.
     OwnDecision,
 }
 
-/// What 1 note records.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NoteBody {
-    /// 1 question of the interview and the answer of the operator. fleetd
-    /// appends it to interview.md as `Q<n>`.
-    Interview { question: String, answer: String },
-    /// The answer to the worker question `question`.
+    Interview {
+        question: String,
+        answer: String,
+    },
+    Ask {
+        question: String,
+    },
     Answer {
         question: String,
         case: AnswerCase,
-        /// `<file>:<line>`: only with [`AnswerCase::Covered`], and required
-        /// there.
         cite: Option<String>,
         text: String,
     },
-    /// The sub-orchestrator dismisses the judge finding `finding`.
-    Dismiss { finding: String, reason: String },
+    Dismiss {
+        finding: String,
+        reason: String,
+    },
 }
 
-/// 1 valid note of an idea folder.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Note {
-    /// The idea of the folder.
     pub idea: String,
-    /// The id of the `attempts` row of the sub-orchestrator that wrote it.
     pub attempt: String,
     pub body: NoteBody,
 }
@@ -102,13 +68,11 @@ pub struct Note {
 #[serde(rename_all = "snake_case")]
 enum Kind {
     Interview,
+    Ask,
     Answer,
     Dismiss,
 }
 
-/// The JSON form of a note. `question` is the interview question of an
-/// `interview` note and the question id of an `answer` note; `text` is the
-/// answer, or the reason of a `dismiss` note.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct NoteFile {
@@ -143,6 +107,10 @@ impl From<&Note> for NoteFile {
                 file.question = Some(question.clone());
                 file.text = answer.clone();
             }
+            NoteBody::Ask { question } => {
+                file.kind = Kind::Ask;
+                file.text = question.clone();
+            }
             NoteBody::Answer {
                 question,
                 case,
@@ -174,6 +142,7 @@ impl TryFrom<NoteFile> for Note {
                 question,
                 answer: f.text,
             },
+            (Kind::Ask, None, None, None, None) => NoteBody::Ask { question: f.text },
             (Kind::Answer, Some(question), Some(case), cite, None) => NoteBody::Answer {
                 question,
                 case,
@@ -204,12 +173,12 @@ impl TryFrom<NoteFile> for Note {
 fn kind_name(kind: Kind) -> &'static str {
     match kind {
         Kind::Interview => "interview",
+        Kind::Ask => "ask",
         Kind::Answer => "answer",
         Kind::Dismiss => "dismiss",
     }
 }
 
-/// The rules of a note that the JSON form does not hold.
 fn check(note: &Note) -> Result<(), String> {
     if !is_idea_id(&note.idea) {
         return Err(format!("`{}` is not an idea id I-NNNN", note.idea));
@@ -226,6 +195,10 @@ fn check(note: &Note) -> Result<(), String> {
         NoteBody::Interview { question, answer } => {
             filled("the question", question)?;
             filled("the answer", answer)
+        }
+        NoteBody::Ask { question } => {
+            filled("the question", question)?;
+            check_ask(question)
         }
         NoteBody::Answer {
             question,
@@ -249,7 +222,34 @@ fn check(note: &Note) -> Result<(), String> {
     }
 }
 
-/// The writer of the notes of the sub-orchestrator of 1 idea.
+pub const ASK_LIMIT: usize = 1000;
+
+fn check_ask(question: &str) -> Result<(), String> {
+    if question.chars().any(char::is_control) {
+        return Err("the question has a line break or a control character".into());
+    }
+    if let Some(c) = question.chars().find(|&c| is_separator_or_bidi(c)) {
+        return Err(format!(
+            "the question has a line separator or a bidi character (U+{:04X})",
+            c as u32
+        ));
+    }
+    if question.chars().count() > ASK_LIMIT {
+        return Err(format!(
+            "the question is longer than {ASK_LIMIT} characters"
+        ));
+    }
+    Ok(())
+}
+
+fn is_separator_or_bidi(c: char) -> bool {
+    matches!(
+        c,
+        '\u{2028}' | '\u{2029}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}'
+            | '\u{2066}'..='\u{2069}'
+    )
+}
+
 #[derive(Debug)]
 pub struct NoteWriter {
     notes: PathBuf,
@@ -258,11 +258,6 @@ pub struct NoteWriter {
 }
 
 impl NoteWriter {
-    /// The writer of process `pid` for `idea`, under `ideas`, the `ideas/`
-    /// folder of the fleet root. `ledger` is the ledger, opened read-only
-    /// by the caller; `facts` are the process facts. The 1 live attempt in
-    /// the parent chain of `pid` must be the sub-orchestrator attempt of
-    /// `idea`, and the idea folder must exist.
     pub fn of_process(
         pid: u32,
         ideas: &Path,
@@ -273,8 +268,17 @@ impl NoteWriter {
         if !is_idea_id(idea) {
             bail!("`{idea}` is not an idea id I-NNNN");
         }
-        let live = live_attempts(ledger)?;
-        let own = own_attempt(pid, &live.attempts, facts)?;
+        let until = Instant::now() + ATTEMPT_WAIT;
+        let (live, own) = loop {
+            let live = live_attempts(ledger)?;
+            match own_attempt(pid, &live.attempts, facts) {
+                Ok(own) => break (live, own),
+                Err(e) if e.detail.is_none() && Instant::now() < until && starting(ledger)? => {
+                    std::thread::sleep(ATTEMPT_POLL);
+                }
+                Err(e) => return Err(e.into()),
+            }
+        };
         let of_idea = live
             .ideas
             .iter()
@@ -307,7 +311,6 @@ impl NoteWriter {
         })
     }
 
-    /// Write `body` as the next note of the idea, 1 time. Returns its path.
     pub fn write(&self, body: NoteBody) -> Result<PathBuf> {
         let note = Note {
             idea: self.idea.clone(),
@@ -333,12 +336,8 @@ impl NoteWriter {
     }
 }
 
-/// The live attempts with a recorded wrapper, and the idea of each. A task
-/// attempt is in the list too, so a process inside a task attempt finds
-/// that attempt and is refused.
 struct Live {
     attempts: Vec<LiveAttempt>,
-    /// The attempt id and its idea, for each attempt with no task.
     ideas: Vec<(String, Option<String>)>,
 }
 
@@ -363,16 +362,11 @@ fn live_attempts(conn: &Connection) -> Result<Live> {
     Ok(live)
 }
 
-/// Make `dir` with mode 0700 when it is missing. A link or a file in its
-/// place is refused.
 fn make_dir(dir: &Path) -> Result<()> {
     let mut builder = DirBuilder::new();
-    // The writer runs only where the OS has modes: on Windows it finds no
-    // own attempt first.
     let _ = horch_platform::fs::create_dir_mode(&mut builder, DIR_MODE);
     match builder.create(dir) {
         Ok(()) => {
-            // The umask may have cleared bits of the mode.
             horch_platform::fs::set_mode(dir, DIR_MODE)
                 .with_context(|| format!("set the mode of {}", dir.display()))?;
             if let Some(parent) = dir.parent() {
@@ -381,7 +375,6 @@ fn make_dir(dir: &Path) -> Result<()> {
             }
             Ok(())
         }
-        // Another process made it first, or an earlier note.
         Err(e) if e.kind() == ErrorKind::AlreadyExists => {
             if std::fs::symlink_metadata(dir)?.is_dir() {
                 Ok(())
@@ -393,19 +386,15 @@ fn make_dir(dir: &Path) -> Result<()> {
     }
 }
 
-/// The name of note `n`.
 fn note_name(n: u32) -> String {
     format!("{n}.json")
 }
 
-/// The number of a note file name: `<n>.json`, with no leading zero. Each
-/// other name, such as a temp file, is not a note.
 fn note_number(name: &str) -> Option<u32> {
     let n: u32 = name.strip_suffix(".json")?.parse().ok()?;
     (note_name(n) == name).then_some(n)
 }
 
-/// The number of each note in `dir`, in order. A missing folder has none.
 fn numbers(dir: &Path) -> Result<Vec<u32>> {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
@@ -423,30 +412,24 @@ fn numbers(dir: &Path) -> Result<Vec<u32>> {
     Ok(numbers)
 }
 
-/// What the reader found in 1 note file.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NoteRead {
     Valid {
         sha256: String,
         note: Note,
     },
-    /// The file failed a check. `sha256` is known when the bytes were read.
     Rejected {
         sha256: Option<String>,
         reason: String,
     },
 }
 
-/// 1 note file and what the reader found.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NoteFileRead {
     pub path: PathBuf,
     pub read: NoteRead,
 }
 
-/// Read each note of `idea` under `ideas`, in the order of its number. A
-/// note whose path `done` names is not read: the ledger has it. `owner` is
-/// the user that owns the ledger. A missing folder gives no note.
 pub fn read_notes(
     ideas: &Path,
     idea: &str,
@@ -472,7 +455,6 @@ pub fn read_notes(
     Ok(out)
 }
 
-/// Read and check 1 note of the folder of `idea`.
 fn read_note(path: &Path, rule: &Rule<'_>, idea: &str) -> NoteRead {
     let bytes = match read_protected(path, rule) {
         Ok(bytes) => bytes,
@@ -503,6 +485,58 @@ fn read_note(path: &Path, rule: &Rule<'_>, idea: &str) -> NoteRead {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fleetd::ideas::adapters::idea_folder_files::IdeaFolder;
+    use crate::taskledger::schema;
+
+    const COMMAND: u32 = 4300;
+    const WRAPPER: u32 = 4200;
+    const WRAPPER_START: i64 = 77;
+
+    struct Chain;
+
+    impl ProcessFacts for Chain {
+        fn parent(&self, pid: u32) -> Option<u32> {
+            Some(if pid == COMMAND { WRAPPER } else { 1 })
+        }
+
+        fn start_time(&self, pid: u32) -> Option<u64> {
+            (pid == WRAPPER).then_some(WRAPPER_START as u64)
+        }
+
+        fn in_group(&self, _pid: u32, _leader: u32, _leader_start: u64) -> Option<bool> {
+            None
+        }
+    }
+
+    #[test]
+    fn a_note_waits_while_its_sub_orchestrator_attempt_has_no_wrapper() {
+        const IDEA: &str = "I-0007";
+        let temp = tempfile::tempdir().unwrap();
+        let ideas = temp.path().join("ideas");
+        let db = temp.path().join("ledger.sqlite3");
+        let mut conn = Connection::open(&db).unwrap();
+        schema::migrate_to(&mut conn, schema::VERSION).unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = OFF").unwrap();
+        IdeaFolder::create(&ideas, IDEA, User::current().unwrap()).unwrap();
+        conn.execute(
+            "INSERT INTO attempts (id, idea_id, worker_id, state, started_at)
+             VALUES ('I-0007/A1', ?1, 'idea-lead-1', 'launching', '2026-11-20T00:00:00Z')",
+            [IDEA],
+        )
+        .unwrap();
+        let goes_live = std::thread::spawn(move || {
+            std::thread::sleep(ATTEMPT_POLL * 2);
+            let conn = Connection::open(&db).unwrap();
+            conn.execute(
+                "UPDATE attempts SET state = 'live', pid = ?1, pid_start = ?2",
+                rusqlite::params![i64::from(WRAPPER), WRAPPER_START],
+            )
+            .unwrap();
+        });
+        let writer = NoteWriter::of_process(COMMAND, &ideas, IDEA, &conn, &Chain);
+        goes_live.join().unwrap();
+        assert_eq!(writer.unwrap().attempt, "I-0007/A1");
+    }
 
     #[test]
     fn a_note_name_is_a_number_and_json() {

@@ -1,9 +1,3 @@
-//! The task ledger's queue: the startable rule, fallback, cycles (#32,
-//! #33). No worker finds a task by a search: each test takes the first
-//! startable task of a persona and binds it as fleetd does (FR-5). The CLI
-//! seam has its own tests in horch-e2e; these pin the rule clause by
-//! clause.
-
 use std::path::Path;
 
 use horch_core::fleetd::task_execution::application::commands;
@@ -19,8 +13,6 @@ fn ledger() -> (tempfile::TempDir, Store, Run) {
     ledger_with(runs::Thresholds::default())
 }
 
-/// A ledger with 1 run on `main` of a git repository: the bind of a
-/// worktree task reads the commit of its base.
 fn ledger_with(thresholds: runs::Thresholds) -> (tempfile::TempDir, Store, Run) {
     let dir = tempfile::tempdir().unwrap();
     let repo = dir.path().join("repo");
@@ -40,7 +32,6 @@ fn ledger_with(thresholds: runs::Thresholds) -> (tempfile::TempDir, Store, Run) 
                     ..Default::default()
                 },
             )?;
-            // FR-12: a task needs an idea in flight of the feature of its run.
             horch_core::taskledger::schema::run_idea(
                 tx,
                 &run.run_id,
@@ -96,9 +87,6 @@ fn worker(store: &mut Store, run: &Run, persona: &str) -> String {
         .unwrap()
 }
 
-/// The first startable task of `persona` in board order, bound to a new
-/// live worker of `persona` as fleetd binds it: its seq and the worker.
-/// `None` when no task of `persona` can start.
 fn take(store: &mut Store, run: &Run, persona: &str) -> Option<(i64, String)> {
     let task = tasks::startable(store.conn(), &run.run_id)
         .unwrap()
@@ -130,8 +118,6 @@ fn finish(store: &mut Store, task_id: &str) {
                 "UPDATE tasks SET status = 'done' WHERE task_id = ?1",
                 [task_id],
             )?;
-            // As `horch ledger done` does: each dependent that waits for
-            // nothing else is ready.
             tasks::ready_dependents(tx, task_id)
         })
         .unwrap();
@@ -159,7 +145,6 @@ fn an_exclusive_task_runs_alone() {
     add(&mut s, &run, "x", "opus", |t| t.parallel = false);
     add(&mut s, &run, "c", "opus", |_| {});
     assert_eq!(taken_seq(&mut s, &run, "opus"), Some(1));
-    // X waits for A; C may start beside A.
     assert_eq!(taken_seq(&mut s, &run, "opus"), Some(3));
     assert_eq!(taken_seq(&mut s, &run, "opus"), None, "X waits for A and C");
 }
@@ -204,7 +189,6 @@ fn a_queued_task_behind_a_task_with_its_file_waits_on_the_file() {
     add(&mut s, &run, "b", "opus", |t| {
         t.own = vec!["crates/horch/src/cmd/taskledger.rs".into()]
     });
-    // A slot is held only for a persona with a live worker (TRF-31).
     worker(&mut s, &run, "opus");
     let waits = tasks::waits(s.conn(), &run.run_id).unwrap();
     assert_eq!(waits.len(), 1, "{waits:?}");
@@ -299,7 +283,7 @@ fn plan_workers_subtracts_workers_on_their_way() {
     let (_d, mut s, run) = ledger();
     add(&mut s, &run, "a", "opus", |_| {});
     add(&mut s, &run, "b", "opus", |_| {});
-    worker(&mut s, &run, "opus"); // claiming, not yet claimed
+    worker(&mut s, &run, "opus");
     let plan = tasks::plan_workers(s.conn(), &run.run_id).unwrap();
     assert_eq!(plan[0].startable, 2);
     assert_eq!(plan[0].on_the_way, 1);
@@ -325,7 +309,6 @@ fn shared_checkout_tasks_run_one_at_a_time() {
         t.worktree_mode = WorktreeMode::Shared
     });
     add(&mut s, &run, "c", "opus", |_| {});
-    // A slot is held only for a persona with a live worker (TRF-31).
     worker(&mut s, &run, "opus");
     let plan = tasks::plan_workers(s.conn(), &run.run_id).unwrap();
     assert_eq!(
@@ -363,7 +346,6 @@ fn an_agent_that_exits_on_its_last_attempt_fails_the_task() {
         horch_core::taskledger::Store::open(&db)
             .and_then(|mut s| s.immediate(|tx| {
                 let ended = supervisor::settle(tx, &first, Some(1))?;
-                // The pass of fleetd ends the attempt of the exited agent.
                 commands::end_own_attempt(tx, &first, "crashed")?;
                 Ok(ended)
             }))
@@ -379,7 +361,6 @@ fn an_agent_that_exits_on_its_last_attempt_fails_the_task() {
         horch_core::taskledger::Store::open(&db)
             .and_then(|mut s| s.immediate(|tx| {
                 let ended = supervisor::settle(tx, &second, Some(1))?;
-                // The pass of fleetd ends the attempt of the exited agent.
                 commands::end_own_attempt(tx, &second, "crashed")?;
                 Ok(ended)
             }))
@@ -387,15 +368,12 @@ fn an_agent_that_exits_on_its_last_attempt_fails_the_task() {
         Ended::Failed { task: "T-1".into() }
     );
     let held = tasks::get(store.conn(), &t.task_id).unwrap();
-    // Rung 6: no attempt left, so the task is failed and waits for its 1
-    // replan by the orchestrator. It is escalated after that.
     assert_eq!(held.status, "failed");
     assert_eq!(held.held_reason, None);
     assert!(tasks::startable(store.conn(), &run.run_id)
         .unwrap()
         .is_empty());
     assert_eq!(taken_seq(&mut store, &run, "opus"), None);
-    // The replan, then 2 more exits: escalated, held for the operator.
     store
         .immediate(|tx| tasks::requeue_by_operator(tx, &held, "replan"))
         .unwrap();
@@ -415,7 +393,6 @@ fn an_agent_that_exits_on_its_last_attempt_fails_the_task() {
             horch_core::taskledger::Store::open(&db)
                 .and_then(|mut s| s.immediate(|tx| {
                     let ended = supervisor::settle(tx, &w, Some(1))?;
-                    // The pass of fleetd ends the attempt of the exited agent.
                     commands::end_own_attempt(tx, &w, "crashed")?;
                     Ok(ended)
                 }))
@@ -430,8 +407,6 @@ fn an_agent_that_exits_on_its_last_attempt_fails_the_task() {
 
 #[test]
 fn a_schema_2_ledger_migrates_forward_and_keeps_its_rows() {
-    // A schema 2 file, built by the real steps, with 1 run, 1 claimed task
-    // and its worker.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("ledger.sqlite3");
     let mut conn = rusqlite::Connection::open(&path).unwrap();

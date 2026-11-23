@@ -1,7 +1,3 @@
-//! `horch idea cancel <id> <reason>`: cancel an idea
-//! (`docs/specs/fleetd/design.md`, "Ideas"). It sends `idea_cancel` to
-//! fleetd, which cancels each task of the idea that is not terminal.
-
 use std::process::ExitCode;
 
 use anyhow::Result;
@@ -20,7 +16,6 @@ pub struct CancelArgs {
     pub reason: String,
 }
 
-/// `horch idea cancel`.
 pub fn run(ctx: &RuntimeContext, args: CancelArgs) -> Result<ExitCode> {
     if args.reason.trim().is_empty() {
         eprintln!(

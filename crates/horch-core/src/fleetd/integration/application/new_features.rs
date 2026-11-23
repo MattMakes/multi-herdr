@@ -1,32 +1,3 @@
-//! New features: a feature row for each idea with no `--to`, its internal
-//! run, a checked kebab-case branch name, and the branch created after its
-//! row (ticket 15 of fleetd-p6).
-//!
-//! `docs/specs/fleetd/design.md`, "Features"; Ledger, `features`;
-//! "Between features" (Parallel is the default); MAP.md of fleetd-p6, Q5
-//! and Q7. Any number of features are `open` at the same time:
-//! - [`open_feature`] (`OpenFeature`): an idea with no `--to` gets a new
-//!   feature in `open`, with no name and no branch yet. fleetd makes 1
-//!   internal run for it; the feature id is `F-<run rowid>`, as in Phase 4.
-//! - [`name_feature_branch`] (`NameFeatureBranch`): the name comes from the
-//!   sub-orchestrator (the line `feature:` of `assumptions.md`), or from the
-//!   ticket title of a `--direct` idea. A name is kebab-case and unique
-//!   among features and fleet branches. A `--direct` name that exists gets
-//!   a number suffix (`retry-sync-2`). A name of the sub-orchestrator that
-//!   exists or is not kebab-case is refused: its idea stays in `clarifying`,
-//!   and 1 needs-you item and 1 doorbell to the sub-orchestrator give the
-//!   reason. An accepted name writes the feature name and branch, the
-//!   `branches` row and the run branch of the internal run (I11: the row
-//!   exists before the branch). The ref is an effect after the commit.
-//! - [`join_feature`] (`JoinFeature`, `--to`): the feature must be `open`
-//!   or `ready`; a `ready` feature moves back to `open`. A `merged` or
-//!   `abandoned` feature is refused with its state.
-//! - [`create_ref`]: the effect after the commit, `git update-ref <ref>
-//!   <tip> ""` (create only), from the fetched primary tip that the row
-//!   keeps in `seen_tip`. [`pending_refs`] finds each committed row whose
-//!   ref git does not have, for example after a crash between the commit
-//!   and the effect.
-
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Result};
@@ -44,77 +15,55 @@ use crate::fleetd::integration::application::ports::{IntegrationGitGateway, RefM
 use crate::taskledger::model::EventKind;
 use crate::taskledger::runs;
 
-/// The kind of the needs-you item of a refused feature name.
 pub const FEATURE_NAME_KIND: &str = "feature_name";
 
-/// The key of the needs-you item of the refused feature name of `idea`.
 pub fn feature_name_key(idea: &str) -> String {
     format!("{FEATURE_NAME_KIND}:{idea}")
 }
 
-/// The longest feature name. A name is 1 component of a git ref.
 pub const MAX_NAME: usize = 64;
 
-/// The longest name from a ticket title, so a number suffix still fits.
 const MAX_TITLE_NAME: usize = MAX_NAME - 8;
 
-/// The name from a title with no letter and no digit.
 const FALLBACK_NAME: &str = "feature";
 
-/// The folder of each feature branch: the branch of the feature `x` is
-/// `fleet/x`, as the run branch of today.
 const BRANCH_PREFIX: &str = "fleet/";
 
-/// The owner of a feature branch row.
 const BRANCH_OWNER: &str = "fleetd";
 
-/// The `due_at` of a feature branch row is this long after the fleet clock,
-/// as the backfill of Phase 4. A feature has no time limit, and no rule
-/// acts on the `due_at` of a feature branch row.
 const BRANCH_LIMIT_S: i64 = 3600;
 
-/// The project of a new feature: its repository and its primary branch.
 #[derive(Debug, Clone, Copy)]
 pub struct Project<'a> {
     pub root: &'a Path,
     pub primary_branch: &'a str,
 }
 
-/// Where the name of a feature comes from.
 #[derive(Debug, Clone, Copy)]
 pub enum NameSource<'a> {
-    /// The line `feature:` of the `assumptions.md` of `idea`.
     SubOrchestrator { idea: &'a str, name: &'a str },
-    /// The ticket title of a `--direct` idea.
     Direct { title: &'a str },
 }
 
-/// The effect after the commit: create the ref `name` at `tip` in `repo`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BranchRef {
     pub repo: PathBuf,
-    /// The full ref, for example `refs/heads/fleet/retry-sync`.
     pub name: String,
     pub tip: String,
 }
 
-/// What [`name_feature_branch`] did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Named {
-    /// The rows are written. The caller commits, then runs [`create_ref`]
-    /// with `effect`.
     Accepted {
         name: String,
         branch: String,
         effect: BranchRef,
     },
-    /// The name of the sub-orchestrator is refused for `reason`. The
-    /// needs-you item and the doorbell are written; the feature has no name.
-    Refused { reason: String },
+    Refused {
+        reason: String,
+    },
 }
 
-/// Whether `name` is kebab-case: groups of `a-z` and `0-9` joined by 1
-/// `-`, and at most [`MAX_NAME`] characters.
 pub fn is_kebab_case(name: &str) -> bool {
     name.len() <= MAX_NAME
         && name.split('-').all(|part| {
@@ -125,9 +74,6 @@ pub fn is_kebab_case(name: &str) -> bool {
         })
 }
 
-/// The kebab-case name of the ticket title `title`: each run of characters
-/// that are not ASCII letters or digits becomes 1 `-`, cut to
-/// [`MAX_TITLE_NAME`] characters at a `-` when it can.
 pub fn name_from_title(title: &str) -> String {
     let lower = title.to_ascii_lowercase();
     let words: Vec<&str> = lower
@@ -155,8 +101,6 @@ pub fn name_from_title(title: &str) -> String {
     }
 }
 
-/// `OpenFeature`: a new `open` feature of `project` with its internal run,
-/// in `tx`. No name and no branch yet. Gives the feature id.
 pub fn open_feature(
     tx: &Connection,
     ctx: &JobCtx<'_>,
@@ -174,11 +118,6 @@ pub fn open_feature(
     Ok(id)
 }
 
-/// `NameFeatureBranch`: check the name of `feature` from `source` and, when
-/// it holds, write the name, the branch, its `branches` row with
-/// `seen_tip` = `primary_tip` (the fetched tip of the primary branch), and
-/// the run branch of the internal run, in `tx`. `clock` is the fleet clock.
-/// The feature must be `open` or `ready` and have no branch yet.
 #[allow(clippy::too_many_arguments)]
 pub fn name_feature_branch(
     tx: &Connection,
@@ -283,13 +222,10 @@ pub fn name_feature_branch(
     })
 }
 
-/// The branch of the feature named `name`.
 fn branch_of(name: &str) -> String {
     format!("{BRANCH_PREFIX}{name}")
 }
 
-/// Write the refusal of the feature name of `idea`: 1 needs-you item and 1
-/// doorbell event to the sub-orchestrator of `feature`, both with `reason`.
 fn refuse(
     tx: &Connection,
     ctx: &JobCtx<'_>,
@@ -329,9 +265,6 @@ fn refuse(
     Ok(())
 }
 
-/// `JoinFeature` (`--to <feature>`): the id of the feature with the id or
-/// the name `feature`, in `tx`. A `ready` feature moves back to `open`. A
-/// `merged` or `abandoned` feature is refused with its state.
 pub fn join_feature(
     tx: &Connection,
     ctx: &JobCtx<'_>,
@@ -368,9 +301,6 @@ pub fn join_feature(
     Ok(row.id)
 }
 
-/// The effect after the commit: create the ref of `r` at its tip, only
-/// when it does not exist. `true` when git created it now; `false` when it
-/// exists, at any tip, and nothing moved.
 pub fn create_ref(git: &dyn IntegrationGitGateway, r: &BranchRef) -> Result<bool> {
     match git.update_ref(&r.repo, &r.name, &r.tip, None)? {
         RefMove::Moved => Ok(true),
@@ -381,8 +311,6 @@ pub fn create_ref(git: &dyn IntegrationGitGateway, r: &BranchRef) -> Result<bool
     }
 }
 
-/// The ref of each `open` or `ready` feature whose branch row fleetd
-/// committed and whose ref git does not have, at the `seen_tip` of its row.
 pub fn pending_refs(conn: &Connection, git: &dyn IntegrationGitGateway) -> Result<Vec<BranchRef>> {
     let mut out = Vec::new();
     for (feature, branch, tip) in rows::live_feature_branches(conn)? {

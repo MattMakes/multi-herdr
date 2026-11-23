@@ -1,62 +1,48 @@
-//! The client of the channel: send 1 request, check that the peer is the
-//! fleetd of the `fleetd` row, ask for the result after a lost reply, or
-//! write a request file when fleetd is down.
-//!
-//! Requirements: RR-8, SR-5, SR-8, FM-15. Ticket 15 of fleetd-p5.
-//!
-//! [`send`] makes 1 `request_id` for each call and keeps it for each retry
-//! of that call. Before each send it checks that the process of the server
-//! (its PID and its start time) is the process of the `fleetd` row. A
-//! mismatch or an unknown fact sends nothing: a process of the same user
-//! can remove the socket file and bind its own. After a lost reply, it
-//! reads the `requests` row of its `request_id` before it sends again.
-
-use std::fs::{DirBuilder, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
 use horch_platform::channel::Stream;
 use horch_platform::fs as platform;
+use horch_platform::NotSupported;
 use serde_json::{Map, Value};
 
+use crate::fleetd::fleet_runtime::adapters::peer_process::{
+    fleet_process, recorded_processes, Fact, PlatformFacts,
+};
 use crate::fleetd::fleet_runtime::adapters::request_wire::{parse_reply, Outcome, Reply, Request};
 use crate::fleetd::fleet_runtime::adapters::{config_file, requests_store, token_file};
 use crate::fleetd::fleet_runtime::domain::requests::{check_size, Class, Kind, RequestId};
 use crate::runtime::RuntimeContext;
 use crate::taskledger::store::{self, Store};
 
-/// The longest wait for the connect: the connect time of today
-/// (`preservation-05-contracts-and-values.md`, row V-18).
 const CONNECT_WAIT: Duration = Duration::from_secs(5);
 
-/// The longest wait for the reply of 1 send, and for the write of the
-/// request line. A send past it is a lost reply, so a fleetd that accepts
-/// and never answers cannot hold a command with no end.
 const REPLY_WAIT: Duration = Duration::from_secs(30);
 
-/// The most sends of 1 request. A send after the first comes only after a
-/// lost reply, when the `requests` row is missing or `pending`.
 const MAX_SENDS: usize = 3;
 
-/// What became of 1 request.
+static WRAPPER: AtomicBool = AtomicBool::new(false);
+
+pub fn mark_wrapper_process() {
+    WRAPPER.store(true, Ordering::SeqCst);
+}
+
+pub fn is_wrapper_process() -> bool {
+    WRAPPER.load(Ordering::SeqCst)
+}
+
 #[derive(Debug)]
 pub enum Sent {
-    /// fleetd replied, or the `requests` row gave the stored result after a
-    /// lost reply.
     Replied(Reply),
-    /// fleetd is down: the request waits in the request file `path`, and
-    /// fleetd applies it at start.
     Queued {
         request_id: RequestId,
         path: PathBuf,
     },
 }
 
-/// Send 1 `operator` request of `kind` with `payload` to fleetd, with the
-/// operator token. It sends nothing to a server that is not the fleetd of
-/// the `fleetd` row. When fleetd is down, it writes the request file.
 pub fn send(ctx: &RuntimeContext, kind: Kind, payload: Map<String, Value>) -> Result<Sent> {
     if kind.class() != Class::Operator {
         bail!(
@@ -64,6 +50,7 @@ pub fn send(ctx: &RuntimeContext, kind: Kind, payload: Map<String, Value>) -> Re
             kind.as_str()
         );
     }
+    refuse_fleet_caller(ctx, kind)?;
     let root = &ctx.paths.fleet_root;
     let max_bytes = config_file::load(root)?.request_max_bytes;
     let token = token_file::read(root).context("reading the operator token")?;
@@ -90,7 +77,6 @@ pub fn send(ctx: &RuntimeContext, kind: Kind, payload: Map<String, Value>) -> Re
         if let Some(reply) = exchange(&stream, &line, max_bytes, &id)? {
             return Ok(Sent::Replied(reply));
         }
-        // The connection ended with no reply: ask for the result first.
         if let Some(reply) = stored_result(ctx, &request)? {
             return Ok(Sent::Replied(reply));
         }
@@ -100,23 +86,44 @@ pub fn send(ctx: &RuntimeContext, kind: Kind, payload: Map<String, Value>) -> Re
     )
 }
 
-/// A new `request_id`: 1 UUID v4.
+fn refuse_fleet_caller(ctx: &RuntimeContext, kind: Kind) -> Result<()> {
+    let kind = kind.as_str();
+    if is_wrapper_process() {
+        bail!(
+            "the wrapper of a worker sends no operator request ({kind}): its facts go by the files of its attempt"
+        );
+    }
+    if let Fact::Yes(attempts) = own_fact(ctx) {
+        bail!(
+            "refused inside a fleet attempt: this process is a fleet process of attempt {}, so it sends no operator request ({kind}). Run it yourself from a terminal outside the fleet.",
+            attempts.join(", ")
+        );
+    }
+    Ok(())
+}
+
+fn own_fact(ctx: &RuntimeContext) -> Fact {
+    let Ok(Some(store)) = crate::taskledger::open_existing_read_only(ctx) else {
+        return Fact::No;
+    };
+    match recorded_processes(store.conn()) {
+        Ok(Some((recorded, _))) => fleet_process(std::process::id(), &recorded, &PlatformFacts),
+        Ok(None) | Err(_) => Fact::Unknown,
+    }
+}
+
 fn new_request_id() -> RequestId {
     RequestId::parse(&uuid::Uuid::new_v4().to_string()).expect("a UUID meets the request_id rule")
 }
 
-/// The command channel of the fleet at `fleet_root`.
 fn channel_path(fleet_root: &Path) -> PathBuf {
     fleet_root.join("run").join("fleetd.sock")
 }
 
-/// The request folder of the fleet at `fleet_root`.
 fn request_folder(fleet_root: &Path) -> PathBuf {
     fleet_root.join("run").join("requests")
 }
 
-/// True when the error of the connect says that no fleetd listens: no
-/// channel, or a channel that refuses the connection.
 fn is_down(e: &io::Error) -> bool {
     matches!(
         e.kind(),
@@ -124,9 +131,6 @@ fn is_down(e: &io::Error) -> bool {
     )
 }
 
-/// Refuse the server of `stream` unless its process is the process of the
-/// `fleetd` row: the same PID and the same start time. An unknown fact
-/// refuses it.
 fn check_server(ctx: &RuntimeContext, stream: &Stream, channel: &Path) -> Result<()> {
     let refused = |reason: String| {
         anyhow!(
@@ -152,7 +156,6 @@ fn check_server(ctx: &RuntimeContext, stream: &Stream, channel: &Path) -> Result
     Ok(())
 }
 
-/// The ledger, opened read-only. A missing ledger is an error.
 fn ledger(ctx: &RuntimeContext) -> Result<Store> {
     crate::taskledger::open_existing_read_only(ctx)?.ok_or_else(|| {
         anyhow!(
@@ -162,7 +165,6 @@ fn ledger(ctx: &RuntimeContext) -> Result<Store> {
     })
 }
 
-/// The PID and the start time of the `fleetd` row, or `None` with no row.
 fn fleetd_process(ctx: &RuntimeContext) -> Result<Option<(u32, u64)>> {
     let store = ledger(ctx)?;
     let row = store::optional(store.conn().query_row(
@@ -180,8 +182,6 @@ fn fleetd_process(ctx: &RuntimeContext) -> Result<Option<(u32, u64)>> {
     )))
 }
 
-/// Write `line` to the server, then read 1 reply line. `None` when the
-/// connection ends before a whole reply line: the reply is lost.
 fn exchange(stream: &Stream, line: &str, max_bytes: u64, id: &RequestId) -> Result<Option<Reply>> {
     stream
         .set_read_timeout(REPLY_WAIT)
@@ -216,8 +216,6 @@ fn exchange(stream: &Stream, line: &str, max_bytes: u64, id: &RequestId) -> Resu
     Ok(Some(reply))
 }
 
-/// The stored result of `request` in its `requests` row: `None` when the
-/// row is missing or `pending`.
 fn stored_result(ctx: &RuntimeContext, request: &Request) -> Result<Option<Reply>> {
     let id = &request.request_id;
     let store = ledger(ctx)?;
@@ -238,7 +236,6 @@ fn stored_result(ctx: &RuntimeContext, request: &Request) -> Result<Option<Reply
     }))
 }
 
-/// Write `line` to the request file of `id`, and print where it waits.
 fn queue(fleet_root: &Path, id: &RequestId, line: &str) -> Result<Sent> {
     let folder = request_folder(fleet_root);
     make_request_folder(&folder)?;
@@ -255,15 +252,8 @@ fn queue(fleet_root: &Path, id: &RequestId, line: &str) -> Result<Sent> {
     })
 }
 
-/// Make the request folder with mode 0700 when it is missing. A link or a
-/// file at that path is an error.
 fn make_request_folder(folder: &Path) -> Result<()> {
-    let mut builder = DirBuilder::new();
-    builder.recursive(true);
-    platform::create_dir_mode(&mut builder, 0o700)
-        .map_err(|e| anyhow!("making {} with mode 0700: {e}", folder.display()))?;
-    builder
-        .create(folder)
+    platform::create_dir_owner_only(folder)
         .with_context(|| format!("making {}", folder.display()))?;
     let meta = std::fs::symlink_metadata(folder)
         .with_context(|| format!("reading {}", folder.display()))?;
@@ -273,18 +263,11 @@ fn make_request_folder(folder: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Write `bytes` to `path` atomically: write `<path>.tmp` with mode 0600,
-/// fsync it, rename it to `path`, then fsync the folder. A reader never
-/// sees a part of the file at `path`.
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(".tmp");
     let tmp = PathBuf::from(tmp);
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    platform::create_mode(&mut options, 0o600).map_err(|e| anyhow!("mode 0600: {e}"))?;
-    let mut file = options
-        .open(&tmp)
+    let mut file = platform::create_new_owner_only(&tmp)
         .with_context(|| format!("creating {}", tmp.display()))?;
     let written = file.write_all(bytes).and_then(|()| file.sync_all());
     drop(file);
@@ -293,7 +276,10 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
         return Err(anyhow!(e));
     }
     if let Some(folder) = path.parent() {
-        platform::sync_dir(folder).with_context(|| format!("syncing {}", folder.display()))?;
+        match platform::sync_dir(folder) {
+            Err(e) if e.get_ref().is_some_and(|inner| inner.is::<NotSupported>()) => {}
+            synced => synced.with_context(|| format!("syncing {}", folder.display()))?,
+        }
     }
     Ok(())
 }

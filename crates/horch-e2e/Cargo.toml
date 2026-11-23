@@ -6,8 +6,6 @@ rust-version.workspace = true
 publish = false
 description = "Fake harness binaries and hermetic end-to-end tests for horch."
 
-# Each fake stands in for one external program. They record every call to
-# $HORCH_FAKE_LOG so a test can assert exactly what horch asked of them.
 [lints]
 workspace = true
 
@@ -22,6 +20,14 @@ path = "src/bin/fake-codex.rs"
 [[bin]]
 name = "fake-herdr"
 path = "src/bin/fake-herdr.rs"
+
+[[bin]]
+name = "fake-hc"
+path = "src/bin/fake-hc.rs"
+
+[[bin]]
+name = "fake-herdr-app"
+path = "src/bin/fake-herdr-app.rs"
 
 [[bin]]
 name = "fake-opencode"
@@ -44,15 +50,9 @@ name = "fake-ollama"
 path = "src/bin/fake-ollama.rs"
 
 [dependencies]
-# `procid`: fake-herdr and the harness signal a recorded process group only
-# while it is the same group.
 horch-core.workspace = true
-# `sandbox::sandboxed`: the probe child of the conformance probes runs under
-# the rules of the rendered config of its fake (`probe.rs`).
 horch-platform.workspace = true
-# `git::scrub_repo_env`: every git child of the harness and the fakes.
 horch-marketplace.workspace = true
-# `kill`: teardown and fake-herdr signal process groups without a fork.
 libc = "0.2"
 serde_json.workspace = true
 

@@ -1,15 +1,3 @@
-//! `horch telemetry` - the fleet telemetry space (design section 12).
-//!
-//! One collector per state root holds `telemetry/collector.lock`; every other
-//! `horch telemetry` is a read-only viewer of the files it writes (SPC-01,
-//! SPC-02). `ensure` opens the collector in its own herdr workspace without
-//! touching anything the operator can see (SPC-03).
-//!
-//! The screen is drawn with `ratatui` (`view`); a worker thread does every
-//! tick and file read (`screen`). [`render`] draws 1 frame into a
-//! `TestBackend`, which is what the goldens compare and what `horch
-//! telemetry render` prints.
-
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -25,7 +13,7 @@ use horch_core::telemetry::collect::{self, Collector, Probing, Snapshot};
 use horch_core::telemetry::lock::{self, Holder};
 use horch_core::telemetry::{start, store};
 use horch_core::usage::Locations;
-use horch_core::workspace::herdr::Herdr;
+use horch_core::workspace::PaneHost;
 
 use crate::output;
 
@@ -35,19 +23,14 @@ mod view;
 use screen::{Feed, LiveFeed, Source};
 pub use view::{render, ViewState};
 
-/// The label of the telemetry workspace. `horch tile` never touches it.
 pub const WORKSPACE_LABEL: &str = "horch telemetry";
 
-/// The windows the `w` key cycles through.
 pub const VIEW_WINDOWS: [&str; 4] = ["live", "5h", "today", "7d"];
 
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
-/// SIGINT, SIGTERM and SIGHUP end the loop, so the terminal is restored and
-/// the lock is released on the way out.
 fn install_signal_handlers() {
     use horch_platform::signal::Termination;
-    // Windows has no signal handlers: the `q` key ends the loop there.
     let _ = horch_platform::signal::on_termination_set(
         &SHUTDOWN,
         &[
@@ -58,9 +41,6 @@ fn install_signal_handlers() {
     );
 }
 
-// ─── text ───────────────────────────────────────────────────────────────────
-
-/// `412k`, `9.8M`, `88M`: a token count in at most 5 characters.
 pub fn human(n: u64) -> String {
     let f = n as f64;
     if n >= 10_000_000 {
@@ -76,7 +56,6 @@ pub fn human(n: u64) -> String {
     }
 }
 
-/// `s` in at most `n` characters, with `…` when cut.
 pub fn clip(s: &str, n: usize) -> String {
     if s.chars().count() <= n {
         return s.to_string();
@@ -92,13 +71,10 @@ fn pad(s: &str, n: usize) -> String {
     format!("{s}{}", " ".repeat(n.saturating_sub(len)))
 }
 
-/// `x` as a whole percent. Adding `0.0` turns a rounded `-0` into `0`.
 fn pct(x: f64) -> String {
     format!("{:.0}%", (x * 100.0).round() + 0.0)
 }
 
-/// The POOL block (section 12.4), shared by the screen and `horch quota`.
-/// A pool in `only_with_reading` gets a row only when it has a reading.
 pub fn pool_table(
     pools: &std::collections::BTreeMap<String, PoolReading>,
     now: DateTime<Utc>,
@@ -137,8 +113,6 @@ pub fn pool_table(
     out
 }
 
-/// One pool's row, by its kind: the Zen row with no signal, a row with no
-/// windows, or a row with windows.
 fn pool_row(name: &str, r: &PoolReading, now: DateTime<Utc>) -> String {
     let (state, shown) = pool_state(r);
     match (name == quota::POOL_ZEN, r.windows.is_empty()) {
@@ -148,7 +122,6 @@ fn pool_row(name: &str, r: &PoolReading, now: DateTime<Utc>) -> String {
     }
 }
 
-/// The Zen row: no usage signal, only its state and when it cools.
 fn zen_row(name: &str, r: &PoolReading, state: &str, shown: String) -> String {
     let (s, note) = if state == "ok" {
         ("ok*".to_string(), "* public work only")
@@ -171,7 +144,6 @@ fn zen_row(name: &str, r: &PoolReading, state: &str, shown: String) -> String {
     )
 }
 
-/// A row for a pool with no windows: its state and why.
 fn no_window_row(name: &str, r: &PoolReading, shown: &str) -> String {
     let why = r
         .error
@@ -189,7 +161,6 @@ fn no_window_row(name: &str, r: &PoolReading, shown: &str) -> String {
     )
 }
 
-/// The window with the highest use among the scoped or the unscoped ones.
 fn most_used(r: &PoolReading, now: DateTime<Utc>, scoped: bool) -> Option<&quota::Window> {
     r.windows
         .iter()
@@ -201,8 +172,6 @@ fn most_used(r: &PoolReading, now: DateTime<Utc>, scoped: bool) -> Option<&quota
         })
 }
 
-/// A row for a pool with windows: the 5h and 7d use, the most used scoped
-/// window, the state, when the worst window resets and the headroom.
 fn window_row(name: &str, r: &PoolReading, shown: &str, now: DateTime<Utc>) -> String {
     let unscoped = |mins: u64| unscoped_pct(r, mins, now);
     let scoped = most_used(r, now, true)
@@ -241,7 +210,6 @@ fn window_row(name: &str, r: &PoolReading, shown: &str, now: DateTime<Utc>) -> S
     )
 }
 
-/// A pool's state, and how the table shows it: `ok`, else in capitals.
 fn pool_state(r: &PoolReading) -> (&str, String) {
     let state = if r.state.is_empty() {
         "unknown"
@@ -256,7 +224,6 @@ fn pool_state(r: &PoolReading) -> (&str, String) {
     (state, shown)
 }
 
-/// The used share of a pool's unscoped window of `mins` minutes, or `-`.
 fn unscoped_pct(r: &PoolReading, mins: u64, now: DateTime<Utc>) -> String {
     r.windows
         .iter()
@@ -265,11 +232,8 @@ fn unscoped_pct(r: &PoolReading, mins: u64, now: DateTime<Utc>) -> String {
         .unwrap_or_else(|| "-".into())
 }
 
-/// Where the state starts on a [`pool_compact`] line.
 pub const COMPACT_STATE: usize = 32;
 
-/// The pools on a short terminal: 1 line per pool with only the pool, 5h,
-/// 7d and the state (`claude        5h 17%   7d 77%   ok`), no header line.
 pub fn pool_compact(
     pools: &std::collections::BTreeMap<String, PoolReading>,
     now: DateTime<Utc>,
@@ -312,10 +276,8 @@ pub fn pool_compact(
         .collect()
 }
 
-/// The smallest `--size` that `horch telemetry render` draws.
 pub const MIN_SIZE: (u16, u16) = (20, 6);
 
-/// `WIDTHxHEIGHT`, at least [`MIN_SIZE`].
 fn parse_size(size: &str) -> Result<(u16, u16)> {
     let (w, h) = size
         .split_once('x')
@@ -335,7 +297,6 @@ fn short_model(model: &str) -> String {
     let m = model.rsplit('/').next().unwrap_or(model);
     let m = m.strip_prefix("claude-").unwrap_or(m);
     let m = m.strip_prefix("gpt-").unwrap_or(m);
-    // opus-5-5 -> opus-5.5
     match m.split_once('-') {
         Some((fam, ver)) if ver.chars().all(|c| c.is_ascii_digit() || c == '-') => {
             format!("{fam}-{}", ver.replace('-', "."))
@@ -363,8 +324,6 @@ fn project_name(p: Option<&str>) -> String {
     .unwrap_or_else(|| "-".into())
 }
 
-/// Dollars, with a `*` when some events have no price: their cost is not
-/// in the figure, and the `UNPRICED` line lists them (never $0).
 fn money(cost: f64, unpriced: u64) -> String {
     if unpriced > 0 {
         format!("{cost:.2}*")
@@ -373,7 +332,6 @@ fn money(cost: f64, unpriced: u64) -> String {
     }
 }
 
-/// The `UNPRICED` line for one window: the events whose model has no price.
 fn unpriced_line(rows: &[store::UnpricedRow], width: usize) -> Option<String> {
     if rows.is_empty() {
         return None;
@@ -394,8 +352,6 @@ fn unpriced_line(rows: &[store::UnpricedRow], width: usize) -> Option<String> {
     ))
 }
 
-// ─── commands ───────────────────────────────────────────────────────────────
-
 pub enum TelemetryCommand {
     Run,
     Ensure,
@@ -412,7 +368,7 @@ pub fn run(ctx: &RuntimeContext, command: TelemetryCommand) -> Result<ExitCode> 
     match command {
         TelemetryCommand::Run => space(ctx),
         TelemetryCommand::Ensure => {
-            ensure(ctx, &Herdr::with_bin(&ctx.bins.harness.herdr), false)?;
+            ensure(ctx, &PaneHost::of(ctx), false)?;
             Ok(ExitCode::SUCCESS)
         }
         TelemetryCommand::CollectOnce => collect_once(ctx),
@@ -434,8 +390,6 @@ pub fn run(ctx: &RuntimeContext, command: TelemetryCommand) -> Result<ExitCode> 
     }
 }
 
-/// `horch telemetry collect --once`: one tick, no screen. Exit 2 when a live
-/// collector holds the lock.
 fn collect_once(ctx: &RuntimeContext) -> Result<ExitCode> {
     let root = ctx.paths.state_root.clone();
     let now = clock::now();
@@ -461,10 +415,6 @@ fn collect_once(ctx: &RuntimeContext) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// `horch telemetry`: the collector with its screen, or a viewer. A process
-/// that `ensure` started ([`start::START_ENV`]) marks its start first; when
-/// it takes the lock it closes the old collector workspaces, and when
-/// another collector holds the lock it ends instead of viewing.
 fn space(ctx: &RuntimeContext) -> Result<ExitCode> {
     install_signal_handlers();
     let root = ctx.paths.state_root.clone();
@@ -481,7 +431,7 @@ fn space(ctx: &RuntimeContext) -> Result<ExitCode> {
     let source = match lock::acquire(&root, &me)? {
         Ok(held) => {
             if let Some(request) = start::current(&root) {
-                close_after_claim(&root, &request, started_for.as_deref());
+                close_after_claim(ctx, &root, &request, started_for.as_deref());
                 start::clear(&root);
             }
             let c = Collector::open_in(
@@ -520,8 +470,6 @@ fn space(ctx: &RuntimeContext) -> Result<ExitCode> {
     if std::io::stdout().is_terminal() {
         screen::screen(&mut feed, tick)?;
     } else {
-        // No terminal (a pane started by a test, or output to a file): keep
-        // collecting until told to stop.
         while !SHUTDOWN.load(Ordering::SeqCst) {
             if let Err(e) = feed.next() {
                 eprintln!("horch telemetry: {e:#}");
@@ -540,39 +488,28 @@ fn sleep_until_shutdown(d: Duration) {
     }
 }
 
-/// `horch telemetry ensure` (SPC-03): nothing when a live collector runs
-/// this binary or a start is in progress; else a new workspace, never
-/// focused, running `horch telemetry`, without waiting for it. A failed
-/// earlier start is reported and started again. A live collector on another binary (an older build)
-/// is stopped first. Besides read-only list calls, only `workspace create
-/// --no-focus`, `pane run` and the `workspace close` of an old collector
-/// workspace touch herdr (W17).
-pub fn ensure(ctx: &RuntimeContext, herdr: &Herdr, quiet: bool) -> Result<()> {
+pub fn ensure(ctx: &RuntimeContext, herdr: &PaneHost, quiet: bool) -> Result<()> {
     ensure_current(ctx, herdr, quiet, &ctx.bins.exe()?, true)
 }
 
-/// After `horch install`: restart a live collector that does not run the
-/// binary just installed at `installed`. Starts none when none is live.
-pub fn restart_if_stale(ctx: &RuntimeContext, herdr: &Herdr, installed: &Path) -> Result<()> {
+pub fn restart_if_stale(ctx: &RuntimeContext, herdr: &PaneHost, installed: &Path) -> Result<()> {
     ensure_current(ctx, herdr, false, installed, false)
 }
 
-/// The one check behind [`ensure`] and [`restart_if_stale`]: a live
-/// collector whose recorded binary is not `exe` is stopped (by pid and start
-/// time, [`lock::stop`]) and a new one runs `exe`. A collector that cannot
-/// be stopped safely is reported live, with a warning, and left running.
 fn ensure_current(
     ctx: &RuntimeContext,
-    herdr: &Herdr,
+    herdr: &PaneHost,
     quiet: bool,
     exe: &Path,
     start_if_none: bool,
 ) -> Result<()> {
     let root = ctx.paths.state_root.clone();
+    let mut old_location: Option<(Option<String>, Option<String>)> = None;
     let go = match lock::holder(&root) {
         Holder::Live(info)
             if lock::runs_other_binary(&info, horch_core::exeid::exe_identity(exe).as_ref()) =>
         {
+            old_location = Some((info.workspace_id.clone(), info.pane_id.clone()));
             replace_other_binary(&root, &info, exe, quiet)
         }
         Holder::Live(info) => {
@@ -584,15 +521,47 @@ fn ensure_current(
     if !go || start_pending(&root, quiet) {
         return Ok(());
     }
-    start(ctx, herdr, quiet, exe)
+    let target_host = old_location
+        .and_then(|(ws, pane)| host_holding_collector(ctx, herdr, ws.as_deref(), pane.as_deref()))
+        .unwrap_or_else(|| herdr.clone());
+    start(ctx, &target_host, quiet, exe)
 }
 
-/// Stop a live collector that runs another binary. `false` when it cannot
-/// be stopped safely and is left running.
+fn candidate_hosts(ctx: &RuntimeContext, primary: &PaneHost) -> Vec<PaneHost> {
+    let mut out = vec![primary.clone()];
+    for h in horch_core::workspace::Hosts::reachable(ctx).hosts {
+        if h.backend() != primary.backend() {
+            out.push(h);
+        }
+    }
+    out
+}
+
+fn host_holding_collector(
+    ctx: &RuntimeContext,
+    primary: &PaneHost,
+    workspace_id: Option<&str>,
+    pane_id: Option<&str>,
+) -> Option<PaneHost> {
+    for h in candidate_hosts(ctx, primary) {
+        if let Some(ws) = workspace_id {
+            if h.workspace_list()
+                .ok()
+                .is_some_and(|all| all.iter().any(|w| w.workspace_id == ws))
+            {
+                return Some(h);
+            }
+        }
+        if let Some(pane) = pane_id {
+            if h.pane_get(pane).is_ok() {
+                return Some(h);
+            }
+        }
+    }
+    None
+}
+
 fn replace_other_binary(root: &Path, info: &lock::LockInfo, exe: &Path, quiet: bool) -> bool {
-    // A collector horch cannot prove it owns (no recorded start time,
-    // a reused pid) is left running: `ensure` runs on fleet start and
-    // must not fail because an old collector is live.
     let stopped = lock::stop(root, info, Duration::from_secs(5));
     match &stopped {
         Err(e) => {
@@ -607,8 +576,6 @@ fn replace_other_binary(root: &Path, info: &lock::LockInfo, exe: &Path, quiet: b
     stopped.is_ok()
 }
 
-/// The line `ensure` prints after it stops a collector that ran another
-/// binary. `ran` is the binary the collector recorded at its start.
 fn replaced_line(pid: u32, ran: Option<&horch_core::exeid::ExeIdentity>, exe: &Path) -> String {
     let now = exe.canonicalize().unwrap_or_else(|_| exe.to_path_buf());
     let why = match ran {
@@ -624,8 +591,6 @@ fn replaced_line(pid: u32, ran: Option<&horch_core::exeid::ExeIdentity>, exe: &P
     format!("stopped telemetry collector pid {pid}: {why}")
 }
 
-/// Whether a start is in progress, which blocks a new one. A failed earlier
-/// start is reported and cleared.
 fn start_pending(root: &Path, quiet: bool) -> bool {
     match start::pending(root) {
         start::Pending::Starting(request) => {
@@ -661,19 +626,14 @@ fn report_live(info: &lock::LockInfo, quiet: bool) {
     }
 }
 
-/// Where the live collector runs, as far as herdr can tell.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum LiveIn {
-    /// No live collector.
     Nothing,
-    /// The live collector's pane is in this workspace.
     Workspace(String),
-    /// A live collector whose workspace is not known (it recorded no pane,
-    /// or herdr does not know it). No telemetry workspace can be proved free.
     Unknown,
 }
 
-fn live_collector_in(herdr: &Herdr, root: &Path) -> LiveIn {
+fn live_collector_in(herdr: &PaneHost, root: &Path) -> LiveIn {
     match lock::holder(root) {
         Holder::Live(info) => match info.pane_id {
             Some(pane) => workspace_of(herdr, &pane, info.workspace_id)
@@ -684,10 +644,7 @@ fn live_collector_in(herdr: &Herdr, root: &Path) -> LiveIn {
     }
 }
 
-/// The workspace of a collector's pane: herdr's answer, else the recorded
-/// one. herdr pane ids are `<workspace>:p<n>`: a pane herdr no longer
-/// reports still names its workspace.
-fn workspace_of(herdr: &Herdr, pane: &str, recorded: Option<String>) -> Option<String> {
+fn workspace_of(herdr: &PaneHost, pane: &str, recorded: Option<String>) -> Option<String> {
     herdr
         .pane_get(pane)
         .ok()
@@ -696,9 +653,6 @@ fn workspace_of(herdr: &Herdr, pane: &str, recorded: Option<String>) -> Option<S
         .or_else(|| pane.split_once(':').map(|(w, _)| w.to_string()))
 }
 
-/// The workspaces labelled [`WORKSPACE_LABEL`] that hold no live collector:
-/// a collector that died or was stopped leaves its workspace with its pane at
-/// a shell prompt. A workspace with another label is never one of them.
 fn old_collector_workspaces(
     listed: &[horch_core::workspace::model::Workspace],
     live: &LiveIn,
@@ -714,23 +668,31 @@ fn old_collector_workspaces(
         .collect()
 }
 
-/// `exe telemetry` in the telemetry workspace, never focused, without a
-/// wait: under load the new process can take longer than any fixed wait to
-/// take the lock. The start is recorded first ([`start::record`]), so a
-/// later call can tell a slow start from a failed one. An old collector
-/// workspace with 1 pane is reused; the new collector closes every other
-/// old one once it holds the lock ([`close_after_claim`]).
-fn start(ctx: &RuntimeContext, herdr: &Herdr, quiet: bool, exe: &Path) -> Result<()> {
+fn start(ctx: &RuntimeContext, herdr: &PaneHost, quiet: bool, exe: &Path) -> Result<()> {
     let root = ctx.paths.state_root.clone();
     let id = start::new_id();
     let command = collector_command(ctx, exe, &id);
-    let old = herdr
-        .workspace_list()
-        .map(|all| old_collector_workspaces(&all, &live_collector_in(herdr, &root)))
-        .unwrap_or_default();
-    let (ws, pane) = match start_in_old(ctx, herdr, &id, &command, &old)? {
+    let mut create_host = herdr.clone();
+    let mut started = None;
+    for host in candidate_hosts(ctx, herdr) {
+        let Ok(all) = host.workspace_list() else {
+            continue;
+        };
+        if all
+            .iter()
+            .any(|w| w.label.as_deref() == Some(WORKSPACE_LABEL))
+        {
+            create_host = host.clone();
+        }
+        let old = old_collector_workspaces(&all, &live_collector_in(&host, &root));
+        if let Some(reused) = start_in_old(ctx, &host, &id, &command, &old)? {
+            started = Some(reused);
+            break;
+        }
+    }
+    let (ws, pane) = match started {
         Some(started) => started,
-        None => start_in_new(ctx, herdr, &id, &command)?,
+        None => start_in_new(ctx, &create_host, &id, &command)?,
     };
     if !quiet {
         output::println(&format!(
@@ -740,22 +702,26 @@ fn start(ctx: &RuntimeContext, herdr: &Herdr, quiet: bool, exe: &Path) -> Result
     Ok(())
 }
 
-/// The record of a start in workspace `ws`, pane `pane`.
-fn start_request(ctx: &RuntimeContext, id: &str, ws: &str, pane: &str) -> start::Request {
+fn start_request(
+    ctx: &RuntimeContext,
+    host: &PaneHost,
+    id: &str,
+    ws: &str,
+    pane: &str,
+) -> start::Request {
     start::Request {
         id: id.to_string(),
         requested_at: clock::now_stamp(),
         workspace_id: ws.to_string(),
         pane_id: pane.to_string(),
         herdr: ctx.bins.harness.herdr.clone(),
+        backend: host.backend(),
     }
 }
 
-/// Run the collector in an old workspace with 1 pane. `None` when there is
-/// none or the pane did not run it.
 fn start_in_old(
     ctx: &RuntimeContext,
-    herdr: &Herdr,
+    herdr: &PaneHost,
     id: &str,
     command: &str,
     old: &[String],
@@ -767,7 +733,10 @@ fn start_in_old(
     let Some((ws, pane)) = reusable else {
         return Ok(None);
     };
-    start::record(&ctx.paths.state_root, &start_request(ctx, id, &ws, &pane))?;
+    start::record(
+        &ctx.paths.state_root,
+        &start_request(ctx, herdr, id, &ws, &pane),
+    )?;
     Ok(herdr
         .pane_run(&pane, command)
         .map(|_| (ws.clone(), pane))
@@ -779,10 +748,9 @@ fn start_in_old(
         .ok())
 }
 
-/// Run the collector in a new workspace. A failure clears the start record.
 fn start_in_new(
     ctx: &RuntimeContext,
-    herdr: &Herdr,
+    herdr: &PaneHost,
     id: &str,
     command: &str,
 ) -> Result<(String, String)> {
@@ -792,14 +760,13 @@ fn start_in_new(
     let ws = ws.context("creating the telemetry workspace")?;
     start::record(
         root,
-        &start_request(ctx, id, &ws.workspace_id, &ws.root_pane_id),
+        &start_request(ctx, herdr, id, &ws.workspace_id, &ws.root_pane_id),
     )?;
     let ran = herdr.pane_run(&ws.root_pane_id, command);
     ran.inspect_err(|_| start::clear(root))?;
     Ok((ws.workspace_id, ws.root_pane_id))
 }
 
-/// A start is in progress: say where, and start no other.
 fn report_starting(request: &start::Request, quiet: bool) {
     if !quiet {
         output::println(&format!(
@@ -809,8 +776,6 @@ fn report_starting(request: &start::Request, quiet: bool) {
     }
 }
 
-/// Warn about a failed start that no collector replaced yet. `horch
-/// telemetry` and `horch quota` call it; stderr, so `--json` stays clean.
 pub(crate) fn report_failed_start(root: &Path) {
     if let start::Pending::Failed(request, why) = start::pending(root) {
         eprintln!(
@@ -820,11 +785,16 @@ pub(crate) fn report_failed_start(root: &Path) {
     }
 }
 
-/// The new collector holds the lock, so every old collector workspace can
-/// be closed: one labelled [`WORKSPACE_LABEL`] that is not the collector's.
-/// The workspace of `request` stays when this process is its start.
-fn close_after_claim(root: &Path, request: &start::Request, started_for: Option<&str>) {
-    let herdr = Herdr::with_bin(&request.herdr);
+fn close_after_claim(
+    ctx: &RuntimeContext,
+    root: &Path,
+    request: &start::Request,
+    started_for: Option<&str>,
+) {
+    let herdr = match request.backend {
+        horch_core::runtime::Backend::Herdr => PaneHost::herdr_bin(&request.herdr),
+        backend => PaneHost::for_backend(ctx, backend),
+    };
     let keep = (started_for == Some(request.id.as_str())).then_some(request.workspace_id.as_str());
     if let Ok(all) = herdr.workspace_list() {
         let other = |w: &horch_core::workspace::model::Workspace| {
@@ -841,10 +811,8 @@ fn close_after_claim(root: &Path, request: &start::Request, started_for: Option<
     }
 }
 
-/// The shell line that runs `exe telemetry` in a pane, for start `id`.
 fn collector_command(ctx: &RuntimeContext, exe: &Path, id: &str) -> String {
     let mut args = vec!["telemetry".to_string()];
-    // A pane does not inherit this process's environment.
     if let Some(dir) = super::path_text(ctx.paths.state_override.as_deref()) {
         args.push("--state-dir".into());
         args.push(dir);
@@ -864,9 +832,6 @@ fn collector_command(ctx: &RuntimeContext, exe: &Path, id: &str) -> String {
 mod tests {
     use super::*;
 
-    /// The replace line names what changed. A rebuild at the same path
-    /// used to print that path twice ("another build of X, not the build
-    /// at X").
     #[test]
     fn the_replace_line_says_what_changed() {
         let dir = tempfile::tempdir().unwrap();
@@ -900,7 +865,6 @@ mod tests {
     }
     use horch_core::telemetry::store::GROUPS;
 
-    /// A tiny negative share rounds to zero and prints `0%`, never `-0%`.
     #[test]
     fn pct_never_prints_a_negative_zero() {
         assert_eq!(pct(-0.0004), "0%");
@@ -910,8 +874,6 @@ mod tests {
         assert_eq!(pct(-0.25), "-25%");
     }
 
-    /// `horch quota` lists the Google pool always; the screen lists it only
-    /// when it has a reading.
     #[test]
     fn google_pool_row_only_with_a_reading_on_the_screen() {
         let mut pools = std::collections::BTreeMap::new();
@@ -933,8 +895,6 @@ mod tests {
         )));
     }
 
-    /// Each row kind of the POOL block: no reading, the Zen row with no
-    /// signal, a pool with no windows, and a pool with windows.
     #[test]
     fn pool_table_rows_by_kind() {
         use horch_core::routing::quota::Window;
@@ -988,8 +948,6 @@ mod tests {
         Snapshot::read(&path).unwrap()
     }
 
-    /// Compare a frame with its golden. `HORCH_BLESS=1` writes the golden
-    /// instead, for a deliberate layout change; review the diff it leaves.
     fn check_golden(name: &str, frame: &str) {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/golden")
@@ -1007,9 +965,6 @@ mod tests {
         assert_eq!(frame, want, "{name}");
     }
 
-    /// Never zero the unpriced (W9): a row with unpriced events marks its
-    /// cost with `*`, and the window's `UNPRICED` line counts the events,
-    /// their tokens and their models.
     #[test]
     fn tel_10_the_screen_lists_unpriced_events() {
         let mut snap = fixture_snapshot();
@@ -1045,8 +1000,6 @@ mod tests {
         assert!(!plain.join("\n").contains("UNPRICED"));
     }
 
-    /// A fake collector: a sleeping child recorded as the live lock holder
-    /// with the binary `exe`, and a thread that reaps it.
     #[cfg(unix)]
     fn fake_collector(
         state: &Path,
@@ -1079,10 +1032,6 @@ mod tests {
         (pid, rx)
     }
 
-    /// W9 step 4: `ensure` and `horch install` share one check. A live
-    /// collector on the current binary is left alone; one on another binary
-    /// (or one that recorded none: an older horch) is stopped before a new
-    /// one starts; with none live, the install check starts nothing.
     #[cfg(unix)]
     #[test]
     fn spc_03_ensure_restarts_a_collector_on_an_older_binary() {
@@ -1096,13 +1045,12 @@ mod tests {
                 .with("HORCH_STATE_DIR", &state.to_string_lossy()),
         )
         .unwrap();
-        // No herdr: a start would fail, so a pass proves none was tried.
-        let herdr = Herdr::with_bin(tmp.path().join("no-herdr"));
+        let herdr = PaneHost::herdr_bin(tmp.path().join("no-herdr"));
         restart_if_stale(&ctx, &herdr, &bin).expect("none live: nothing to do");
 
         let (pid, ended) = fake_collector(&state, horch_core::exeid::exe_identity(&bin));
         if horch_core::procid::start_time(pid).is_none() {
-            return; // No start times on this platform.
+            return;
         }
         ensure(&ctx, &herdr, true).expect("the current binary is left alone");
         restart_if_stale(&ctx, &herdr, &bin).unwrap();
@@ -1132,9 +1080,6 @@ mod tests {
         }
     }
 
-    /// W12: a live collector that horch cannot stop safely (no recorded start
-    /// time) is warned about and reported live. `ensure` returns `Ok`, signals
-    /// nothing and starts nothing.
     #[cfg(unix)]
     #[test]
     fn spc_03_ensure_leaves_a_collector_it_cannot_stop() {
@@ -1148,8 +1093,7 @@ mod tests {
                 .with("HORCH_STATE_DIR", &state.to_string_lossy()),
         )
         .unwrap();
-        // No herdr: a start would fail, so a pass proves none was tried.
-        let herdr = Herdr::with_bin(tmp.path().join("no-herdr"));
+        let herdr = PaneHost::herdr_bin(tmp.path().join("no-herdr"));
         let (pid, ended) = fake_collector(&state, None);
         let tel = horch_core::telemetry::dir(&state);
         let path = tel.join("collector.json");
@@ -1169,10 +1113,6 @@ mod tests {
         serde_json::from_value(serde_json::json!({"workspace_id": id, "label": label})).unwrap()
     }
 
-    /// W17 (SPC-03): an old collector workspace is one labelled `horch
-    /// telemetry` that does not hold the live collector. A workspace with
-    /// another label is never one. With a live collector whose workspace is
-    /// not known, no workspace is.
     #[test]
     fn spc_03_old_collector_workspaces() {
         let listed = [
@@ -1196,7 +1136,83 @@ mod tests {
         assert!(old_collector_workspaces(&listed, &LiveIn::Unknown).is_empty());
     }
 
-    /// A change in layout is a change to these files.
+    #[cfg(unix)]
+    #[test]
+    fn hcb_10_telemetry_is_not_started_twice_across_hosts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tmp.path().join("state");
+        let bin = tmp.path().join("horch");
+        std::fs::write(&bin, b"build").unwrap();
+        let herdr_bin = tmp.path().join("herdr");
+        let hc_bin = tmp.path().join("hc");
+        let app_bin = tmp.path().join("herdr-app");
+        let sock = tmp.path().join("default.sock");
+        std::fs::write(&sock, b"").unwrap();
+
+        assert!(crate::test_support::write_warmed(
+            &herdr_bin,
+            "#!/bin/sh\nif [ \"$1\" = warm ]; then exit 0; fi\n\
+             d=$(dirname \"$0\")\n\
+             printf '%s\\n' \"$*\" >> \"$d/herdr_calls\"\n\
+             case \"$1 $2\" in\n\
+             'workspace list') printf '{\"result\":{\"workspaces\":[{\"workspace_id\":\"w1\",\"label\":\"horch telemetry\"}]}}\\n' ;;\n\
+             'pane list') printf '{\"result\":{\"panes\":[{\"pane_id\":\"w1:p1\",\"workspace_id\":\"w1\"}]}}\\n' ;;\n\
+             'pane run') printf '{\"result\":{\"type\":\"ok\"}}\\n' ;;\n\
+             *) exit 1 ;;\n\
+             esac\n",
+            &["warm"],
+        )
+        .status
+        .success());
+        assert!(crate::test_support::write_warmed(
+            &hc_bin,
+            "#!/bin/sh\nif [ \"$1\" = warm ]; then exit 0; fi\n\
+             case \"$1\" in\n\
+             server) printf 'running\\n' ;;\n\
+             *) exit 0 ;;\n\
+             esac\n",
+            &["warm"],
+        )
+        .status
+        .success());
+        assert!(crate::test_support::write_warmed(
+            &app_bin,
+            "#!/bin/sh\nif [ \"$1\" = warm ]; then exit 0; fi\n\
+             d=$(dirname \"$0\")\n\
+             printf '%s\\n' \"$*\" >> \"$d/app_calls\"\n\
+             case \"$1\" in\n\
+             ls) printf '{\"spaces\":[]}\\n' ;;\n\
+             status) printf '{\"ok\":true}\\n' ;;\n\
+             do) echo CREATED_ON_HC >> \"$d/hc_created\"; printf '{\"space\":\"sp1\",\"tab\":\"tb1\",\"terminal\":\"t1\"}\\n' ;;\n\
+             esac\n",
+            &["warm"],
+        )
+        .status
+        .success());
+
+        let ctx = RuntimeContext::from_env(
+            &horch_core::runtime::MapEnv::new("/")
+                .with_exe(&bin)
+                .with("HOME", &tmp.path().to_string_lossy())
+                .with("HORCH_STATE_DIR", &state.to_string_lossy())
+                .with("HORCH_HERDR_BIN", &herdr_bin.to_string_lossy())
+                .with("HORCH_HC_BIN", &hc_bin.to_string_lossy())
+                .with("HORCH_HERDR_APP_BIN", &app_bin.to_string_lossy())
+                .with("HC_TERMINAL_SOCKET", &sock.to_string_lossy())
+                .with("HC_TERMINAL_ID", "t2"),
+        )
+        .unwrap();
+        assert_eq!(ctx.herdr.backend, horch_core::runtime::Backend::Hc);
+
+        ensure(&ctx, &PaneHost::of(&ctx), true).unwrap();
+        assert!(
+            !tmp.path().join("hc_created").exists(),
+            "ensure must reuse the existing horch telemetry workspace on herdr instead of creating a second one on hc"
+        );
+        let herdr_calls = std::fs::read_to_string(tmp.path().join("herdr_calls")).unwrap();
+        assert!(herdr_calls.contains("pane run w1:p1"), "{herdr_calls}");
+    }
+
     #[test]
     fn spc_04_render_goldens() {
         let snap = fixture_snapshot();
@@ -1220,9 +1236,6 @@ mod tests {
         }
     }
 
-    /// Q1: the layout goldens at 80x24, 100x20, 120x40 and 200x50, over a
-    /// fixture with long project paths, 2 projects with the same base name
-    /// and long roles.
     #[test]
     fn spc_04_render_layout_goldens() {
         let snap = layout_snapshot();
@@ -1244,14 +1257,11 @@ mod tests {
         Snapshot::read(&path).unwrap()
     }
 
-    /// The table under the title line that starts with `title`: its column
-    /// header and its rows.
     fn table<'a>(frame: &'a [String], title: &str) -> (&'a str, Vec<&'a str>) {
         let at = frame
             .iter()
             .position(|l| l.starts_with(&format!(" {title}")))
             .unwrap_or_else(|| panic!("no table {title}:\n{}", frame.join("\n")));
-        // The title says `rows A-B of N`, or `rows 0 of 0`.
         let shown = frame[at]
             .split_once("rows ")
             .and_then(|(_, r)| r.split_once(" of"))
@@ -1265,7 +1275,6 @@ mod tests {
         (frame[at + 1].as_str(), rows)
     }
 
-    /// The character column where `head` starts in a column header.
     fn column(head: &str, name: &str) -> Option<usize> {
         let mut at = 0;
         for word in head.split(' ') {
@@ -1277,10 +1286,6 @@ mod tests {
         None
     }
 
-    /// Q1 checks 31 to 47 on the render: at 80x24, 100x20, 120x40 and
-    /// 200x50, in every window and group, every kept column header shows
-    /// whole, money and the state flags always show and are never cut, every
-    /// column starts after a space, and the footer keeps `? help  q quit`.
     #[test]
     fn spc_04_the_layout_keeps_money_flags_and_gutters() {
         let snap = layout_snapshot();
@@ -1301,7 +1306,6 @@ mod tests {
                     for name in ["LIVE", "out", "$", "tok/min", "state"] {
                         assert!(column(head, name).is_some(), "{at}: {name} in {head}");
                     }
-                    // The state flags show whole.
                     let state = column(head, "state").unwrap();
                     for row in &rows {
                         let flags: String = row.chars().skip(state).collect();
@@ -1317,8 +1321,6 @@ mod tests {
                         tables.push((head, rows, column(head, "$").unwrap()));
                     }
                     for (head, rows, cost) in tables {
-                        // The role column has no head: `table_line` tests
-                        // its gutter.
                         let starts: Vec<usize> = [
                             "model", "phase", "plan", "fresh", "c.read", "out", "$", "tok/min",
                             "state", "tokens", "share", "cache", "$/DONE",
@@ -1348,9 +1350,6 @@ mod tests {
         }
     }
 
-    /// Q1: 2 projects with the same base name show their parent folder;
-    /// the others show the base name. On a wide terminal a long role shows
-    /// whole.
     #[test]
     fn spc_04_project_names_and_wide_roles() {
         let snap = layout_snapshot();
@@ -1368,8 +1367,6 @@ mod tests {
         assert!(text.contains("timeline-integration-wave7"), "{text}");
     }
 
-    /// Q1: at 24 rows the pools take 1 line each with no header, the facts
-    /// 1 line, and the live table shows at least 8 rows.
     #[test]
     fn spc_04_a_short_terminal_gives_the_rows_to_the_tables() {
         let snap = layout_snapshot();
@@ -1385,11 +1382,9 @@ mod tests {
             frame[22].contains("UNREAD") && frame[22].contains("orchestrators"),
             "{text}"
         );
-        // The header keeps the clock and drops the counts first.
         assert!(frame[0].starts_with("horch telemetry · 17:42Z"), "{text}");
     }
 
-    /// R1: `render --size` below 20x6 is an error that names the minimum.
     #[test]
     fn spc_04_render_rejects_a_size_below_the_minimum() {
         assert_eq!(parse_size("120x40").unwrap(), (120, 40));
@@ -1401,13 +1396,10 @@ mod tests {
         assert!(parse_size("wide").is_err());
     }
 
-    /// R1: SIGHUP takes the same path as SIGINT and SIGTERM.
     #[cfg(unix)]
     #[test]
     fn spc_04_sighup_ends_the_screen_like_sigterm() {
         install_signal_handlers();
-        // The handler of the platform is private: the 3 signals must share
-        // 1 handler that is neither the default nor ignore.
         let action = |sig: libc::c_int| {
             // SAFETY: reads the action; a null new action changes nothing.
             let mut old: libc::sigaction = unsafe { std::mem::zeroed() };

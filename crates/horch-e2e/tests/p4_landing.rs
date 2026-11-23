@@ -1,21 +1,3 @@
-//! The e2e tests of bundles through the binary (`docs/specs/fleetd/design.md`,
-//! FM-36, FM-37, "The bundle state machine", "fleetd owns the candidate
-//! refs"; `docs/tickets/fleetd-p4/53-p4-landing-e2e.md`).
-//!
-//! Each test writes what the orchestrator wrote before Phase 6 in a temp
-//! ledger: 1 run whose run branch `fleet/r1` is its feature branch, its idea,
-//! and done tasks, each with 1 commit on its own task branch and the row of
-//! that branch, as the bind writes it. Then real `horch fleetd` processes run
-//! on that ledger. Only they move the task branches and the bundles: each
-//! `bundle_build` and `fast_gate` job is a real `horch job run` process, and
-//! the fast gate runs in the gate sandbox of this host.
-//!
-//! Each process runs with temporary `HORCH_DATA_DIR`, `HORCH_STATE_DIR`,
-//! `HORCH_LEDGER_DB` and `FLEET_ROOT`. The load, the limits and the clock of
-//! this machine are not read: the harness gives the machine facts through
-//! `HORCH_MACHINE_FILE`, and the test `fleet.toml` gives the pass period.
-//! Each test waits for a row of the ledger, never for a time.
-
 #![cfg(unix)]
 
 use std::collections::BTreeSet;
@@ -34,38 +16,25 @@ use horch_e2e::fleetd::Fleetds;
 use horch_e2e::harness::{wait_for_or, Harness};
 use rusqlite::{params, Connection};
 
-/// The feature of the run `r1` (Q5: `F-<run seq>`).
 const FEATURE: &str = "F-0001";
 
-/// The run branch of `r1`, which is the branch of its feature.
 const FEATURE_BRANCH: &str = "fleet/r1";
 
-/// The 3 task branches of each test, in queue order, with the 1 file that
-/// each commits.
 const BRANCHES: [(&str, &str); 3] = [
     ("fleet/r1-T1-a", "f1.txt"),
     ("fleet/r1-T2-b", "f2.txt"),
     ("fleet/r1-T3-c", "f3.txt"),
 ];
 
-/// A fast gate that fails on each candidate that has `f2.txt`: the branch
-/// `fleet/r1-T2-b` is the failing branch of each bundle that holds it.
 const GATE_FAILS_ON_B: &str = "test ! -e f2.txt";
 
-/// A fast gate that passes after the test removes the file `hold` in the
-/// gate cache of the feature. The gate sets `XDG_CACHE_HOME` to the folder
-/// `xdg` of that cache.
 const GATE_WAITS_FOR_HOLD: &str =
     "while [ -e \"$XDG_CACHE_HOME/../hold\" ]; do sleep 0.1; done; true";
 
-/// The `HORCH_FAULT` point that ends fleetd after the commit of its pass and
-/// before the effects of that pass.
 const ABORT_AFTER_COMMIT: &str = "abort-after-commit";
 
-/// The exit code of a fleetd that a fault point ended.
 const ABORT_EXIT_CODE: i32 = 86;
 
-/// The bundle states that are not ended.
 const OPEN_BUNDLE: &str = "('building', 'gating', 'passed')";
 
 fn text(o: &Output) -> String {
@@ -84,9 +53,6 @@ fn cause(text: &str) -> Cause<'_> {
     }
 }
 
-/// Link `bwrap` of this host into the `bin/` of `h`, so that the gate jobs
-/// find the Linux sandbox on their sealed `PATH`. macOS needs no link: its
-/// sandbox is `/usr/bin/sandbox-exec`.
 fn link_bwrap(h: &Harness) {
     let found = std::env::var_os("PATH").and_then(|path| {
         std::env::split_paths(&path)
@@ -98,24 +64,14 @@ fn link_bwrap(h: &Harness) {
     }
 }
 
-// ─── the world of 1 test ────────────────────────────────────────────────
-
-/// 1 test: a harness with its own ledger, fleet root and git project, the
-/// run `r1` and its 3 done tasks. The fleetds stop before the harness
-/// removes its folder.
 struct World {
     fleetds: Fleetds,
     h: Harness,
-    /// The number of fleetd processes that the test started.
     started: usize,
-    /// The tip of each task branch of [`BRANCHES`], in order. fleetd
-    /// deletes a landed task branch, so the test keeps its tip.
     tips: Vec<String>,
 }
 
 impl World {
-    /// A world whose project declares the fast gate `fast`. No fleetd runs
-    /// yet.
     fn new(name: &str, fast: &str) -> World {
         let mut h = Harness::new(name).with_git();
         link_bwrap(&h);
@@ -132,8 +88,6 @@ impl World {
         h.set("FLEET_ROOT", fleet.to_string_lossy());
         h.set("HORCH_NO_WAKE", "1");
         h.set("HORCH_NO_WATCHDOG", "1");
-        // The docs_sync jobs of fleetd read this empty folder, not the
-        // network.
         let docs = h.root.join("docs-fixture");
         std::fs::create_dir_all(&docs).unwrap();
         h.set("HORCH_TEST_DOCS_FIXTURE", docs.to_string_lossy());
@@ -157,12 +111,6 @@ impl World {
         w
     }
 
-    /// Write the run `r1` with its run branch, its idea (FR-12), the tip of
-    /// its feature branch, and 1 done task for each of [`BRANCHES`] with
-    /// its task branch in `building`, as the bind writes it. Each task
-    /// branch starts at the repair limit of its task: a `gate_failed`
-    /// branch opens its needs-you item and starts no fix attempt, because
-    /// these tests have no worker. Gives the tip of each task branch.
     fn seed(&self) -> Vec<String> {
         let store = Store::open(&self.h.ledger_db()).unwrap();
         let conn = store.conn();
@@ -217,14 +165,12 @@ impl World {
         tips
     }
 
-    /// Run git in the project. Gives its trimmed output.
     fn git(&self, args: &[&str]) -> String {
         let o = self.h.git_cmd(args).output().unwrap();
         assert!(o.status.success(), "git {}: {}", args.join(" "), text(&o));
         String::from_utf8_lossy(&o.stdout).trim().to_string()
     }
 
-    /// The commit of `rev` in the project, or `None`.
     fn tip(&self, rev: &str) -> Option<String> {
         let o = self
             .h
@@ -236,7 +182,6 @@ impl World {
             .then(|| String::from_utf8_lossy(&o.stdout).trim().to_string())
     }
 
-    /// Whether `commit` is in the history of `rev`.
     fn contains(&self, rev: &str, commit: &str) -> bool {
         self.h
             .git_cmd(&["merge-base", "--is-ancestor", commit, rev])
@@ -245,9 +190,6 @@ impl World {
             .success()
     }
 
-    /// Someone commits the file `file` on the feature branch, with no
-    /// checkout and no index of the project, and moves the branch from its
-    /// tip by compare-and-set. Gives the new tip.
     fn someone_commits(&self, file: &str) -> String {
         let old = self.tip(FEATURE_BRANCH).unwrap();
         let index = self.h.root.join("someone.index");
@@ -287,7 +229,6 @@ impl World {
         new
     }
 
-    /// A connection of the test to the ledger, for its reads.
     fn conn(&self) -> Connection {
         let conn = Connection::open(self.h.ledger_db()).unwrap();
         conn.busy_timeout(std::time::Duration::from_secs(10))
@@ -295,7 +236,6 @@ impl World {
         conn
     }
 
-    /// Rows of 1 text column of the ledger.
     fn rows(&self, sql: &str) -> Vec<String> {
         let conn = self.conn();
         let mut stmt = conn.prepare(sql).unwrap();
@@ -309,7 +249,6 @@ impl World {
         self.conn().query_row(sql, [], |r| r.get(0)).unwrap()
     }
 
-    /// The landing state of the task branch `branch`.
     fn landing(&self, branch: &str) -> String {
         self.conn()
             .query_row(
@@ -328,7 +267,6 @@ impl World {
             .unwrap()
     }
 
-    /// The id and state of the first bundle in 1 of `states`.
     fn bundle_in(&self, states: &[&str]) -> Option<(i64, String)> {
         let conn = self.conn();
         let mut stmt = conn
@@ -342,7 +280,6 @@ impl World {
         found
     }
 
-    /// The events that moved the task branch `branch` from `from` to `to`.
     fn branch_moves(&self, branch: &str, from: &str, to: &str) -> i64 {
         self.conn()
             .query_row(
@@ -354,7 +291,6 @@ impl World {
             .unwrap()
     }
 
-    /// Start 1 more fleetd and wait until the `fleetd` row names it.
     fn start_fleetd(&mut self) -> u32 {
         self.started += 1;
         let name = format!("fleetd-{}", self.started);
@@ -367,13 +303,10 @@ impl World {
         pid
     }
 
-    /// Stop the running fleetd with SIGKILL, as a crash stops it.
     fn kill_fleetd(&mut self) {
         self.fleetds.kill_current();
     }
 
-    /// Run 1 fleetd with the fault point `fault` until it ends, and assert
-    /// that the fault ended it.
     fn run_fleetd_to_fault(&mut self, fault: &str) {
         self.started += 1;
         let name = format!("fleetd-{}", self.started);
@@ -389,12 +322,6 @@ impl World {
         );
     }
 
-    /// Wait until no bundle is open and no task branch is `ready` or
-    /// `in_bundle`.
-    /// `what` takes 1 bundle build and 1 fast gate for each step of the
-    /// bisect, so each wait is for the next step: it ends when the rows of
-    /// the bundles and of the jobs change, and it fails when no row changes
-    /// for the harness deadline.
     fn wait_settled(&self, what: &str) {
         while !self.settled() {
             let before = self.progress();
@@ -406,7 +333,6 @@ impl World {
         }
     }
 
-    /// The state of each bundle and the number of jobs.
     fn progress(&self) -> Vec<String> {
         let mut rows = self.rows("SELECT id || ' ' || state FROM bundles ORDER BY id");
         rows.push(self.count("SELECT count(*) FROM jobs").to_string());
@@ -414,20 +340,19 @@ impl World {
     }
 
     fn settled(&self) -> bool {
-        let open = self.count(&format!(
-            "SELECT count(*) FROM bundles WHERE state IN {OPEN_BUNDLE}"
+        let names = BRANCHES
+            .iter()
+            .map(|(b, _)| format!("'{b}'"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let unsettled = self.count(&format!(
+            "SELECT (SELECT count(*) FROM bundles WHERE state IN {OPEN_BUNDLE})
+                  + (SELECT count(*) FROM branches WHERE name IN ({names})
+                     AND landing_state IN ('ready', 'in_bundle', 'building', 'verifying'))"
         ));
-        let waiting = BRANCHES
-            .iter()
-            .filter(|(b, _)| matches!(self.landing(b).as_str(), "ready" | "in_bundle"))
-            .count();
-        let followed = BRANCHES
-            .iter()
-            .all(|(b, _)| !matches!(self.landing(b).as_str(), "building" | "verifying"));
-        open == 0 && waiting == 0 && followed
+        unsettled == 0
     }
 
-    /// The facts of the ledger and of each fleetd, for a failure message.
     fn evidence(&self) -> String {
         let bundles = self.rows(
             "SELECT id || ' ' || state || ' parent=' || COALESCE(parent_id, '-')
@@ -465,8 +390,6 @@ impl World {
         )
     }
 
-    /// Write the hold file of [`GATE_WAITS_FOR_HOLD`] in the gate cache of
-    /// the feature, which the gate sandbox can read. Gives its path.
     fn hold(&self) -> PathBuf {
         let dir = gate_tree::cache_dir(&self.h.fleet_root(), FEATURE);
         std::fs::create_dir_all(&dir).unwrap();
@@ -475,7 +398,6 @@ impl World {
         hold
     }
 
-    /// The id and run of the fast gate job of the bundle `id` when it runs.
     fn running_gate(&self, id: i64) -> Option<(i64, i64)> {
         self.conn()
             .query_row(
@@ -487,16 +409,12 @@ impl World {
             .ok()
     }
 
-    /// The candidate refs in the ref store of the project.
     fn candidate_refs(&self) -> Vec<String> {
         let out = self.git(&["for-each-ref", "--format=%(refname)", "refs/horch/bundle/"]);
         out.lines().map(str::to_string).collect()
     }
 }
 
-/// Assert that the branch `fleet/r1-T2-b` is the failing branch, that each
-/// other task branch landed with its commit on the feature branch, and that
-/// no commit of `kept` is lost.
 fn assert_landed_but_b(w: &World, kept: &[&str]) {
     for ((branch, _), tip) in BRANCHES.iter().zip(&w.tips) {
         let want = if *branch == "fleet/r1-T2-b" {
@@ -522,14 +440,6 @@ fn assert_landed_but_b(w: &World, kept: &[&str]) {
     }
 }
 
-// ─── FM-36 ──────────────────────────────────────────────────────────────
-
-/// FM-36: fleetd restarts while a bundle or its bisect is in flight. The
-/// test stops fleetd with SIGKILL each time it sees a bundle in a new
-/// state of `building` or `gating`, and starts a new fleetd. The fast gate
-/// fails on 1 branch, so the first bundle is bisected. Each new fleetd goes
-/// on from the rows: each bundle has 1 build run and at most 1 fast gate
-/// run, the failing branch is `gate_failed`, and each other branch lands.
 #[test]
 fn fm36_fleetd_restart_in_a_bundle_and_its_bisect_builds_nothing_twice() {
     let mut w = World::new("p4-fm36", GATE_FAILS_ON_B);
@@ -575,7 +485,6 @@ fn fm36_fleetd_restart_in_a_bundle_and_its_bisect_builds_nothing_twice() {
         "a fleetd stops while a child bundle of the bisect is in flight: {stopped_at:?}\n{}",
         w.evidence()
     );
-    // Each bundle is built 1 time, and gated at most 1 time.
     let bundles = w.count("SELECT count(*) FROM bundles");
     for (kind, at_least) in [("bundle_build", bundles), ("fast_gate", 1)] {
         let runs = w.rows(&format!(
@@ -603,15 +512,6 @@ fn fm36_fleetd_restart_in_a_bundle_and_its_bisect_builds_nothing_twice() {
     assert_eq!(abandoned, 0, "no run is abandoned\n{}", w.evidence());
 }
 
-// ─── FM-37 ──────────────────────────────────────────────────────────────
-
-/// FM-37: someone commits on the feature branch between the pass of the
-/// fast gate and the ref move. A fleetd ends after the commit of the pass
-/// that moves the bundle to `passed`, so the move does not run. Then
-/// someone commits on the feature branch. The next fleetd finds the
-/// feature tip at neither the base tip nor the candidate tip: it moves no
-/// ref, the bundle is `dropped`, and each member goes back to `ready`.
-/// Then the members land on the new tip, and the commit of someone stays.
 #[test]
 fn fm37_passed_bundle_whose_compare_and_set_fails_is_dropped_and_its_members_are_ready() {
     let mut w = World::new("p4-fm37", GATE_WAITS_FOR_HOLD);
@@ -626,8 +526,6 @@ fn fm37_passed_bundle_whose_compare_and_set_fails_is_dropped_and_its_members_are
         },
         || w.evidence(),
     );
-    // The gate job is a detached process: it goes on with no fleetd, and
-    // it ends when the hold file is gone.
     w.kill_fleetd();
     std::fs::remove_file(&hold).unwrap();
     let result = job_result_file::path(&w.h.fleet_root(), job.0, job.1);
@@ -642,8 +540,6 @@ fn fm37_passed_bundle_whose_compare_and_set_fails_is_dropped_and_its_members_are
             r.get(0)
         })
         .unwrap();
-    // Each fleetd ends after the commit of its first pass, before its
-    // effects. The pass that reads the verdict moves the bundle to `passed`.
     let until = std::time::Instant::now() + horch_e2e::harness::DEADLINE;
     while w.bundle_state(id) != "passed" {
         assert_eq!(w.bundle_state(id), "gating", "{}", w.evidence());
@@ -703,15 +599,6 @@ fn fm37_passed_bundle_whose_compare_and_set_fails_is_dropped_and_its_members_are
     );
 }
 
-// ─── the candidate refs ─────────────────────────────────────────────────
-
-/// "fleetd owns the candidate refs": the bundles of this test end in each
-/// of `dropped`, `failed` and `landed`. The first bundle is dropped:
-/// someone commits on the feature branch while no fleetd runs and the
-/// bundle is in flight. The next bundle fails its fast gate and is
-/// bisected, and its children land or fail. At the end, the ref store has
-/// no candidate ref, and each ended bundle has no `candidate_ref`: fleetd
-/// deleted each ref and verified the deletion.
 #[test]
 fn candidate_ref_of_each_ended_bundle_is_deleted_and_verified() {
     let mut w = World::new("p4-candidate-refs", GATE_FAILS_ON_B);
@@ -751,7 +638,6 @@ fn candidate_ref_of_each_ended_bundle_is_deleted_and_verified() {
         "SELECT count(*) FROM bundles WHERE state NOT IN {OPEN_BUNDLE}"
     ));
     assert_eq!(ended, w.count("SELECT count(*) FROM bundles"));
-    // Each built bundle had its candidate ref.
     let built = w.count("SELECT count(*) FROM bundles WHERE candidate_tip IS NOT NULL");
     assert!(built >= 3, "{}", w.evidence());
 }

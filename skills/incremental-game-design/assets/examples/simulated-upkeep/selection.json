@@ -1,0 +1,56 @@
+{
+ "designer_answered": true,
+ "starter_set": "K9",
+ "selected": [
+  {
+   "id": "generator",
+   "system": "S02",
+   "variant": "S02.levelled_factor",
+   "role": "generator upgrades",
+   "parameters": {}
+  },
+  {
+   "id": "speed",
+   "system": "S02",
+   "variant": "S02.levelled_factor",
+   "role": "speed upgrades",
+   "parameters": {}
+  },
+  {
+   "id": "care",
+   "system": "S02",
+   "variant": "S02.levelled_factor",
+   "role": "care",
+   "parameters": {}
+  },
+  {
+   "id": "upkeep",
+   "system": "S30",
+   "variant": "S30.need_capacity",
+   "parameters": {}
+  }
+ ],
+ "refused": [
+  "S08",
+  "S10",
+  "S11",
+  "S12",
+  "S13",
+  "S18",
+  "S19",
+  "S20",
+  "S21",
+  "S22",
+  "S23",
+  "S25",
+  "S26",
+  "S27",
+  "S29"
+ ],
+ "notes": [
+  "Starter set K9 (1 long run with no reset layer) with the upkeep card S30 and 3 S02 entries.",
+  "The entries generator and speed are multiplier groups. The entry care has the role care: its line is the care line of S30.",
+  "Each level of the generator line and of each multiplier group adds 1 to the need. Each care level multiplies the capacity.",
+  "S24 does not run while the game is closed (decision D5)."
+ ]
+}

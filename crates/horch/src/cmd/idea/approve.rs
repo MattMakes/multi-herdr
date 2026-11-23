@@ -1,10 +1,3 @@
-//! `horch idea approve <id>`: approve the assumptions of an idea
-//! (`docs/specs/fleetd/design.md`, "Quick approval stays with you"). It
-//! refuses to run inside a fleet attempt, prints `assumptions.md`, and
-//! sends `idea_approve` with the sha256 of the bytes that it printed
-//! (Q9 of `docs/tickets/fleetd-p6/MAP.md`). fleetd refuses the approval
-//! when the file changed after.
-
 use std::process::ExitCode;
 
 use anyhow::Result;
@@ -23,7 +16,6 @@ pub struct ApproveArgs {
     pub id: String,
 }
 
-/// `horch idea approve`.
 pub fn run(ctx: &RuntimeContext, args: ApproveArgs) -> Result<ExitCode> {
     if let Some(refused) = super::refuse_inside_fleet_attempt(ctx, COMMAND) {
         return Ok(refused);

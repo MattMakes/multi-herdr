@@ -1,18 +1,3 @@
-//! The orchestrator of a run before Phase 6, and its retirement (FM-16).
-//!
-//! There is no long-lived orchestrator conversation: 1 sub-orchestrator
-//! for each feature takes its place (`docs/specs/fleetd/design.md`, FM-16;
-//! `docs/tickets/fleetd-p6/45-retire-orch.md`). `horch fleet` starts no
-//! orchestrator, and the pass of fleetd respawns none. [`launch_run`] and
-//! [`claim`] refuse each orchestrator launch with [`RETIRED`], which names
-//! `horch idea add`.
-//!
-//! A live orchestrator of a run in flight at the update is not stopped: it
-//! ends by itself. What stays here serves the rows and the locks of such an
-//! orchestrator: the guard columns of its run ([`guard`], [`record_stop`],
-//! [`status_line`]), its harness ([`record_harness`]) and the lock of its
-//! workspace ([`lock`], [`holder`]).
-
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
@@ -21,21 +6,17 @@ use serde::Serialize;
 
 use super::util;
 
-/// The line of each refused orchestrator launch and claim (FM-16).
 pub const RETIRED: &str = "horch starts no orchestrator: there is no long-lived orchestrator \
                            conversation, and 1 sub-orchestrator for each feature takes its place. \
                            Add an idea: horch idea add \"...\"";
 
-/// The respawn guard of 1 run, from its `runs` row.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Guard {
-    /// When `horch fleet stop` or `run close` stopped the orchestrator.
     pub stopped_at: Option<String>,
     pub respawns: i64,
     pub last_respawn_at: Option<String>,
 }
 
-/// The respawn guard of `run_id`.
 pub fn guard(conn: &Connection, run_id: &str) -> Result<Guard> {
     Ok(conn.query_row(
         "SELECT orchestrator_stopped_at, orchestrator_respawns, last_respawn_at
@@ -51,9 +32,6 @@ pub fn guard(conn: &Connection, run_id: &str) -> Result<Guard> {
     )?)
 }
 
-/// Write `harness`, and `model` when the row has none, on each live
-/// orchestrator row of `workspace` that has no harness (TRF-44). Returns
-/// the rows changed.
 pub fn record_harness(
     conn: &Connection,
     workspace: &str,
@@ -71,8 +49,6 @@ pub fn record_harness(
     )?)
 }
 
-/// Record a deliberate stop of the orchestrator of `run_id`: no respawn
-/// follows. The first stop time stays. True when this call recorded it.
 pub fn record_stop(conn: &Connection, run_id: &str) -> Result<bool> {
     let n = conn.execute(
         "UPDATE runs SET orchestrator_stopped_at = ?2
@@ -82,22 +58,14 @@ pub fn record_stop(conn: &Connection, run_id: &str) -> Result<bool> {
     Ok(n == 1)
 }
 
-/// The run that an orchestrator launch continues: none. Each launch is
-/// refused with [`RETIRED`] (FM-16).
 pub fn launch_run() -> Result<()> {
     anyhow::bail!(RETIRED)
 }
 
-/// What 1 orchestrator launch did to its run ([`claim`]).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub enum Claimed {
-    /// The run is not active, or it already had this workspace and no stop.
     Unchanged,
-    /// The workspace or the stop changed: the text of the 1 `note` event.
     Changed(String),
-    /// The run's orchestrator still runs in the run's workspace: the run
-    /// stays there. `text` says why. `workspace` and `pid` name the run's
-    /// workspace and the lock holder's PID that the claim read.
     Skipped {
         text: String,
         workspace: String,
@@ -105,10 +73,6 @@ pub enum Claimed {
     },
 }
 
-/// The claim of `run_id` by an orchestrator pane in `workspace`: refused
-/// with [`RETIRED`] (FM-16). The run, its workspace and its rows do not
-/// change. The parameters stay for the `orchestrator_claim` request until
-/// its kind is retired (ticket 48 of fleetd-p6).
 pub fn claim(
     _tx: &Transaction,
     _run_id: &str,
@@ -119,7 +83,6 @@ pub fn claim(
     anyhow::bail!(RETIRED)
 }
 
-/// The folder of the workspace locks: beside the ledger, as the watchdog's.
 pub fn lock_dir(ledger_db: &Path) -> PathBuf {
     ledger_db
         .parent()
@@ -127,7 +90,6 @@ pub fn lock_dir(ledger_db: &Path) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("locks"))
 }
 
-/// The lock name of `workspace`, safe as a file name.
 fn lock_name(workspace: &str) -> String {
     let safe: String = workspace
         .chars()
@@ -142,8 +104,6 @@ fn lock_name(workspace: &str) -> String {
     format!("orchestrator-{safe}")
 }
 
-/// Take the orchestrator lock of `workspace`. `None` while a live process
-/// holds it. A dead holder's lock is broken. The guard releases on drop.
 pub fn lock(dir: &Path, workspace: &str) -> Result<Option<crate::fsx::DirLockGuard>> {
     match crate::fsx::DirLock::acquire(
         dir,
@@ -157,14 +117,12 @@ pub fn lock(dir: &Path, workspace: &str) -> Result<Option<crate::fsx::DirLockGua
     }
 }
 
-/// The live process that holds the orchestrator lock of a workspace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct Holder {
     pub pid: u32,
     pub started: Option<u64>,
 }
 
-/// The live holder of the orchestrator lock of `workspace`, if any.
 pub fn holder(dir: &Path, workspace: &str) -> Option<Holder> {
     let owner = dir
         .join(format!("{}.lock", lock_name(workspace)))
@@ -175,18 +133,12 @@ pub fn holder(dir: &Path, workspace: &str) -> Option<Holder> {
     crate::procid::alive(pid, started).then_some(Holder { pid, started })
 }
 
-/// What an orchestrator claim reads outside the ledger.
 pub trait Probe {
-    /// The live holder of the orchestrator lock of `workspace`.
     fn holder(&self, workspace: &str) -> Option<Holder>;
-    /// Whether `pid` runs with start time `started`.
     fn alive(&self, pid: u32, started: Option<u64>) -> bool;
-    /// Whether herdr still has `workspace`. `None` when herdr cannot say.
     fn workspace_open(&self, workspace: &str) -> Option<bool>;
 }
 
-/// The status line of the respawns of `run_id`; `None` before the first
-/// respawn and before a stop.
 pub fn status_line(conn: &Connection, run_id: &str) -> Result<Option<String>> {
     let g = guard(conn, run_id)?;
     let mut parts = Vec::new();
@@ -209,7 +161,6 @@ mod tests {
     use crate::taskledger::runs::{self, NewRun};
     use crate::taskledger::Store;
 
-    /// No lock holder, no live process, an open workspace.
     struct Dead;
 
     impl Probe for Dead {

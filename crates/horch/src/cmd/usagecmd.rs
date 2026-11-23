@@ -1,14 +1,3 @@
-//! `horch usage` - where the tokens went, from the telemetry event store
-//! (SPC-05).
-//!
-//! With no live collector it first runs one collector tick itself, so the
-//! store is current; with one, it reads the store as it is. Every ledger
-//! under the state root is covered (TEL-09), and the totals agree with
-//! `horch cost` class by class (TEL-10): both read through the same readers
-//! and price with the same function. An event stored before its model had a
-//! price is priced on read; an event whose model still has no price is
-//! listed as unpriced with its tokens, never counted as $0.
-
 use std::collections::BTreeMap;
 
 use anyhow::{bail, Result};
@@ -41,9 +30,7 @@ pub struct RecordRow {
     pub models: Vec<String>,
     pub events: u64,
     pub tokens: TokenClasses,
-    /// The priced events' cost.
     pub cost_usd: f64,
-    /// Models with no price. Their tokens are in `tokens`, not in `cost_usd`.
     pub unpriced_models: Vec<String>,
     pub unpriced_events: u64,
 }
@@ -58,13 +45,10 @@ pub struct Report {
     pub rows: Vec<RollupRow>,
     pub records: Vec<RecordRow>,
     pub total: RecordTotal,
-    /// The unpriced events, per model.
     pub unpriced: Vec<UnpricedRow>,
     pub live: Vec<collect::LiveRow>,
     pub insights: collect::Insights,
     pub unread: Vec<horch_core::telemetry::Unread>,
-    /// Whether this run read the store a live collector keeps, or ran its
-    /// own catch-up tick.
     pub source: String,
 }
 
@@ -74,12 +58,9 @@ pub struct RecordTotal {
     pub cost_usd: f64,
     pub records: u64,
     pub events: u64,
-    /// Events not in `cost_usd`: their model has no price.
     pub unpriced_events: u64,
 }
 
-/// Run one collector tick unless a live collector does that already.
-/// Returns the snapshot, and where it came from.
 pub fn catch_up(ctx: &RuntimeContext) -> Result<(Snapshot, String)> {
     let root = ctx.paths.state_root.clone();
     let now = clock::now();
@@ -126,8 +107,6 @@ pub fn usage(ctx: &RuntimeContext, args: UsageArgs) -> Result<()> {
     Ok(())
 }
 
-/// The stamp that `--since` or `--window` starts the report at. `--since`
-/// wins when both are given. `None` when neither is.
 fn since_stamp(args: &UsageArgs, now: chrono::DateTime<chrono::Utc>) -> Result<Option<String>> {
     match (&args.since, &args.window) {
         (Some(s), _) => clock::parse(s)
@@ -141,8 +120,6 @@ fn since_stamp(args: &UsageArgs, now: chrono::DateTime<chrono::Utc>) -> Result<O
     }
 }
 
-/// The events of the store stamped at or after `since`, and of `project`
-/// when one is given.
 fn stored_events(
     state_root: &std::path::Path,
     since: Option<&str>,
@@ -265,7 +242,6 @@ pub fn render(r: &Report) -> String {
             k(row.tokens.cache_read),
             k(row.tokens.output),
             k(row.tokens.total()),
-            // `*`: some of the row's events have no price (listed below).
             format!(
                 "{:.2}{}",
                 row.cost_usd,
@@ -332,8 +308,6 @@ mod tests {
         .to_string()
     }
 
-    /// A state root with 1 ledger record and its Claude transcript: 2 calls
-    /// on a priced model and 1 on a model with no price.
     fn fixture(root: &std::path::Path) -> (std::path::PathBuf, Locations) {
         let home = root.join("home");
         let state = root.join("state");
@@ -388,11 +362,6 @@ mod tests {
         }
     }
 
-    /// TEL-10: `horch usage` and `horch cost` give the same cost per record
-    /// on one fixture with an unpriced model. Neither counts the unpriced
-    /// call as $0; both name its model. It holds again after the stored
-    /// costs are erased, as an older collector left them: `horch usage`
-    /// prices them on read.
     #[test]
     fn tel_10_usage_and_cost_agree_per_record_with_an_unpriced_model() {
         let tmp = tempfile::tempdir().unwrap();
@@ -444,7 +413,6 @@ mod tests {
                 "{pass}: {text}"
             );
 
-            // Erase every stored cost, as a collector without the price did.
             for entry in std::fs::read_dir(&tel).unwrap().flatten() {
                 let p = entry.path();
                 let name = p.file_name().unwrap().to_string_lossy().into_owned();

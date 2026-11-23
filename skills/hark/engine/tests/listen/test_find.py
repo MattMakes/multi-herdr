@@ -48,8 +48,6 @@ def _cands(x):
 
 def test_fnd_1_strokes_land_on_clicks():
     cands, _, _ = _cands(clicks_signal())
-    # librosa also flags the start of the room tone; that onset has no attack (nothing reaches floor + 10 dB),
-    # so it gives no stroke.
     strokes = [c for c in cands if c["kind"] == "stroke"]
     assert len(strokes) == 5
     for s, t, nxt in zip(strokes, CLICK_TIMES, list(CLICK_TIMES[1:]) + [6.0]):
@@ -121,7 +119,7 @@ def test_fnd_6_windows_cover_everything(span):
         assert len(grid) <= 41
     if span == 900:
         assert len(grid) == 90 and grid[1][0] - grid[0][0] == pytest.approx(10)
-    if span == 3:  # F3: win = clamp(3 / 6, 1, 5) = 1 s, so 5 windows (the spec text says 1; see the report)
+    if span == 3:
         assert len(grid) == 5 and grid[0] == (0.0, 1.0)
 
 

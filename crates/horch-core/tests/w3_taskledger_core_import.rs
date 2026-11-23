@@ -1,6 +1,3 @@
-//! The import of the old JSON ledgers, `unfinished` and `reopened_from` (#150).
-//! Real `git` runs in temp repositories; nothing reads the host's state.
-
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -42,10 +39,9 @@ struct Fixture {
     store: Store,
 }
 
-/// A repo with 1 commit on `main`, an empty state root, an empty ledger.
 fn fixture() -> Fixture {
     let dir = tempfile::tempdir().unwrap();
-    let root = std::fs::canonicalize(dir.path()).unwrap();
+    let root = horch_platform::path::canonicalize(dir.path()).unwrap();
     let repo = root.join("repo");
     std::fs::create_dir_all(&repo).unwrap();
     git(&repo, &["init", "-q", "-b", "main"]);
@@ -98,7 +94,6 @@ impl Fixture {
     }
 }
 
-/// A worktree claim of the old JSON ledger, on the branch `id`.
 fn claim(id: &str, path: &Path, state: &str) -> Value {
     json!({"id": id, "path": path.to_str().unwrap(), "branch": id, "base": "main", "state": state})
 }
@@ -203,9 +198,6 @@ fn each_session_status_maps_to_worker_task_and_findings() {
     assert_eq!(report.findings.get("done_not_landed"), Some(&1));
 }
 
-/// An imported tree has the state of the release backfill (fleetd-p3 Q19):
-/// a `cleaned` tree is `removed`, each other tree is `orphaned`. A `removed`
-/// row leaves its path free, so fleetd can make a new tree there.
 #[test]
 fn an_imported_cleaned_tree_is_removed_and_a_new_tree_takes_its_path() {
     let mut f = fixture();
@@ -248,8 +240,6 @@ fn an_imported_cleaned_tree_is_removed_and_a_new_tree_takes_its_path() {
         .unwrap();
 }
 
-/// A `removed` row is history: a git worktree made by hand at its path
-/// later is an orphan that a second import reports.
 #[test]
 fn a_tree_made_by_hand_at_the_path_of_an_imported_cleaned_tree_is_an_orphan() {
     let mut f = fixture();
@@ -349,7 +339,6 @@ fn an_open_claim_with_unlanded_commits_and_dirty_files_raises_findings() {
     git(&wt, &["add", "new.txt"]);
     git(&wt, &["commit", "-q", "-m", "ahead"]);
     std::fs::write(wt.join("dirty.txt"), "d").unwrap();
-    // The record of the claim reported done: that is a second finding.
     f.write(
         "ledger.json",
         json!([session(
@@ -376,7 +365,6 @@ fn an_open_claim_with_unlanded_commits_and_dirty_files_raises_findings() {
         assert!(k[1].starts_with(&facts), "{}", k[1]);
         assert!(k[1].ends_with(" bytes"), "{}", k[1]);
     }
-    // The claim is tied to the worker of its record.
     assert_eq!(
         f.rows("SELECT CASE WHEN w.worker_id = wt.worker_id AND wt.task_id = w.task_id THEN 'tied' ELSE 'loose' END FROM worktrees wt, workers w"),
         vec![vec!["tied".to_string()]]
@@ -427,7 +415,6 @@ fn a_pending_mail_file_without_an_id_is_keyed_by_its_file_name() {
         json!({"id": "given", "text": "yo"}).to_string(),
     )
     .unwrap();
-    // A JSON file that is not a session ledger is not a source.
     f.write("other.json", json!([{"no": "record_id"}]));
     let report = f.import(false);
     assert_eq!((report.files.len(), report.raw_added), (2, 2));
@@ -440,7 +427,6 @@ fn a_pending_mail_file_without_an_id_is_keyed_by_its_file_name() {
     );
 }
 
-/// 1 native run, closed, with the rows `sync_native` reads.
 fn native_fixture(f: &Fixture) {
     let c = f.store.conn();
     for sql in [
@@ -449,7 +435,6 @@ fn native_fixture(f: &Fixture) {
     ] {
         c.execute(sql, []).unwrap();
     }
-    // FR-12: each native task belongs to an idea.
     let idea = horch_core::taskledger::schema::run_idea(c, "r1", "now", true).unwrap();
     assert_eq!(idea.as_deref(), Some("I-0001"));
     for sql in [
@@ -467,7 +452,6 @@ fn unfinished_lists_native_leftovers_once_and_get_finding_reads_one() {
     let f = fixture();
     native_fixture(&f);
     let c = f.store.conn();
-    // The pass of fleetd writes the findings; `unfinished` only reads.
     assert_eq!(import::unfinished(c, None).unwrap(), vec![]);
     import::sync_native(c).unwrap();
     let first = import::unfinished(c, None).unwrap();

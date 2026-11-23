@@ -1,6 +1,3 @@
-//! The concern channel for the code of macOS and Linux: a Unix socket with
-//! mode 0600 in a folder of mode 0700. `mac` and `linux` read the peer.
-
 use std::fs::{self, DirBuilder, Permissions};
 use std::io;
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, PermissionsExt};
@@ -13,8 +10,6 @@ use crate::channel::{AtName, User};
 pub(crate) type Stream = UnixStream;
 pub(crate) type Listener = UnixListener;
 
-/// The socket file is made inside a folder that only this user can enter,
-/// so no other user can connect between the bind and the change of mode.
 pub(crate) fn bind(name: &Path) -> io::Result<Listener> {
     let folder = match name.parent() {
         Some(folder) if !folder.as_os_str().is_empty() => folder,
@@ -29,8 +24,6 @@ pub(crate) fn bind(name: &Path) -> io::Result<Listener> {
     Ok(listener)
 }
 
-/// Make `folder` with mode 0700 when it is missing. Refuse a folder that
-/// another user owns or that others can enter.
 fn owner_only_folder(folder: &Path) -> io::Result<()> {
     DirBuilder::new()
         .recursive(true)
@@ -55,8 +48,6 @@ pub(crate) fn accept(listener: &Listener) -> io::Result<Stream> {
     listener.accept().map(|(stream, _)| stream)
 }
 
-/// The connect of the ipc concern waits only until `deadline`. Its stream
-/// is nonblocking, and this stream blocks again on each read and write.
 pub(crate) fn connect(name: &Path, deadline: Instant) -> io::Result<Stream> {
     let stream = crate::unix::ipc::connect_by(name, deadline)?;
     stream.set_nonblocking(false)?;

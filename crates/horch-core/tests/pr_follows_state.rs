@@ -1,13 +1,3 @@
-//! The pull request follows the state (docs/specs/fleetd/design.md, "The
-//! pull request follows the state", "Between features": The pull request;
-//! preservation-04-behavior.md row F17; docs/tickets/fleetd-p4/39).
-//!
-//! Each test makes its own temporary ledger, a local bare repository as the
-//! remote `origin`, a clone of it as the repository of the project, and a
-//! fake `gh` on the PATH of the run. The fake `gh` keeps 1 pull request in
-//! the folder `gh/` beside its own folder, and logs each call there. The
-//! push job runs with the fleet clock of the ledger, set by the test.
-
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -38,14 +28,9 @@ use rusqlite::{params, Connection, TransactionBehavior};
 
 const FEATURE: &str = "F-0001";
 const BRANCH: &str = "fleet/run/x";
-/// The web address of the remote, as `remote.origin.url` names it. A push
-/// goes to the local bare repository through `url.<bare>.pushInsteadOf`.
 const WEB: &str = "https://github.com/acme/x";
-/// The address that the fake `gh` gives to a new pull request.
 const NEW_PR: &str = "https://github.com/acme/x/pull/7";
 
-/// The fake `gh`: `pr view`, `pr create`, `pr edit` and `pr ready` of 1
-/// pull request, kept as files in `<bin>/../gh/`.
 const FAKE_GH: &str = r#"#!/bin/sh
 d="$(cd "$(dirname "$0")/../gh" && pwd)"
 echo "$*" >> "$d/log"
@@ -86,8 +71,6 @@ case "$1 $2" in
 esac
 "#;
 
-// ─── the world of a test ────────────────────────────────────────────────
-
 struct World {
     dir: tempfile::TempDir,
     conn: Connection,
@@ -97,13 +80,9 @@ struct World {
     tools: Tools,
 }
 
-/// A temp ledger with the fleet clock at 0, a run with the feature, its
-/// branch row and `tasks` landed task branches, a remote with `main`, a
-/// local feature branch 1 commit past `main`, and the fake `gh`. `pr` is
-/// the `pr` key of the project file on the feature branch, if any.
 fn world(pr: Option<&str>, tasks: &[&str]) -> World {
     let dir = tempfile::tempdir().unwrap();
-    let top = dir.path().canonicalize().unwrap();
+    let top = horch_platform::path::canonicalize(dir.path()).unwrap();
     let mut conn = Connection::open(top.join("ledger.sqlite3")).unwrap();
     conn.busy_timeout(Duration::from_secs(10)).unwrap();
     schema::migrate_to(&mut conn, schema::VERSION).unwrap();
@@ -171,7 +150,6 @@ fn world(pr: Option<&str>, tasks: &[&str]) -> World {
             primary_branch: "main",
         };
         rows::insert_feature(tx, None, &new, cause("feature accepted"))?;
-        // FR-12: a task of the run needs an idea in flight of the feature.
         let idea = NewIdea {
             id: "I-1",
             feature_id: FEATURE,
@@ -196,7 +174,9 @@ fn world(pr: Option<&str>, tasks: &[&str]) -> World {
 
 impl World {
     fn gh_dir(&self) -> PathBuf {
-        self.dir.path().canonicalize().unwrap().join("gh")
+        horch_platform::path::canonicalize(self.dir.path())
+            .unwrap()
+            .join("gh")
     }
 
     fn gh_file(&self, name: &str) -> String {
@@ -206,13 +186,10 @@ impl World {
             .to_string()
     }
 
-    /// The calls of the fake `gh`, 1 for each line.
     fn gh_log(&self) -> Vec<String> {
         self.gh_file("log").lines().map(str::to_string).collect()
     }
 
-    /// A pull request that a claim attempt opened before: open, with
-    /// `body`.
     fn existing_pr(&self, body: &str) {
         let d = self.gh_dir();
         std::fs::write(d.join("url"), format!("{NEW_PR}\n")).unwrap();
@@ -230,7 +207,6 @@ impl World {
         tx.commit().unwrap();
     }
 
-    /// A task `title` of the run whose task branch landed on the feature.
     fn landed_task(&mut self, title: &str) {
         let new = NewTask::work(title, &format!("tickets/{title}.md"), "dev");
         let task = tasks::add(&self.conn, &self.run, &new, Actor::Orchestrator)
@@ -264,7 +240,6 @@ impl World {
             .unwrap();
     }
 
-    /// A new commit on the feature branch, seen by the pass.
     fn new_commit(&mut self, file: &str) {
         commit(&self.repo, file, "x\n");
         self.see_local_tip();
@@ -283,7 +258,6 @@ impl World {
         });
     }
 
-    /// The push rule at `clock`.
     fn queue(&mut self, clock: i64) -> Option<Queued> {
         let config = self.config.clone();
         let repo = path(&self.repo).to_string();
@@ -305,8 +279,6 @@ impl World {
         queued
     }
 
-    /// Queue the push at `clock` and run its executor, as `horch job run`
-    /// runs it. Give the run row.
     fn push(&mut self, clock: i64) -> JobRow {
         self.conn
             .execute("UPDATE fleetd SET fleet_clock_s = ?1 WHERE id = 1", [clock])
@@ -339,7 +311,6 @@ impl World {
         rows::feature(&self.conn, FEATURE).unwrap().unwrap()
     }
 
-    /// The text of each open needs-you item.
     fn open_items(&self) -> Vec<String> {
         needs_you::open_items(&self.conn)
             .unwrap()
@@ -377,8 +348,6 @@ fn make_runnable(file: &Path) {
 #[cfg(not(unix))]
 fn make_runnable(_: &Path) {}
 
-/// Run git in `dir` for the test itself, with no config of the user, and
-/// give its trimmed output. A failed call fails the test.
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
         .arg("-C")
@@ -413,13 +382,10 @@ fn commit(dir: &Path, file: &str, body: &str) {
     git(dir, &["commit", "-q", "-m", file]);
 }
 
-// ─── the tests ──────────────────────────────────────────────────────────
-
 #[cfg(unix)]
 #[test]
 fn ready_feature_opens_its_pull_request() {
     let mut w = world(None, &["one"]);
-    // An open feature with no pull request: no push, no pull request.
     assert!(w.queue(0).is_none());
     assert!(w.gh_log().is_empty(), "{:?}", w.gh_log());
 
@@ -437,7 +403,6 @@ fn ready_feature_opens_its_pull_request() {
     assert_eq!(f.pr_state, "open");
     assert_eq!(w.gh_file("draft"), "false");
 
-    // The pull request exists: a second push opens no second one.
     w.new_commit("g.txt");
     w.push(20);
     let creates = w
@@ -452,7 +417,6 @@ fn ready_feature_opens_its_pull_request() {
 #[test]
 fn ready_feature_whose_tip_is_pushed_still_opens_its_pull_request() {
     let mut w = world(None, &["one"]);
-    // A rebase pushed the tip while the feature was open.
     w.conn
         .execute(
             "UPDATE branches SET seen_remote_tip = seen_tip WHERE name = ?1",
@@ -482,7 +446,6 @@ fn feature_open_again_marks_it_draft() {
     w.push(10);
     assert_eq!(w.gh_file("draft"), "false");
 
-    // A new idea: the feature is open again, and its tip moves.
     w.set_state("open");
     w.new_commit("g.txt");
     w.push(20);
@@ -495,7 +458,6 @@ fn feature_open_again_marks_it_draft() {
         w.gh_log()
     );
 
-    // Ready again: the draft becomes ready for review.
     w.set_state("ready");
     w.new_commit("h.txt");
     w.push(30);
@@ -532,7 +494,6 @@ fn task_sections_keep_their_markers() {
     let mut w = world(None, &["one", "two"]);
     let t1 = tasks::of_run(&w.conn, &w.run.run_id).unwrap()[0].short();
     let t2 = tasks::of_run(&w.conn, &w.run.run_id).unwrap()[1].short();
-    // A claim attempt opened the pull request with the section of T-1.
     let old = format!(
         "Run `x`.\n\n<!-- horch:task {t1} -->\nclaim text of {t1}\n<!-- /horch:task {t1} -->\n\nOperator note."
     );
@@ -561,7 +522,6 @@ fn task_sections_keep_their_markers() {
         1
     );
 
-    // A second push changes no section.
     w.new_commit("g.txt");
     w.push(20);
     assert_eq!(w.gh_file("body"), body);

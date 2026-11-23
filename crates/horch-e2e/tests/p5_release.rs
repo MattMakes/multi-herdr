@@ -1,37 +1,3 @@
-//! The release test of Phase 5 (`docs/specs/fleetd/design.md`, "What a
-//! release does to a run in flight", row Phase 5; Q3 of
-//! `docs/tickets/fleetd-p5/MAP.md`; FM-24).
-//!
-//! An old worker on Phase 4 runs `horch ledger progress` and
-//! `horch ledger done` after the update. Each one has 1 effect, and only
-//! fleetd writes the ledger. The run is not stopped.
-//!
-//! The Phase 4 ledger is built by the real migration steps up to
-//! [`schema::PHASE_4_VERSION`], then the rows of a run in flight are
-//! written as a Phase 4 binary left them:
-//! - a live claim attempt with no outbox, and a live push attempt with its
-//!   task folder and its outbox;
-//! - a task whose attempt ended;
-//! - the `fleetd` row of the Phase 4 fleetd.
-//!
-//! Each old worker is a stand-in: a `sh` process, recorded as the wrapper
-//! and the agent of its attempt. It waits on its stdin, then runs the 2
-//! commands as its children, so its attempt is in their process chain.
-//! The old fleetd is a stand-in too: a `sleep` process that the `fleetd`
-//! row names.
-//!
-//! The update: the test stops the old fleetd, migrates the ledger to
-//! [`schema::PHASE_5_VERSION`] and starts `horch fleetd` of this branch.
-//! Its first pass makes the outbox of the claim attempt (Q3). The test then
-//! stops fleetd with `SIGSTOP`, so no pass runs while the old worker runs
-//! its commands: the ledger has no row of them. After `SIGCONT`, fleetd
-//! ingests the files, and each command has 1 effect, also after 2 more
-//! passes.
-//!
-//! Each `horch` process other than fleetd runs with
-//! `HORCH_TEST_ASSERT_READ_ONLY=1`: a writable open of the ledger panics,
-//! and the command fails (ticket 42).
-
 #![cfg(unix)]
 
 use std::io::Write as _;
@@ -49,33 +15,21 @@ use horch_e2e::harness::{wait_for_or, Harness};
 use rusqlite::Connection;
 use serde_json::Value;
 
-/// The fleet clock of the Phase 4 `fleetd` row at the update.
 const CLOCK: i64 = 5000;
-/// The lease of each live attempt ends 1 day of the fleet clock after the
-/// update: no lease ends in a test.
 const LEASE_END: i64 = CLOCK + 86_400;
 
-/// The claim attempt, its task and its worker.
 const CLAIM_TASK: &str = "T-1";
 const CLAIM_ATTEMPT: &str = "T-1/A1";
 const CLAIM_WORKER: &str = "w-claim";
-/// The push attempt, its task and its worker.
 const PUSH_TASK: &str = "T-2";
 const PUSH_ATTEMPT: &str = "T-2/A1";
 const PUSH_WORKER: &str = "w-push";
-/// The task whose attempt ended before the update, the attempt and its
-/// worker.
 const ENDED_TASK: &str = "T-3";
 const ENDED_ATTEMPT: &str = "T-3/A1";
 const ENDED_WORKER: &str = "w-ended";
 
-/// The `fleet.toml` of each test: 1 pass each second.
 const FLEET_TOML: &str = "pass_period_s = 1\n";
 
-/// The script of an old worker. `$0` is its name, `$1` the `horch`
-/// binary, `$2` the text of `progress`, `$3` the summary of `done` and `$4`
-/// the folder of the outputs. It waits for 1 line, runs the 2 commands,
-/// writes the exit code of each, then waits for the end of the test.
 const OLD_WORKER: &str = r#"read go
 "$1" ledger progress "$2" >"$4/progress.out" 2>&1
 echo $? >"$4/progress.code"
@@ -84,8 +38,6 @@ echo $? >"$4/done.code"
 read end
 "#;
 
-/// A harness with its own ledger, fleet root, data folder and git
-/// repository, no watchdog, and the read-only seam for each process.
 fn world(name: &str) -> Harness {
     let mut h = Harness::new(name).with_git();
     let root = fleet_root(&h);
@@ -108,7 +60,6 @@ fn fleet_root(h: &Harness) -> PathBuf {
     h.root.join("fleet")
 }
 
-/// The folder of attempt `A1` of `task`.
 fn attempt_dir(h: &Harness, task: &str) -> PathBuf {
     fleet_root(h)
         .join("tasks")
@@ -121,13 +72,10 @@ fn outbox(h: &Harness, task: &str) -> PathBuf {
     attempt_dir(h, task).join("outbox")
 }
 
-/// A read connection of the test to the ledger. The test process has no
-/// seam: it reads only.
 fn read(h: &Harness) -> Connection {
     Connection::open(db(h)).unwrap()
 }
 
-/// A `sleep` process: the old fleetd. Killed at the end of the test.
 struct OldFleetd {
     child: Child,
     started: u64,
@@ -140,7 +88,6 @@ impl OldFleetd {
         OldFleetd { child, started }
     }
 
-    /// Stop it, and wait until it is gone.
     fn stop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
@@ -153,13 +100,10 @@ impl Drop for OldFleetd {
     }
 }
 
-/// An old worker: the `sh` process of [`OLD_WORKER`], started before the
-/// update. Killed at the end of the test.
 struct OldWorker {
     child: Child,
     stdin: Option<ChildStdin>,
     started: u64,
-    /// The folder of its outputs.
     out: PathBuf,
 }
 
@@ -169,8 +113,6 @@ impl OldWorker {
         std::fs::create_dir_all(&out).unwrap();
         let mut cmd = Command::new("/bin/sh");
         h.seal(&mut cmd);
-        // The environment of a worker of Phase 4. The outbox writer reads
-        // none of it: it finds the attempt by the process chain.
         cmd.env("HORCH_WORKER_ID", name)
             .env("HORCH_ROLE", name)
             .arg("-c")
@@ -202,8 +144,6 @@ impl OldWorker {
         procid::alive(self.pid(), Some(self.started))
     }
 
-    /// Run `progress` and `done`, and wait until both ended. Each must
-    /// pass.
     fn run_commands(&mut self) {
         let stdin = self.stdin.as_mut().expect("the stdin of the old worker");
         stdin.write_all(b"go\n").unwrap();
@@ -235,17 +175,14 @@ impl Drop for OldWorker {
     }
 }
 
-/// The run in flight on Phase 4: the ledger, the old fleetd, the 2 old
-/// workers and fleetd of this branch after the update.
 struct Flight {
-    h: Harness,
-    old_fleetd: OldFleetd,
+    fleetds: Fleetds,
     claim: OldWorker,
     push: OldWorker,
-    fleetds: Fleetds,
+    old_fleetd: OldFleetd,
+    h: Harness,
 }
 
-/// The progress text and the done summary of the old worker of `task`.
 fn texts(task: &str) -> (String, String) {
     (
         format!("{task}: the old worker reports progress after the update"),
@@ -254,7 +191,6 @@ fn texts(task: &str) -> (String, String) {
 }
 
 impl Flight {
-    /// The Phase 4 run in `h`, with its 2 old workers and the old fleetd.
     fn on_phase_4(name: &str) -> Flight {
         let h = world(name);
         let old_fleetd = OldFleetd::start();
@@ -274,10 +210,6 @@ impl Flight {
         }
     }
 
-    /// The update: stop the old fleetd, migrate the ledger to the next
-    /// schema version and start fleetd of this branch. Wait for its first
-    /// pass: it makes the outbox of the claim attempt (Q3). Gives the PID
-    /// of fleetd.
     fn update(&mut self) -> u32 {
         self.old_fleetd.stop();
         let mut conn = Connection::open(db(&self.h)).unwrap();
@@ -293,15 +225,12 @@ impl Flight {
         pid
     }
 
-    /// The `at` of the heartbeat of fleetd: it changes at the end of each
-    /// pass.
     fn heartbeat_at(&self) -> Option<String> {
         let path = fleet_root(&self.h).join("run").join("heartbeat.json");
         let hb: Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
         hb["at"].as_str().map(str::to_string)
     }
 
-    /// Wait for the end of `n` passes of fleetd after this call.
     fn wait_passes(&self, n: usize) {
         for _ in 0..n {
             let before = self.heartbeat_at();
@@ -317,7 +246,6 @@ impl Flight {
     }
 }
 
-/// Send `signal` to fleetd `pid`.
 fn signal(pid: u32, signal: i32) {
     let pid = libc::pid_t::try_from(pid).unwrap();
     // SAFETY: kill(2) with a PID of a child of this test and a signal
@@ -326,14 +254,6 @@ fn signal(pid: u32, signal: i32) {
     assert_eq!(r, 0, "kill {signal} {pid}");
 }
 
-/// The rows of the Phase 4 ledger of `h`: run `r1` of its project.
-/// - [`CLAIM_TASK`] is `running` with the live claim attempt
-///   [`CLAIM_ATTEMPT`] of `claim`.
-/// - [`PUSH_TASK`] is `running` with the live push attempt [`PUSH_ATTEMPT`]
-///   of `push`.
-/// - [`ENDED_TASK`] is held: its attempt [`ENDED_ATTEMPT`] ended, and its
-///   worker is stopped.
-/// - The `fleetd` row names `old` with the fleet clock at [`CLOCK`].
 fn phase_4_ledger(h: &Harness, old: &OldFleetd, claim: &OldWorker, push: &OldWorker) {
     let mut conn = Connection::open(db(h)).unwrap();
     schema::migrate_to(&mut conn, schema::PHASE_4_VERSION).unwrap();
@@ -427,9 +347,6 @@ fn phase_4_ledger(h: &Harness, old: &OldFleetd, claim: &OldWorker, push: &OldWor
     .unwrap();
 }
 
-/// The task folder and the outbox of the push attempt, as `horch spawn`
-/// of Phase 4 made them: `task.yaml`, `START.md` and an empty outbox with
-/// mode 0700.
 fn phase_4_push_folder(h: &Harness) {
     use std::os::unix::fs::PermissionsExt;
     let task_dir = fleet_root(h).join("tasks").join(PUSH_TASK);
@@ -452,7 +369,6 @@ fn phase_4_push_folder(h: &Harness) {
     std::fs::write(task_dir.join("START.md"), "# T2\n").unwrap();
 }
 
-/// The events of `kind` of `task` with the text `text`.
 fn events(conn: &Connection, task: &str, kind: &str, text: &str) -> i64 {
     conn.query_row(
         "SELECT count(*) FROM events WHERE task_id = ?1 AND kind = ?2 AND text = ?3",
@@ -462,8 +378,6 @@ fn events(conn: &Connection, task: &str, kind: &str, text: &str) -> i64 {
     .unwrap()
 }
 
-/// The `ingested` rows of the file `name` in the outbox of `task`, as
-/// `outcome` each.
 fn ingested(conn: &Connection, task: &str, name: &str) -> Vec<String> {
     let pattern = format!("%/tasks/{task}/attempts/A1/outbox/{name}");
     let mut stmt = conn
@@ -484,8 +398,6 @@ fn task_status(conn: &Connection, task: &str) -> String {
     .unwrap()
 }
 
-/// The moves of `task` from `running` to `verifying`, from its events. An
-/// event shows the words that a reader sees.
 fn moves_to_verifying(conn: &Connection, task: &str) -> i64 {
     let pattern = format!(
         "%task {task}: {} -> {}",
@@ -500,7 +412,6 @@ fn moves_to_verifying(conn: &Connection, task: &str) -> i64 {
     .unwrap()
 }
 
-/// Each event of `task`, for the message of a failed assertion.
 fn seen(conn: &Connection, task: &str) -> String {
     let mut stmt = conn
         .prepare("SELECT actor || ' ' || kind || ' ' || text FROM events WHERE task_id = ?1 ORDER BY event_id")
@@ -513,15 +424,11 @@ fn seen(conn: &Connection, task: &str) -> String {
     rows.join("\n")
 }
 
-/// The old worker of `task` runs `progress` and `done` after the update.
-/// Before a pass of fleetd, the ledger has no row of them. After it, each
-/// one has 1 effect, also after 2 more passes.
 fn old_worker_runs_progress_and_done_after_the_update(name: &str, task: &str) {
     let mut f = Flight::on_phase_4(name);
     let pid = f.update();
     let (progress, summary) = texts(task);
 
-    // No pass runs while the old worker runs its commands.
     signal(pid, libc::SIGSTOP);
     let worker = if task == CLAIM_TASK {
         &mut f.claim
@@ -595,7 +502,6 @@ fn old_push_worker_runs_progress_and_done_after_the_update_with_1_effect_each() 
     old_worker_runs_progress_and_done_after_the_update("p5-rel-push", PUSH_TASK);
 }
 
-/// The state of each attempt, `id state`, in id order.
 fn attempt_states(conn: &Connection) -> Vec<String> {
     let mut stmt = conn
         .prepare("SELECT id || ' ' || state FROM attempts ORDER BY id")
@@ -608,7 +514,6 @@ fn attempt_states(conn: &Connection) -> Vec<String> {
     rows
 }
 
-/// The status of each task, `id status`, in id order.
 fn task_states(conn: &Connection) -> Vec<String> {
     let mut stmt = conn
         .prepare("SELECT task_id || ' ' || status FROM tasks ORDER BY task_id")

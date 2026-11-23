@@ -1,11 +1,3 @@
-//! The read queries of worktree custody: the rows of `horch worktrees`,
-//! the total size of all trees (FM-28), and the tree that `horch worktree
-//! restore` gives back (`ddd/08-code/worktree-custody/design.md` §7,
-//! `WorktreeRows`; MAP.md of fleetd-p3, Q13 and Q14).
-//!
-//! Each query only reads. The sizes are the `bytes_on_disk` that the
-//! `worktree_list` job of the pass stored: no query walks a folder.
-
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
@@ -15,33 +7,23 @@ use crate::fleetd::fleet_runtime::domain::jobs::Kind;
 use crate::fleetd::worktree_custody::adapters::sqlite::{self as store, WorktreeRow};
 use crate::taskledger::{runs, tasks, util, workers};
 
-/// 1 tree that is not `removed`, as `horch worktrees` shows it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct WorktreeView {
     pub worktree_id: String,
     pub path: String,
-    /// The word of the design (`worktrees.state`).
     pub state: String,
-    /// Today's word (`worktrees.status`).
     pub status: String,
-    /// `T<seq>` of its task; `None` for a tree with no task.
     pub task: Option<String>,
-    /// The slug of the run of its task or of its mode row.
     pub run: Option<String>,
-    /// The role of its worker, else its id.
     pub worker: Option<String>,
     pub owner_attempt: Option<String>,
-    /// Seconds since the row was written.
     pub age_s: Option<i64>,
-    /// `None` until the `worktree_list` job measured it.
     pub bytes_on_disk: Option<i64>,
     pub dirty: bool,
     pub rescue_ref: Option<String>,
-    /// The `queued` or `running` worktree jobs of the tree.
     pub jobs: Vec<TreeJobView>,
 }
 
-/// 1 `queued` or `running` job of a tree.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TreeJobView {
     pub id: i64,
@@ -49,32 +31,23 @@ pub struct TreeJobView {
     pub state: &'static str,
 }
 
-/// The kinds of job whose subject is a tree.
 const TREE_KINDS: [Kind; 3] = [Kind::WorktreeAdd, Kind::Rescue, Kind::WorktreeRemove];
 
-/// The total size of all trees that are not `removed`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 pub struct DiskTotal {
     pub count: usize,
-    /// The sum of the measured sizes.
     pub bytes: u64,
-    /// The trees with no measured size.
     pub unmeasured: usize,
 }
 
-/// The tree whose rescue ref `horch worktree restore` gives back.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RescueSource {
     pub row: WorktreeRow,
-    /// The full name of its newest rescue ref.
     pub rescue_ref: String,
-    /// The `seq` of its task.
     pub seq: i64,
-    /// The `<n>` of the rescue ref (`refs/horch/rescue/<id>/<n>`).
     pub n: u64,
 }
 
-/// Each tree that is not `removed`, oldest first.
 pub fn worktree_rows(conn: &Connection) -> Result<Vec<WorktreeView>> {
     let now = util::now();
     let mut stmt = conn.prepare(
@@ -92,7 +65,6 @@ pub fn worktree_rows(conn: &Connection) -> Result<Vec<WorktreeView>> {
     Ok(views)
 }
 
-/// The view of `row`, with the words of its task, run and worker.
 fn view(conn: &Connection, row: WorktreeRow, age_s: Option<i64>) -> Result<WorktreeView> {
     let task = match row.task_id.as_deref() {
         Some(id) => Some(tasks::get(conn, id)?),
@@ -141,7 +113,6 @@ fn view(conn: &Connection, row: WorktreeRow, age_s: Option<i64>) -> Result<Workt
     })
 }
 
-/// The total size of all trees that are not `removed`.
 pub fn total_bytes(conn: &Connection) -> Result<DiskTotal> {
     let (count, bytes, unmeasured): (i64, i64, i64) = conn.query_row(
         "SELECT COUNT(*), COALESCE(SUM(MAX(bytes_on_disk, 0)), 0),
@@ -157,9 +128,6 @@ pub fn total_bytes(conn: &Connection) -> Result<DiskTotal> {
     })
 }
 
-/// The tree that `name` names, when its row has a rescue ref: `name` is a
-/// task (`T<seq>` or `T-<seq>`) of the run `run_id`, or a worktree id.
-/// `None` for each other name, so the caller keeps today's restore.
 pub fn rescue_source(
     conn: &Connection,
     run_id: Option<&str>,
@@ -198,9 +166,6 @@ pub fn rescue_source(
     }))
 }
 
-/// The newest tree of the task `task_id` that has a rescue ref, in any
-/// state: Phase 3 deletes no rescue ref, so a `removed` tree keeps its ref
-/// (Q6).
 fn rescued_tree_of_task(conn: &Connection, task_id: &str) -> Result<Option<WorktreeRow>> {
     let id: Option<String> = conn
         .query_row(
@@ -217,7 +182,6 @@ fn rescued_tree_of_task(conn: &Connection, task_id: &str) -> Result<Option<Workt
     }
 }
 
-/// The `<seq>` of `T<seq>` or `T-<seq>`.
 fn task_seq(name: &str) -> Option<i64> {
     let digits = name.strip_prefix('T')?;
     let digits = digits.strip_prefix('-').unwrap_or(digits);
@@ -227,7 +191,6 @@ fn task_seq(name: &str) -> Option<i64> {
     digits.parse().ok()
 }
 
-/// The `seq` of the task of `row`.
 fn row_seq(conn: &Connection, row: &WorktreeRow) -> Result<Option<i64>> {
     match row.task_id.as_deref() {
         Some(task) => Ok(Some(tasks::get(conn, task)?.seq)),

@@ -1,5 +1,3 @@
-//! ARC-30 end-to-end tests for the worker-report channel relay.
-
 #![cfg(unix)]
 
 use std::io::{BufRead, BufReader, Read, Write};
@@ -34,8 +32,6 @@ fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
-/// `[sonnet-1 #<id>] <rest>`: the line of the newest pending orchestrator
-/// mail, with its mail id (TRF-03).
 fn mail_line(h: &Harness, rest: &str) -> String {
     let pending = Mail::under(&h.state, WORKSPACE).pending().unwrap();
     let id = pending.last().expect("the line is pending mail").id.short();
@@ -91,6 +87,10 @@ fn world(name: &str) -> World {
         .tempdir_in("/tmp")
         .expect("creating short state directory");
     h.state = short_state.path().to_path_buf();
+    h.set(
+        "HORCH_LEDGER_DB",
+        h.state.join("ledger.sqlite3").to_string_lossy(),
+    );
     h.set("HORCH_WORKSPACE_ID", WORKSPACE);
     h.set("HORCH_ROLE", "sonnet-1");
     let pane = create_target_pane(&h);
@@ -166,8 +166,6 @@ impl Relay {
             .unwrap();
             input.flush().unwrap();
         }
-        // The socket file appears at bind, before the relay listens: a
-        // connect in that gap is refused. Only an answered ping is ready.
         let deadline = Instant::now() + Duration::from_secs(5);
         while !channel::is_live(socket) && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(10));
@@ -232,6 +230,7 @@ fn install_codex_queue(h: &mut Harness, exit: i32) -> PathBuf {
 }
 
 fn install_thread_record(h: &Harness) {
+    h.serve_fleetd();
     SessionLedger::for_project(&h.state, &h.project.to_string_lossy())
         .insert(Record {
             record_id: "record-e2e".into(),
@@ -300,7 +299,6 @@ fn arc_30_e2e_tell_types_when_no_relay_runs() {
     assert_types_the_mail_line(&h);
 }
 
-/// FR-7: the pane gets only the mail line, and the mail keeps the text.
 fn assert_types_the_mail_line(h: &Harness) {
     let typed = typed_lines(h);
     assert_eq!(typed.len(), 1, "{typed:?}");
@@ -370,9 +368,6 @@ fn arc_30_e2e_relay_stdout_is_json_only() {
     assert_eq!(lines.len(), 2);
 }
 
-/// W2: a live relay reaches the orchestrator even when no orchestrator pane
-/// is registered. `horch done` sends its report through the relay instead
-/// of saying that nobody is told.
 #[test]
 fn w2_e2e_done_reports_through_a_relay_without_a_registered_pane() {
     let h = world("w2-relay-only");
@@ -383,6 +378,7 @@ fn w2_e2e_done_reports_through_a_relay_without_a_registered_pane() {
     )
     .unwrap();
     let worker_pane = create_target_pane(&h);
+    h.serve_fleetd();
     SessionLedger::for_project(&h.state, &h.project.to_string_lossy())
         .insert(Record {
             record_id: "worker-e2e".into(),
@@ -415,10 +411,6 @@ fn w2_e2e_done_reports_through_a_relay_without_a_registered_pane() {
     relay.stop();
 }
 
-/// W2: a live relay that refuses a message, with no orchestrator pane to
-/// type into, does not get the "no orchestrator runs here" hint: an
-/// orchestrator runs. The message is in the mail queue first (MAIL-U1), so
-/// the `tell` exits 0 and says the courier will redeliver it.
 #[test]
 fn w2_e2e_refused_tell_without_a_pane_does_not_claim_no_orchestrator() {
     let mut h = world("w2-refused");

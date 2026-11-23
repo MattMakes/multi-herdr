@@ -1,25 +1,3 @@
-//! The sweep of stale horch state (#140).
-//!
-//! horch writes state per workspace and per launch, and the process that
-//! owns it usually dies by signal, so no `Drop` removes it. This one pass
-//! finds the state whose owner is provably gone and removes it:
-//!
-//! | kind        | where                                  | stale when                                            |
-//! |-------------|----------------------------------------|-------------------------------------------------------|
-//! | record      | session records (task ledger)          | `working`, and herdr answers without its workspace or pane |
-//! | spool       | `<state>/messages/<ws>/`               | older than 7 days, and no pending mail names it       |
-//! | socket      | `<state>/channels/*.sock`              | no relay answers a ping                               |
-//! | registry    | `herdr-orchestration-<ws>` (state, temp) | herdr answers without `<ws>`, and `<ws>` has no pending mail |
-//! | mail        | `<state>/mail/<ws>/`                   | as for the registry                                   |
-//! | bundle      | `<state>/skill-bundles/<record id>/`   | its record is terminal                                |
-//! | codex home  | `<state>/codex-home/<role>-<uuid>/`    | every record of the role is terminal, and codex left no stranded file |
-//! | temp file   | `write_atomic` temp files              | its pid is dead, and it is older than 1 hour          |
-//!
-//! A herdr that does not answer leaves all state alone. A bundle that no record names stays: its owner is unknown.
-//! The sweep runs at `horch fleet` and `horch spawn` at most once an hour
-//! ([`run_due`]); `horch doctor` counts what it would remove ([`scan`]), and
-//! `horch doctor --clean` removes it ([`Plan::apply`]).
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
@@ -27,31 +5,24 @@ use std::time::{Duration, Instant, SystemTime};
 use crate::execution::legacy::{LedgerRecordV1, STATUS_WORKING};
 use crate::execution::store::ExecutionStore;
 use crate::messaging::mail::Mail;
-use crate::runtime::RuntimeContext;
+use crate::runtime::{Backend, RuntimeContext};
 use crate::workspace::client::WorkspaceClient;
-use crate::workspace::herdr::Herdr;
+use crate::workspace::host::{Hosts, PaneHost};
 use crate::workspace::model::{Direction, NewWorkspace, Pane};
 
-/// A spool file lives as long as acked mail does.
 const SPOOL_RETENTION: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
-/// A workspace dir, a codex home or a temp file younger than this stays: its
-/// owner may be starting while the sweep reads.
 const SETTLE: Duration = Duration::from_secs(60 * 60);
 
-/// [`run_due`] runs at most once in this interval.
 const INTERVAL: Duration = Duration::from_secs(60 * 60);
 
-/// The time [`run_due`] may take at `horch fleet` or `horch spawn`.
 const HOOK_BUDGET: Duration = Duration::from_secs(3);
 
-/// The time `horch doctor` may take to read the state.
 pub const DOCTOR_BUDGET: Duration = Duration::from_secs(30);
 
 const STAMP: &str = ".sweep-stamp";
 const REGISTRY_PREFIX: &str = "herdr-orchestration-";
 
-/// What a stale entry is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Kind {
     Record,
@@ -79,22 +50,28 @@ impl Kind {
     }
 }
 
-/// The dirs one sweep reads.
 #[derive(Debug, Clone, Copy)]
 pub struct Scope<'a> {
     pub state_root: &'a Path,
-    /// The system temp dir, where an older horch kept the registries.
-    /// `None` leaves those alone.
     pub temp_root: Option<&'a Path>,
 }
 
-/// What herdr says. `listed` is `None` when herdr did not answer.
 pub struct Herd<'a> {
     pub listed: Option<BTreeSet<String>>,
     pub client: &'a dyn WorkspaceClient,
 }
 
-/// One entry to remove. `after` names the records that must end first.
+pub struct HostView<'a> {
+    pub backend: Backend,
+    pub listed: Option<BTreeSet<String>>,
+    pub client: &'a dyn WorkspaceClient,
+}
+
+pub struct SweepHosts<'a> {
+    pub hosts: Vec<HostView<'a>>,
+    pub all_installed_answer: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Item {
     kind: Kind,
@@ -102,21 +79,19 @@ struct Item {
     after: Vec<String>,
 }
 
-/// A `working` record to end: its ledger and its record id.
 #[derive(Debug, Clone)]
 struct End {
     store: ExecutionStore,
     record_id: String,
+    backend: Backend,
 }
 
-/// What a sweep found. Nothing is removed until [`Plan::apply`].
 #[derive(Debug, Default)]
 pub struct Plan {
     items: Vec<Item>,
     ends: Vec<End>,
 }
 
-/// What [`Plan::apply`] did.
 #[derive(Debug, Default)]
 pub struct Applied {
     pub removed: BTreeMap<Kind, usize>,
@@ -130,7 +105,6 @@ impl Applied {
 }
 
 impl Plan {
-    /// The count of stale entries per kind.
     pub fn counts(&self) -> BTreeMap<Kind, usize> {
         let mut counts = BTreeMap::new();
         if !self.ends.is_empty() {
@@ -142,16 +116,19 @@ impl Plan {
         counts
     }
 
-    /// End the records through `client`, then remove the entries. An entry
-    /// that waits for a record stays when that record did not end.
     pub fn apply(self, client: &dyn WorkspaceClient) -> Applied {
+        self.apply_hosts(&[(Backend::Herdr, client), (Backend::Hc, client)])
+    }
+
+    pub fn apply_hosts(self, clients: &[(Backend, &dyn WorkspaceClient)]) -> Applied {
         let mut applied = Applied::default();
         let mut ended = BTreeSet::new();
-        // A record is planned to end only when herdr answered the scan, so
-        // the reachability probe, which has no time limit, is not run again.
-        let client = Answered(client);
         for end in &self.ends {
-            match end.store.end_if_pane_closed(&end.record_id, &client) {
+            let Some((_, client)) = clients.iter().find(|(b, _)| *b == end.backend) else {
+                continue;
+            };
+            let answered = Answered(*client);
+            match end.store.end_if_pane_closed(&end.record_id, &answered) {
                 Ok(true) => {
                     ended.insert(end.record_id.clone());
                     *applied.removed.entry(Kind::Record).or_insert(0) += 1;
@@ -177,7 +154,6 @@ impl Plan {
     }
 }
 
-/// Remove a file, a link or a whole dir. A link is never followed.
 fn remove(path: &Path) -> std::io::Result<()> {
     let result = match std::fs::symlink_metadata(path) {
         Ok(meta) if meta.is_dir() => std::fs::remove_dir_all(path),
@@ -190,12 +166,27 @@ fn remove(path: &Path) -> std::io::Result<()> {
     }
 }
 
-/// Find the stale state under `scope`. `now` is the clock the ages use;
-/// the reads stop at `deadline`, and what is not read yet stays.
 pub fn scan(scope: Scope<'_>, herd: &Herd<'_>, now: SystemTime, deadline: Instant) -> Plan {
+    let hosts = SweepHosts {
+        all_installed_answer: herd.listed.is_some(),
+        hosts: vec![HostView {
+            backend: Backend::Herdr,
+            listed: herd.listed.clone(),
+            client: herd.client,
+        }],
+    };
+    scan_hosts(scope, &hosts, now, deadline)
+}
+
+pub fn scan_hosts(
+    scope: Scope<'_>,
+    hosts: &SweepHosts<'_>,
+    now: SystemTime,
+    deadline: Instant,
+) -> Plan {
     let mut scan = Scanner {
         scope,
-        herd,
+        hosts,
         now,
         deadline,
         plan: Plan::default(),
@@ -206,17 +197,12 @@ pub fn scan(scope: Scope<'_>, herd: &Herd<'_>, now: SystemTime, deadline: Instan
 
 struct Scanner<'a> {
     scope: Scope<'a>,
-    herd: &'a Herd<'a>,
+    hosts: &'a SweepHosts<'a>,
     now: SystemTime,
     deadline: Instant,
     plan: Plan,
 }
 
-/// Every record of every project under the state root, with its store: the
-/// session records and old JSON ledgers, with the task ledger's worker rows
-/// laid over them (TRF-45). `stored` holds the ids of the records a store
-/// holds, which a sweep can end; a worker row with no record is the task
-/// ledger watchdog's to end.
 struct Records {
     rows: Vec<(ExecutionStore, LedgerRecordV1)>,
     stored: BTreeSet<String>,
@@ -240,8 +226,6 @@ impl Records {
             let Some(stem) = p.path.file_stem().and_then(|s| s.to_str()) else {
                 continue;
             };
-            // Without a project path, the slug stands for it: a slug is its
-            // own slug, so the store of that name reads the same records.
             let project = p.project.unwrap_or_else(|| stem.to_string());
             let mut store = ExecutionStore::in_db(state_root, db, &project);
             if let Some(ledger) = task_ledger {
@@ -259,28 +243,30 @@ impl Scanner<'_> {
     }
 
     fn run(&mut self) {
-        // Without herdr's answer no owner can be proven gone: remove nothing.
-        if self.herd.listed.is_none() {
+        if !self.hosts.hosts.iter().any(|h| h.listed.is_some()) {
             return;
         }
         let records = Records::read(self.scope.state_root);
+        let mut ws_backends: BTreeMap<String, Backend> = BTreeMap::new();
+        for (_, r) in &records.rows {
+            if let Some(ws) = r.workspace_id.as_deref() {
+                ws_backends.insert(ws.to_string(), r.backend);
+                ws_backends.insert(crate::messaging::file_safe(ws), r.backend);
+            }
+        }
         self.ends(&records);
         let ending: BTreeSet<String> = self.plan.ends.iter().map(|e| e.record_id.clone()).collect();
         self.bundles(&records, &ending);
         self.codex_homes(&records, &ending);
         let pending = PendingMail::read(self.scope.state_root);
-        self.spool(&pending);
+        self.spool(&pending, &ws_backends);
         self.sockets();
-        self.workspaces(&pending);
+        self.workspaces(&pending, &ws_backends);
         self.temp_files(self.scope.state_root, 0);
     }
 
-    /// The `working` records whose workspace or pane herdr no longer lists.
     fn ends(&mut self, records: &Records) {
-        let Some(listed) = &self.herd.listed else {
-            return;
-        };
-        let mut panes: BTreeMap<String, Option<BTreeSet<String>>> = BTreeMap::new();
+        let mut panes: BTreeMap<(Backend, String), Option<BTreeSet<String>>> = BTreeMap::new();
         for (store, r) in &records.rows {
             if self.late() {
                 return;
@@ -294,32 +280,31 @@ impl Scanner<'_> {
             let (Some(pane), Some(ws)) = (r.pane_id.as_deref(), r.workspace_id.as_deref()) else {
                 continue;
             };
+            let Some(view) = self.hosts.hosts.iter().find(|h| h.backend == r.backend) else {
+                continue;
+            };
+            let Some(listed) = &view.listed else {
+                continue;
+            };
             let closed = !listed.contains(ws)
                 || panes
-                    .entry(ws.to_string())
-                    .or_insert_with(|| self.pane_ids(ws))
+                    .entry((r.backend, ws.to_string()))
+                    .or_insert_with(|| pane_ids_on(view.client, ws))
                     .as_ref()
                     .is_some_and(|ids| !ids.contains(pane));
             if closed {
                 self.plan.ends.push(End {
                     store: store.clone(),
                     record_id: r.record_id.clone(),
+                    backend: r.backend,
                 });
             }
         }
     }
 
-    /// The panes of `ws`, or `None` when herdr did not answer.
-    fn pane_ids(&self, ws: &str) -> Option<BTreeSet<String>> {
-        let panes = self.herd.client.pane_list(ws).ok()?;
-        Some(panes.into_iter().map(|p| p.pane_id).collect())
-    }
-
-    /// A bundle named for a terminal record, or for one this sweep ends.
     fn bundles(&mut self, records: &Records, ending: &BTreeSet<String>) {
         let mut terminal: BTreeMap<&str, bool> = BTreeMap::new();
         for (_, r) in &records.rows {
-            // The newest row of a record decides: a resumed record is live.
             terminal.insert(&r.record_id, r.execution_status().is_terminal());
         }
         for entry in entries(&self.scope.state_root.join("skill-bundles")) {
@@ -337,12 +322,7 @@ impl Scanner<'_> {
         }
     }
 
-    /// A private codex home whose role has records, all of them terminal
-    /// or ending in this sweep. The home names only its role, so any
-    /// unfinished record of that role keeps it, and a role with no record
-    /// has an unknown owner and stays too.
     fn codex_homes(&mut self, records: &Records, ending: &BTreeSet<String>) {
-        // Per role: the unfinished records, which must end first.
         let mut owners: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for (_, r) in &records.rows {
             let unfinished = owners.entry(codex_slug(&r.role)).or_default();
@@ -374,12 +354,12 @@ impl Scanner<'_> {
         }
     }
 
-    /// Spool files older than [`SPOOL_RETENTION`] that no pending mail
-    /// names, and the empty spool dir of a gone workspace.
-    fn spool(&mut self, pending: &PendingMail) {
+    fn spool(&mut self, pending: &PendingMail, ws_backends: &BTreeMap<String, Backend>) {
         for dir in entries(&self.scope.state_root.join("messages")) {
             let files = entries(&dir.path());
-            if files.is_empty() && self.gone(&dir.file_name().to_string_lossy(), pending) {
+            if files.is_empty()
+                && self.gone(&dir.file_name().to_string_lossy(), pending, ws_backends)
+            {
                 self.push(Kind::Spool, dir.path());
             }
             for file in files {
@@ -391,7 +371,6 @@ impl Scanner<'_> {
         }
     }
 
-    /// Sockets that no relay answers.
     fn sockets(&mut self) {
         for entry in entries(&self.scope.state_root.join("channels")) {
             let path = entry.path();
@@ -406,13 +385,12 @@ impl Scanner<'_> {
         }
     }
 
-    /// The registry and mail dirs of a workspace herdr no longer lists.
-    fn workspaces(&mut self, pending: &PendingMail) {
+    fn workspaces(&mut self, pending: &PendingMail, ws_backends: &BTreeMap<String, Backend>) {
         for root in std::iter::once(self.scope.state_root).chain(self.scope.temp_root) {
             for entry in entries(root) {
                 let name = entry.file_name().to_string_lossy().into_owned();
                 if let Some(ws) = name.strip_prefix(REGISTRY_PREFIX) {
-                    if self.gone(ws, pending) && self.settled(&entry.path()) {
+                    if self.gone(ws, pending, ws_backends) && self.settled(&entry.path()) {
                         self.push(Kind::Registry, entry.path());
                     }
                 }
@@ -420,26 +398,51 @@ impl Scanner<'_> {
         }
         for entry in entries(&self.scope.state_root.join("mail")) {
             let name = entry.file_name().to_string_lossy().into_owned();
-            if self.gone(&name, pending) && self.settled(&entry.path()) {
+            if self.gone(&name, pending, ws_backends) && self.settled(&entry.path()) {
                 self.push(Kind::Mail, entry.path());
             }
         }
     }
 
-    /// herdr answered, does not list `ws`, and `ws` has no pending mail.
-    fn gone(&self, ws: &str, pending: &PendingMail) -> bool {
-        let Some(listed) = &self.herd.listed else {
-            return false;
-        };
+    fn gone(
+        &self,
+        ws: &str,
+        pending: &PendingMail,
+        ws_backends: &BTreeMap<String, Backend>,
+    ) -> bool {
         let safe = crate::messaging::file_safe(ws);
-        !listed
+        if pending.holds(&safe) {
+            return false;
+        }
+        if let Some(&backend) = ws_backends.get(ws).or_else(|| ws_backends.get(&safe)) {
+            let Some(listed) = self
+                .hosts
+                .hosts
+                .iter()
+                .find(|h| h.backend == backend)
+                .and_then(|h| h.listed.as_ref())
+            else {
+                return false;
+            };
+            return !listed
+                .iter()
+                .any(|l| l == ws || crate::messaging::file_safe(l) == safe);
+        }
+        if !self.hosts.all_installed_answer
+            || self.hosts.hosts.is_empty()
+            || self.hosts.hosts.iter().any(|h| h.listed.is_none())
+        {
+            return false;
+        }
+        !self
+            .hosts
+            .hosts
             .iter()
+            .filter_map(|h| h.listed.as_ref())
+            .flatten()
             .any(|l| l == ws || crate::messaging::file_safe(l) == safe)
-            && !pending.holds(&safe)
     }
 
-    /// `write_atomic` temp files of a dead process, under `dir`. Bundles and
-    /// codex homes are not walked: their owners never write temp files there.
     fn temp_files(&mut self, dir: &Path, depth: usize) {
         if depth > 4 || self.late() {
             return;
@@ -476,8 +479,6 @@ impl Scanner<'_> {
         self.older(path, SETTLE)
     }
 
-    /// Whether `path` was last modified more than `age` before `now`. An
-    /// unreadable time is not old.
     fn older(&self, path: &Path, age: Duration) -> bool {
         std::fs::symlink_metadata(path)
             .and_then(|m| m.modified())
@@ -487,8 +488,6 @@ impl Scanner<'_> {
     }
 }
 
-/// The pending mail of every workspace: which workspaces have it, and the
-/// text, to see which spool files it names.
 struct PendingMail {
     workspaces: BTreeSet<String>,
     texts: Vec<String>,
@@ -506,7 +505,6 @@ impl PendingMail {
             let roles = mail.roles().unwrap_or_default();
             let boxes = std::iter::once(mail).chain(roles.into_iter().map(|(_, m)| m));
             for mail in boxes {
-                // Mail that cannot be read counts as pending: it stays.
                 let Ok(messages) = mail.pending() else {
                     out.workspaces.insert(ws.clone());
                     continue;
@@ -530,7 +528,6 @@ impl PendingMail {
     }
 }
 
-/// The entries of `dir`, sorted; none when it cannot be read.
 fn entries(dir: &Path) -> Vec<std::fs::DirEntry> {
     let Ok(read) = std::fs::read_dir(dir) else {
         return Vec::new();
@@ -540,8 +537,6 @@ fn entries(dir: &Path) -> Vec<std::fs::DirEntry> {
     out
 }
 
-/// The pid in a `write_atomic` temp name: `.<name>.tmp-<pid>-<nonce>`, or
-/// the older `<name>.tmp.<pid>`.
 fn temp_pid(name: &str) -> Option<u32> {
     if let Some((_, rest)) = name.strip_prefix('.').and_then(|n| n.rsplit_once(".tmp-")) {
         let (pid, nonce) = rest.split_once('-')?;
@@ -552,8 +547,6 @@ fn temp_pid(name: &str) -> Option<u32> {
     pid.parse().ok()
 }
 
-/// Whether the process that wrote `path` may still run: `pid` runs and,
-/// where the start time can be read, started before the file was written.
 fn owner_runs(pid: u32, path: &Path) -> bool {
     if !crate::procid::alive(pid, None) {
         return false;
@@ -565,7 +558,6 @@ fn owner_runs(pid: u32, path: &Path) -> bool {
     }
 }
 
-/// The role part of a codex home name, as the codex harness writes it.
 fn codex_slug(role: &str) -> String {
     role.chars()
         .map(|c| {
@@ -578,8 +570,6 @@ fn codex_slug(role: &str) -> String {
         .collect()
 }
 
-/// A client whose server is known to answer. Every other call goes to the
-/// wrapped client.
 struct Answered<'a>(&'a dyn WorkspaceClient);
 
 impl WorkspaceClient for Answered<'_> {
@@ -598,7 +588,6 @@ impl WorkspaceClient for Answered<'_> {
     fn pane_close(&self, pane: &str) -> anyhow::Result<()> {
         self.0.pane_close(pane)
     }
-    /// The sweep only ends records: it types nothing into a pane (FR-7).
     fn agent_prompt(&self, pane: &str, _: &str) -> anyhow::Result<()> {
         anyhow::bail!("the sweep types nothing into pane {pane}")
     }
@@ -627,45 +616,115 @@ impl WorkspaceClient for Answered<'_> {
     }
 }
 
-/// What herdr lists, through `herdr`. `None` when it does not answer.
-pub fn listed(herdr: &Herdr) -> Option<BTreeSet<String>> {
+fn pane_ids_on(client: &dyn WorkspaceClient, ws: &str) -> Option<BTreeSet<String>> {
+    let panes = client.pane_list(ws).ok()?;
+    Some(panes.into_iter().map(|p| p.pane_id).collect())
+}
+
+pub fn listed(herdr: &PaneHost) -> Option<BTreeSet<String>> {
     let workspaces = herdr.workspace_list().ok()?;
     Some(workspaces.into_iter().map(|w| w.workspace_id).collect())
 }
 
-/// The sweep with the context's dirs and herdr, cut off at `budget`.
-pub fn plan_in(ctx: &RuntimeContext, herdr: &Herdr, budget: Duration) -> (Plan, Option<usize>) {
+pub fn plan_in(ctx: &RuntimeContext, herdr: &PaneHost, budget: Duration) -> (Plan, Option<usize>) {
     let deadline = Instant::now() + budget;
     let herdr = herdr.clone().until(Some(deadline));
     let herd = Herd {
         listed: listed(&herdr),
         client: &herdr,
     };
-    // The temp registries belong to the default state root: a moved state
-    // root (a test, a second install) must not judge them.
-    let scope = Scope {
-        state_root: &ctx.paths.state_root,
-        temp_root: ctx
-            .paths
-            .state_override
-            .is_none()
-            .then_some(ctx.paths.temp_root.as_path()),
-    };
-    // File times are wall-clock times, so the ages use the wall clock.
+    let scope = scope_of(ctx);
     let plan = scan(scope, &herd, SystemTime::now(), deadline);
     let workspaces = herd.listed.as_ref().map(BTreeSet::len);
     (plan, workspaces)
 }
 
-/// Sweep now, through `herdr`, and apply.
-pub fn clean_in(ctx: &RuntimeContext, herdr: &Herdr, budget: Duration) -> Applied {
+pub fn clean_in(ctx: &RuntimeContext, herdr: &PaneHost, budget: Duration) -> Applied {
     let deadline = Instant::now() + budget;
     let herdr = herdr.clone().until(Some(deadline));
     let (plan, _) = plan_in(ctx, &herdr, budget);
     plan.apply(&herdr)
 }
 
-/// Whether the stamp at `stamp` is missing or [`INTERVAL`] old at `now`.
+fn scope_of(ctx: &RuntimeContext) -> Scope<'_> {
+    Scope {
+        state_root: &ctx.paths.state_root,
+        temp_root: ctx
+            .paths
+            .state_override
+            .is_none()
+            .then_some(ctx.paths.temp_root.as_path()),
+    }
+}
+
+pub fn plan_all(ctx: &RuntimeContext, budget: Duration) -> (Plan, usize, Vec<Backend>) {
+    let deadline = Instant::now() + budget;
+    let probed = Hosts::reachable(ctx);
+    let bounded: Vec<PaneHost> = probed
+        .hosts
+        .into_iter()
+        .map(|h| h.until(Some(deadline)))
+        .collect();
+    let mut unreachable = probed.unreachable;
+    let mut views = Vec::with_capacity(bounded.len());
+    let mut answered = 0usize;
+    for host in &bounded {
+        let l = listed(host);
+        if l.is_some() {
+            answered += 1;
+        } else {
+            unreachable.push(host.backend());
+        }
+        views.push(HostView {
+            backend: host.backend(),
+            listed: l,
+            client: host,
+        });
+    }
+    let sweep_hosts = SweepHosts {
+        all_installed_answer: answered > 0 && unreachable.is_empty(),
+        hosts: views,
+    };
+    let plan = scan_hosts(scope_of(ctx), &sweep_hosts, SystemTime::now(), deadline);
+    (plan, answered, unreachable)
+}
+
+pub fn clean_all(ctx: &RuntimeContext, budget: Duration) -> (Applied, Vec<Backend>) {
+    let deadline = Instant::now() + budget;
+    let probed = Hosts::reachable(ctx);
+    let bounded: Vec<PaneHost> = probed
+        .hosts
+        .into_iter()
+        .map(|h| h.until(Some(deadline)))
+        .collect();
+    let mut unreachable = probed.unreachable;
+    let mut views = Vec::with_capacity(bounded.len());
+    let mut answered = 0usize;
+    for host in &bounded {
+        let l = listed(host);
+        if l.is_some() {
+            answered += 1;
+        } else {
+            unreachable.push(host.backend());
+        }
+        views.push(HostView {
+            backend: host.backend(),
+            listed: l,
+            client: host,
+        });
+    }
+    let sweep_hosts = SweepHosts {
+        all_installed_answer: answered > 0 && unreachable.is_empty(),
+        hosts: views,
+    };
+    let plan = scan_hosts(scope_of(ctx), &sweep_hosts, SystemTime::now(), deadline);
+    let clients: Vec<(Backend, &dyn WorkspaceClient)> = bounded
+        .iter()
+        .map(|h| (h.backend(), h as &dyn WorkspaceClient))
+        .collect();
+    (plan.apply_hosts(&clients), unreachable)
+}
+
 fn due(stamp: &Path, now: SystemTime) -> bool {
     std::fs::metadata(stamp)
         .and_then(|m| m.modified())
@@ -674,14 +733,11 @@ fn due(stamp: &Path, now: SystemTime) -> bool {
         .is_none_or(|d| d >= INTERVAL)
 }
 
-/// Sweep when the last sweep is an hour old, within 3 seconds.
-/// Best effort: it never fails, and it logs only errors and what it removed.
 pub fn run_due(ctx: &RuntimeContext) {
     let stamp = ctx.paths.state_root.join(STAMP);
     if !due(&stamp, SystemTime::now()) || !ctx.paths.state_root.is_dir() {
         return;
     }
-    // Stamp first, so 2 spawns at once do not both sweep.
     if let Err(e) = std::fs::write(&stamp, b"") {
         eprintln!(
             "horch: the state sweep cannot write {}: {e}",
@@ -689,8 +745,7 @@ pub fn run_due(ctx: &RuntimeContext) {
         );
         return;
     }
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
-    let applied = clean_in(ctx, &herdr, HOOK_BUDGET);
+    let (applied, _) = clean_all(ctx, HOOK_BUDGET);
     for error in &applied.errors {
         eprintln!("horch: state sweep: {error}");
     }

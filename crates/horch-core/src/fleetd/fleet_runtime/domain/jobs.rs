@@ -1,27 +1,12 @@
-//! The job kinds, the run number, `abandoned_run_limit` and `job_backoff_s`
-//! (`docs/specs/fleetd/design.md`, "Supervision, liveness and
-//! reconciliation": "Long work is a job. A pass never waits for it" and
-//! "The kinds of job").
-//!
-//! Each piece of work that can take more than 1 s is a job: a row in
-//! `jobs`, then its own process outside the pass. A run is keyed by kind,
-//! subject, input key and run number. These are the rules of a run, with
-//! no I/O.
-
 use super::clock::FleetSeconds;
+use super::pass::{stop_step, StopStep};
 
-/// The class of a job kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Class {
-    /// Its result depends only on its input key. A `passed` result, and a
-    /// `failed` result with a verdict, is used again.
     Pure,
-    /// It changes or reads the world outside its input key. Its result is
-    /// never used again: each need of it is a new run.
     Effect,
 }
 
-/// A kind of job: the `kind` column of `jobs`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Kind {
     TaskCheck,
@@ -41,23 +26,16 @@ pub enum Kind {
     TriageApply,
 }
 
-/// 1 row of the table "The kinds of job" of the design.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KindRow {
     pub kind: Kind,
-    /// The word of the `kind` column.
     pub word: &'static str,
     pub class: Class,
-    /// What the `subject` column names.
     pub subject: &'static str,
-    /// What the `input_key` column holds.
     pub input_key: &'static str,
-    /// The phase of the migration plan that gives the kind its executor.
     pub executor_phase: u8,
 }
 
-/// The table "The kinds of job", in the order of the design. The phase of
-/// each executor comes from the "Migration plan".
 pub const KINDS: [KindRow; 15] = [
     KindRow {
         kind: Kind::TaskCheck,
@@ -182,8 +160,6 @@ pub const KINDS: [KindRow; 15] = [
 ];
 
 impl Kind {
-    /// The row of the kind in [`KINDS`]. The match names each kind, so a
-    /// new kind does not compile without its row.
     pub fn row(self) -> &'static KindRow {
         let i = match self {
             Kind::TaskCheck => 0,
@@ -205,12 +181,10 @@ impl Kind {
         &KINDS[i]
     }
 
-    /// The word of the `kind` column.
     pub fn as_str(self) -> &'static str {
         self.row().word
     }
 
-    /// The kind of a `kind` column word.
     pub fn parse(word: &str) -> Option<Kind> {
         KINDS.iter().find(|r| r.word == word).map(|r| r.kind)
     }
@@ -226,15 +200,12 @@ impl std::fmt::Display for Kind {
     }
 }
 
-/// The state of a run: the `state` column of `jobs`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum State {
     Queued,
     Running,
     Passed,
     Failed,
-    /// Stopped at its time limit, or its process was lost. It has no
-    /// verdict.
     Abandoned,
 }
 
@@ -247,7 +218,6 @@ impl State {
         State::Abandoned,
     ];
 
-    /// The word of the `state` column.
     pub fn as_str(self) -> &'static str {
         match self {
             State::Queued => "queued",
@@ -258,29 +228,19 @@ impl State {
         }
     }
 
-    /// The state of a `state` column word.
     pub fn parse(word: &str) -> Option<State> {
         State::ALL.into_iter().find(|s| s.as_str() == word)
     }
 }
 
-/// How a run that ended by itself ended: what its process writes in
-/// `result_json`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Outcome {
-    /// `passed` or `failed`.
     pub passed: bool,
-    /// Whether the run went to its end and the check, the gate or the trial
-    /// merge gave the verdict. A `passed` run always has one. A `failed`
-    /// run with no verdict (no executor, no check command) is not used
-    /// again.
     pub verdict: bool,
-    /// What the run did, for a person.
     pub text: String,
 }
 
 impl Outcome {
-    /// The end state of the run.
     pub fn state(&self) -> State {
         if self.passed {
             State::Passed
@@ -290,15 +250,10 @@ impl Outcome {
     }
 }
 
-/// Whether the result of a run of `kind` that ended in `state` is used
-/// again for its input key.
 pub fn reusable(kind: Kind, state: State, verdict: bool) -> bool {
     kind.class() == Class::Pure && (state == State::Passed || (state == State::Failed && verdict))
 }
 
-/// The wait before the next run of a key with `abandoned_runs` abandoned
-/// runs in a row (at least 1): the value of `job_backoff_s` for that
-/// count, and its last value past the end of the list.
 pub fn backoff_s(job_backoff_s: &[u64], abandoned_runs: u64) -> u64 {
     let n = usize::try_from(abandoned_runs.max(1)).unwrap_or(usize::MAX);
     job_backoff_s
@@ -308,21 +263,17 @@ pub fn backoff_s(job_backoff_s: &[u64], abandoned_runs: u64) -> u64 {
         .unwrap_or(0)
 }
 
-/// What follows a run that ended `abandoned`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AfterAbandoned {
-    /// The next run, not before the end of its backoff.
     Again {
         abandoned_runs: u64,
         not_before: FleetSeconds,
     },
-    /// The key is at `abandoned_run_limit`: no new run, and 1 needs-you
-    /// item, until `requeue`.
-    Held { abandoned_runs: u64 },
+    Held {
+        abandoned_runs: u64,
+    },
 }
 
-/// What follows the abandoned end of a run of a key that had
-/// `prior_abandoned_runs` abandoned runs in a row before it, at `clock`.
 pub fn after_abandoned(
     prior_abandoned_runs: u64,
     abandoned_run_limit: u64,
@@ -339,49 +290,35 @@ pub fn after_abandoned(
     }
 }
 
-/// Whether a key whose last run ended `abandoned` with `abandoned_runs`
-/// is held for `requeue`.
 pub fn held(abandoned_runs: u64, abandoned_run_limit: u64) -> bool {
     abandoned_runs >= abandoned_run_limit
 }
 
-/// The `kind` column of the needs-you item of a held key.
 pub const NEEDS_YOU_KIND: &str = "job_abandoned";
 
-/// The key of the needs-you item of a held key.
 pub fn needs_you_key(kind: Kind, subject: &str, input_key: &str) -> String {
     format!("{NEEDS_YOU_KIND}:{kind}:{subject}:{input_key}")
 }
 
-/// What a pass knows of the process of a `running` run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Process {
     Alive,
-    /// No process has the pid and start time.
     Gone,
-    /// The scan cannot tell, or did not reach it in this pass.
     Unknown,
 }
 
-/// What a pass does with a `running` run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Seen {
-    /// It ends in this state.
     Ends(State),
-    /// It is past its deadline and its process runs: stop it after the
-    /// commit. `kill` is true past the deadline plus `stop_grace_s`.
     Stop { kill: bool },
-    /// It goes on.
     Runs,
 }
 
-/// What a pass does at `clock` with a `running` run whose process is
-/// `process`, whose stored result ends it in `result` (when it wrote one),
-/// with its `deadline`. A written result wins over each other fact.
 pub fn observe(
     process: Process,
     result: Option<State>,
     deadline_at: FleetSeconds,
+    term_at: Option<FleetSeconds>,
     stop_grace_s: u64,
     clock: FleetSeconds,
 ) -> Seen {
@@ -390,15 +327,15 @@ pub fn observe(
     }
     match process {
         Process::Gone => Seen::Ends(State::Abandoned),
-        Process::Alive if clock >= deadline_at => Seen::Stop {
-            kill: clock >= deadline(deadline_at, stop_grace_s),
+        Process::Alive if clock >= deadline_at => match stop_step(term_at, clock, stop_grace_s) {
+            StopStep::Polite => Seen::Stop { kill: false },
+            StopStep::Wait => Seen::Runs,
+            StopStep::Kill => Seen::Stop { kill: true },
         },
         Process::Alive | Process::Unknown => Seen::Runs,
     }
 }
 
-/// The value `seconds` after `start` on the fleet clock: the deadline of a
-/// run, or the end of a backoff.
 pub fn deadline(start: FleetSeconds, seconds: u64) -> FleetSeconds {
     FleetSeconds(
         start
@@ -407,7 +344,6 @@ pub fn deadline(start: FleetSeconds, seconds: u64) -> FleetSeconds {
     )
 }
 
-/// The result of a run of a kind with no executor in this phase.
 pub fn no_executor(kind: Kind) -> Outcome {
     Outcome {
         passed: false,
@@ -425,8 +361,6 @@ mod tests {
 
     #[test]
     fn each_kind_of_the_design_has_its_class_and_input_key() {
-        // The kind CHECK of `jobs` (schema v8, and `triage_apply` from the
-        // Phase 5 step), in its order.
         let words = [
             "task_check",
             "fast_gate",
@@ -514,32 +448,58 @@ mod tests {
         let d = FleetSeconds(50);
         let before = FleetSeconds(49);
         let at = FleetSeconds(50);
+        let in_grace = FleetSeconds(69);
         let past_grace = FleetSeconds(70);
         let ok = Some(State::Passed);
         assert_eq!(
-            observe(Process::Gone, ok, d, 20, before),
+            observe(Process::Gone, ok, d, None, 20, before),
             Seen::Ends(State::Passed)
         );
         assert_eq!(
-            observe(Process::Alive, ok, d, 20, past_grace),
+            observe(Process::Alive, ok, d, Some(at), 20, past_grace),
             Seen::Ends(State::Passed)
         );
         assert_eq!(
-            observe(Process::Gone, None, d, 20, before),
+            observe(Process::Gone, None, d, None, 20, before),
             Seen::Ends(State::Abandoned)
         );
-        assert_eq!(observe(Process::Alive, None, d, 20, before), Seen::Runs);
         assert_eq!(
-            observe(Process::Alive, None, d, 20, at),
+            observe(Process::Alive, None, d, None, 20, before),
+            Seen::Runs
+        );
+        assert_eq!(
+            observe(Process::Alive, None, d, None, 20, at),
             Seen::Stop { kill: false }
         );
         assert_eq!(
-            observe(Process::Alive, None, d, 20, past_grace),
+            observe(Process::Alive, None, d, Some(at), 20, in_grace),
+            Seen::Runs
+        );
+        assert_eq!(
+            observe(Process::Alive, None, d, Some(at), 20, past_grace),
             Seen::Stop { kill: true }
         );
         assert_eq!(
-            observe(Process::Unknown, None, d, 20, past_grace),
+            observe(Process::Unknown, None, d, Some(at), 20, past_grace),
             Seen::Runs
+        );
+    }
+
+    #[test]
+    fn a_run_first_seen_past_its_deadline_and_grace_gets_the_term_before_the_kill() {
+        let d = FleetSeconds(50);
+        let late = FleetSeconds(500);
+        assert_eq!(
+            observe(Process::Alive, None, d, None, 20, late),
+            Seen::Stop { kill: false }
+        );
+        assert_eq!(
+            observe(Process::Alive, None, d, Some(late), 20, FleetSeconds(519)),
+            Seen::Runs
+        );
+        assert_eq!(
+            observe(Process::Alive, None, d, Some(late), 20, FleetSeconds(520)),
+            Seen::Stop { kill: true }
         );
     }
 

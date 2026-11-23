@@ -1,27 +1,3 @@
-//! The stacks: stack the younger feature of a conflict and make its
-//! resolver task.
-//!
-//! Use cases `StackFeature` and `OpenResolverTask`
-//! (`docs/specs/fleetd/design.md`, "Between features", "Stack on evidence"
-//! and "Starting values"; `ddd/08-code/integration/design.md`). When the
-//! trial merge of 2 in-flight features conflicts, [`stack_conflicts`] sets
-//! `stacked_on` of the younger feature to the older one, 1 time, and adds
-//! its resolver tasks in the same transaction:
-//!
-//! - a resolver task has a code kind (`feature`), so it follows the code
-//!   path, and it lands on the branch of the younger feature;
-//! - its ticket holds the conflict in `zdiff3` form, the requirements and
-//!   the unit tests of both features, and the rule of 1 commit for each
-//!   requirement;
-//! - it belongs to the youngest idea in flight of the younger feature
-//!   (FR-12; MAP.md of fleetd-p6, Q17), and goes in through
-//!   `add_planned_tasks` with a plan entry that fleetd writes;
-//! - a conflict over the size limits is 1 resolver task for each file.
-//!
-//! A conflict of tips that are no longer the tips of the 2 features is old,
-//! and it changes nothing. With no idea in flight, nothing is written: no
-//! stack edge without its resolver task.
-
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -42,67 +18,50 @@ use crate::fleetd::task_execution::application::planned_tasks::{add_planned_task
 use crate::taskledger::model::{EventKind, WorkKind};
 use crate::taskledger::{runs, tasks, util};
 
-/// The plan of an idea, in its folder: the file that a resolver task reads
-/// first.
 const PLAN_YAML: &str = "plan.yaml";
 
-/// The state word of a cancelled idea and of a cancelled task.
 const CANCELLED: &str = "cancelled";
 
-/// The kind of a resolver task: a code kind.
 const RESOLVER_KIND: WorkKind = WorkKind::Feature;
 
-/// The git reads of [`stack_conflicts`]. Each is short and local: no
-/// working tree, no network, and no write.
 pub trait StackGit {
-    /// The tip of the ref `name`, or `None` when it does not exist.
     fn tip(&self, repo: &Path, name: &str) -> Result<Option<String>>;
 
-    /// The conflict of `file` when `upper_tip` merges `lower_tip`, in
-    /// `zdiff3` form.
     fn conflict(&self, repo: &Path, lower_tip: &str, upper_tip: &str, file: &str)
         -> Result<String>;
 }
 
-/// What the stacks need besides the ledger.
 #[derive(Debug, Clone, Copy)]
 pub struct Stacking<'a> {
-    /// The repository of the features.
     pub repo: &'a Path,
-    /// The `ideas/` folder of the fleet root.
     pub ideas: &'a Path,
-    /// The profile of a resolver task.
     pub profile: &'a str,
     pub planner: StackPlanner,
-    /// The generation of fleetd, or `None` outside fleetd.
     pub guard: Option<Generation>,
 }
 
-/// The outcome of 1 conflict of 2 features.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
-    /// `upper` is now on `lower`, with the resolver tasks `tasks` of the
-    /// idea `idea`.
     Stacked {
         upper: String,
         lower: String,
         idea: String,
         tasks: Vec<String>,
     },
-    /// `upper` was on `lower` already. Nothing changed.
-    AlreadyStacked { upper: String, lower: String },
-    /// `upper` is on the feature `on`. Its conflict waits for the end of
-    /// that edge. Nothing changed.
-    Held { upper: String, on: String },
-    /// `upper` has no idea in flight to own a resolver task. Nothing
-    /// changed.
-    NoIdea { upper: String },
-    /// The trial merge is of old tips, or of a feature that is not in
-    /// flight. Nothing changed.
+    AlreadyStacked {
+        upper: String,
+        lower: String,
+    },
+    Held {
+        upper: String,
+        on: String,
+    },
+    NoIdea {
+        upper: String,
+    },
     Stale,
 }
 
-/// A feature of a conflict, from the ledger and git.
 struct Side {
     id: String,
     branch: String,
@@ -110,8 +69,6 @@ struct Side {
     stacked_on: Option<String>,
 }
 
-/// Act on each conflicting trial merge of 2 in-flight features, in `tx`.
-/// Returns the outcome of each, oldest trial merge first.
 pub fn stack_conflicts(
     tx: &Connection,
     s: &Stacking<'_>,
@@ -139,8 +96,6 @@ pub fn stack_conflicts(
     Ok(out)
 }
 
-/// Act on the conflicting trial merge `row`, in `tx`: stack the younger
-/// feature on the older one and add its resolver tasks, or change nothing.
 pub fn stack_conflict(
     tx: &Connection,
     s: &Stacking<'_>,
@@ -211,10 +166,6 @@ pub fn stack_conflict(
     })
 }
 
-/// Each conflicting trial merge of 2 in-flight features that is the newest
-/// trial merge of its 2 refs, oldest first, with the id of its younger
-/// feature: the feature that a stack puts on top. An older trial merge of
-/// the same 2 refs is of old tips, so the pass reads git for it no more.
 pub fn newest_conflicts(
     tx: &Connection,
     planner: &StackPlanner,
@@ -250,7 +201,6 @@ pub fn newest_conflicts(
     Ok(out)
 }
 
-/// The facts of `f` that the planner reads.
 fn view(f: &Side) -> StackSide<'_> {
     StackSide {
         id: &f.id,
@@ -259,7 +209,6 @@ fn view(f: &Side) -> StackSide<'_> {
     }
 }
 
-/// The in-flight feature whose branch is the ref `ref_name`, or `None`.
 fn side(tx: &Connection, ref_name: &str) -> Result<Option<Side>> {
     tx.query_row(
         "SELECT id, branch, created_at, stacked_on FROM features
@@ -278,11 +227,8 @@ fn side(tx: &Connection, ref_name: &str) -> Result<Option<Side>> {
     .with_context(|| format!("reading the feature of {ref_name}"))
 }
 
-/// The states of an idea that is not in flight (design, "A merge with
-/// ideas in flight").
 const NOT_IN_FLIGHT: [&str; 4] = ["integrating", "merged", "parked", "cancelled"];
 
-/// The youngest idea in flight of `feature`, or `None`.
 pub(crate) fn youngest_idea_in_flight(tx: &Connection, feature: &str) -> Result<Option<String>> {
     Ok(ideas_store::of_feature(tx, feature)?
         .into_iter()
@@ -291,17 +237,12 @@ pub(crate) fn youngest_idea_in_flight(tx: &Connection, feature: &str) -> Result<
         .map(|i| i.id))
 }
 
-/// The requirements and the unit tests of a feature, from the ledger.
 struct Facts {
     requirements: Vec<Requirement>,
     tests: Vec<String>,
 }
 
 impl Facts {
-    /// The requirements of each idea of `feature` that is not cancelled,
-    /// and the check of each task of its run that is not cancelled, each 1
-    /// time. The ledger maps no requirement to a file, so each one is
-    /// given.
     fn read(tx: &Connection, feature: &str) -> Result<Facts> {
         let mut requirements = Vec::new();
         for idea in ideas_store::of_feature(tx, feature)? {
@@ -344,8 +285,6 @@ impl Facts {
     }
 }
 
-/// `StackFeature`: set `stacked_on` of `upper` to `lower`, with its event,
-/// in `tx`. Only a feature in flight with no lower feature moves.
 fn stack(
     tx: &Connection,
     guard: Option<Generation>,
@@ -375,8 +314,6 @@ fn stack(
     Ok(())
 }
 
-/// The plan entry of the resolver task `index` of `conflicts`, which fleetd
-/// writes for the idea `idea`.
 fn resolver_task(
     s: &Stacking<'_>,
     idea: &str,
@@ -436,8 +373,6 @@ fn resolver_task(
     }
 }
 
-/// The event `resolver-task-opened` of the resolver task `task_id` of
-/// `feature`, in `tx`.
 fn opened(
     tx: &Connection,
     guard: Option<Generation>,

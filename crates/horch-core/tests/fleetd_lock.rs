@@ -1,11 +1,3 @@
-//! The fleetd lock and the generation of the `fleetd` row: 1 fleetd for
-//! each ledger (docs/specs/fleetd/design.md, "One fleetd for each ledger";
-//! docs/tickets/fleetd-p1/14-fleetd-lock-generation.md).
-//!
-//! A test that needs 2 processes starts this test binary again as a child
-//! with `FLEETD_LOCK_CHILD` set. The child runs only [`fleetd_child`], which
-//! does the start of a fleetd and reports on stdout.
-
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -18,25 +10,17 @@ use horch_core::fleetd::fleet_runtime::domain::ledger::Generation;
 use horch_core::taskledger::store::Store;
 use tempfile::TempDir;
 
-/// The env flag that makes this binary a child fleetd.
 const CHILD: &str = "FLEETD_LOCK_CHILD";
-/// The env key of the ledger of a child.
 const CHILD_DB: &str = "FLEETD_LOCK_DB";
-/// The env key of the fleet root of a child.
 const CHILD_ROOT: &str = "FLEETD_LOCK_ROOT";
-/// The stdin line that tells a child to do 1 guarded write.
 const WRITE: &str = "write";
-/// The mark before each report of a child.
 const REPORT: &str = "FLEETD ";
-/// The reports of a child.
 const BUSY: &str = "busy";
 const STARTED: &str = "started";
 const WROTE: &str = "wrote";
 const LOST: &str = "lost";
-/// The longest wait for 1 report line or for the exit of a child.
 const CHILD_WAIT: Duration = Duration::from_secs(30);
 
-/// The `fleetd` row.
 #[derive(Debug, PartialEq, Eq)]
 struct Row {
     generation: i64,
@@ -45,12 +29,10 @@ struct Row {
     fleet_clock_s: i64,
 }
 
-/// The report of a child that started with generation `g`.
 fn started(g: i64) -> String {
     format!("{STARTED} {g}")
 }
 
-/// A fleet in temporary folders: its ledger and its fleet root.
 struct Fleet {
     dir: TempDir,
 }
@@ -74,7 +56,6 @@ impl Fleet {
         Store::open(&self.db()).unwrap()
     }
 
-    /// The `fleetd` row.
     fn row(&self) -> Option<Row> {
         let store = self.store();
         let mut stmt = store
@@ -94,7 +75,6 @@ impl Fleet {
         rows.next().map(Result::unwrap)
     }
 
-    /// Start a child fleetd of this fleet.
     fn child(&self) -> Fleetd {
         let mut child = Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "fleetd_child", "--nocapture", "--test-threads=1"])
@@ -113,7 +93,6 @@ impl Fleet {
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
             for line in stdout.lines().map_while(Result::ok) {
-                // libtest can print its test name first on the same line.
                 if let Some((_, report)) = line.split_once(REPORT) {
                     if tx.send(report.to_string()).is_err() {
                         return;
@@ -130,8 +109,6 @@ impl Fleet {
     }
 }
 
-/// A child fleetd and its report lines. A drop kills a child that still
-/// runs.
 struct Fleetd {
     pid: i64,
     child: Option<Child>,
@@ -140,22 +117,18 @@ struct Fleetd {
 }
 
 impl Fleetd {
-    /// The next report line of the child.
     fn report(&self) -> String {
         self.reports
             .recv_timeout(CHILD_WAIT)
             .expect("the child fleetd reports in time")
     }
 
-    /// Tell the child to do 1 guarded write.
     fn write(&mut self) {
         let stdin = self.stdin.as_mut().unwrap();
         writeln!(stdin, "{WRITE}").unwrap();
         stdin.flush().unwrap();
     }
 
-    /// The exit code of the child, which ends by itself: its stdin stays
-    /// open.
     fn exit_code(mut self) -> i32 {
         let mut child = self.child.take().unwrap();
         let deadline = Instant::now() + CHILD_WAIT;
@@ -172,7 +145,6 @@ impl Fleetd {
         }
     }
 
-    /// Kill the child and wait until it ends.
     fn kill(mut self) {
         let mut child = self.child.take().unwrap();
         child.kill().unwrap();
@@ -189,11 +161,6 @@ impl Drop for Fleetd {
     }
 }
 
-/// The child fleetd: a no-op unless [`CHILD`] is set. It starts as fleetd
-/// does and reports [`BUSY`] or [`STARTED`] with its generation. Then each
-/// [`WRITE`] line on stdin does 1 write guarded by its generation and
-/// reports [`WROTE`], or reports [`LOST`] and exits, as fleetd does. It also
-/// ends at the end of stdin.
 #[test]
 fn fleetd_child() {
     if std::env::var_os(CHILD).is_none() {
@@ -218,8 +185,6 @@ fn fleetd_child() {
     }
 }
 
-/// 1 write as the pass does it: check the generation first in the
-/// transaction, then write. [`LOST`] when the check fails.
 fn guarded_write(store: &mut Store, held: Generation) -> &'static str {
     store
         .immediate(|tx| {
@@ -267,7 +232,6 @@ fn each_start_adds_1_to_the_generation() {
             .expect("the lock is free");
         assert_eq!(started.generation, Generation(want));
         assert_eq!(fleet.row().unwrap().generation, want);
-        // A start keeps the fleet clock of the row.
         store
             .conn()
             .execute("UPDATE fleetd SET fleet_clock_s = fleet_clock_s + 7", [])
@@ -307,8 +271,6 @@ fn second_fleetd_exits_on_a_generation_mismatch() {
         .execute("UPDATE fleetd SET fleet_clock_s = 0", [])
         .unwrap();
 
-    // The lock file goes away under the old fleetd, so a new fleetd takes a
-    // new lock while the old one still runs. Only the generation stops it.
     std::fs::remove_file(fleetd_row::lock_path(&fleet.root())).unwrap();
     let new = fleetd_row::start(&fleet.root(), &mut store)
         .unwrap()

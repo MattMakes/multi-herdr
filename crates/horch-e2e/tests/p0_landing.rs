@@ -1,13 +1,9 @@
-//! Phase 0 red tests of landing and features (`docs/specs/fleetd/design.md`,
-//! "Features, landing and integration"). Each test is on the list
-//! `expected-failures/p0_landing.txt` with the phase that makes it green.
-
 #![cfg(unix)]
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Output;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use horch_e2e::harness::{fixtures, wait_for_or, Harness};
 
@@ -24,7 +20,6 @@ fn out(o: &Output) -> String {
     String::from_utf8_lossy(&o.stdout).into_owned()
 }
 
-/// A harness with its own ledger file and a git repository.
 fn world(name: &str) -> Harness {
     let mut h = Harness::new(name).with_git();
     let db = h.root.join("ledger.sqlite3");
@@ -35,8 +30,6 @@ fn world(name: &str) -> Harness {
     h
 }
 
-/// A harness in workspace `w1` (root pane `w1:p1`) whose panes run their
-/// commands, like `horch fleet` leaves it.
 fn fleet(name: &str, scenario: &str) -> Harness {
     let mut h = world(name);
     let quota = fixtures().join("quota/all-ok.json");
@@ -67,7 +60,6 @@ fn ticket(h: &Harness, name: &str, body: &str) -> PathBuf {
     p
 }
 
-/// Poll `f` for at most 30 s, so that a test ends in less than 2 min.
 fn wait_for<T>(what: &str, mut f: impl FnMut() -> Option<T>) -> T {
     let until = Instant::now() + Duration::from_secs(30);
     while Instant::now() < until {
@@ -93,7 +85,6 @@ fn commit_file(h: &Harness, dir: &Path, file: &str) {
     git_in(h, dir, &["commit", "--quiet", "--no-gpg-sign", "-m", file]);
 }
 
-/// Commit all the files of the project on its current branch.
 fn git_commit_all(h: &Harness, message: &str) {
     let project = h.project.clone();
     git_in(h, &project, &["add", "-A"]);
@@ -104,8 +95,6 @@ fn git_commit_all(h: &Harness, message: &str) {
     );
 }
 
-/// Add a bare remote in the harness folder, so that a land never pushes to
-/// a real remote.
 fn add_bare_remote(h: &Harness) {
     let remote = h.root.join("remote.git");
     let root = h.root.clone();
@@ -123,10 +112,6 @@ fn add_bare_remote(h: &Harness) {
     git_in(h, &project, &["push", "--quiet", "origin", "main"]);
 }
 
-/// Declare the fast gate `fast` and the full gate `true` of the project:
-/// plan validation refuses a plan without them. The design does not fix the
-/// format of this declaration: Phase 4 fixes it and corrects this helper if
-/// necessary.
 fn declare_gates(h: &Harness, fast: &str) {
     let fast = fast.replace('\\', "\\\\").replace('"', "\\\"");
     std::fs::write(
@@ -136,41 +121,44 @@ fn declare_gates(h: &Harness, fast: &str) {
     .unwrap();
 }
 
-/// Run 1 pass of the test fleetd. The test fleetd has `pass_period_s` =
-/// 3600: it runs 1 pass at its start, then only serves the channel. fleetd
-/// has no request for 1 pass now, so each pass of the test is 1 restart of
-/// the test fleetd. `before` runs while fleetd is down, so no pass runs
-/// between `before` and the pass. A spawn sends its session record to the
-/// served fleetd, so the test waits for the pass and for the record of each
-/// launch before the next restart.
 fn pass(h: &Harness, before: impl FnOnce()) {
-    let heartbeat = h.fleet_root().join("run").join("heartbeat.json");
-    let read = || std::fs::read_to_string(&heartbeat).unwrap_or_default();
-    h.without_fleetd(before);
-    // The start writes 1 heartbeat before the channel, and the pass writes
-    // the next one. A pass that ended before this read leaves no change, so
-    // the wait is bounded.
-    let started = read();
-    let until = Instant::now() + Duration::from_secs(10);
-    while read() == started && Instant::now() < until {
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    // Each launch of the pass runs `horch spawn`, which records the pane of
-    // its worker through the channel.
-    let until = Instant::now() + Duration::from_secs(30);
-    while !unrecorded_launches(h).is_empty() && Instant::now() < until {
-        std::thread::sleep(Duration::from_millis(100));
+    let mut restarted = SystemTime::now();
+    h.without_fleetd(|| {
+        before();
+        restarted = SystemTime::now();
+    });
+    wait_for_or(
+        "the pass of the new fleetd",
+        || pass_ended_since(h, restarted).then_some(()),
+        || evidence(h),
+    );
+    wait_for_or(
+        "the spawn of each launch of the pass",
+        || unrecorded_launches(h).is_empty().then_some(()),
+        || evidence(h),
+    );
+}
+
+fn pass_ended_since(h: &Harness, t: SystemTime) -> bool {
+    let run = h.fleet_root().join("run");
+    let mtime = |name: &str| {
+        std::fs::metadata(run.join(name))
+            .and_then(|m| m.modified())
+            .ok()
+    };
+    match (mtime("activity.json"), mtime("heartbeat.json")) {
+        (Some(activity), Some(heartbeat)) => activity >= t && heartbeat >= activity,
+        _ => false,
     }
 }
 
-/// The attempts in `launching` that fleetd launched and whose worker has
-/// no pane yet.
 fn unrecorded_launches(h: &Harness) -> Vec<String> {
     let launches = h.fleet_root().join("run").join("launches");
     ledger_rows(
         h,
         "SELECT a.id FROM attempts a JOIN workers w ON w.worker_id = a.worker_id \
-         WHERE a.state = 'launching' AND w.pane_id IS NULL",
+         WHERE a.state = 'launching' AND a.task_id IS NOT NULL AND w.pane_id IS NULL \
+         AND w.status = 'spawning'",
     )
     .into_iter()
     .filter(|id| {
@@ -181,9 +169,6 @@ fn unrecorded_launches(h: &Harness) -> Vec<String> {
     .collect()
 }
 
-/// Link `bwrap` of this host into the `bin/` of `h`, so that the check
-/// sandbox of Linux is on the sealed `PATH`. macOS uses
-/// `/usr/bin/sandbox-exec`.
 fn link_bwrap(h: &Harness) {
     let found = std::env::var_os("PATH").and_then(|path| {
         std::env::split_paths(&path)
@@ -195,7 +180,6 @@ fn link_bwrap(h: &Harness) {
     }
 }
 
-/// Each file named `name` under `dir`, at any depth.
 fn files_named(dir: &Path, name: &str) -> Vec<PathBuf> {
     let mut found = Vec::new();
     let mut todo = vec![dir.to_path_buf()];
@@ -212,7 +196,6 @@ fn files_named(dir: &Path, name: &str) -> Vec<PathBuf> {
     found
 }
 
-/// The value of the top-level key `key` of the YAML text `y`.
 fn yaml_key(y: &str, key: &str) -> Option<String> {
     let prefix = format!("{key}:");
     y.lines()
@@ -220,12 +203,6 @@ fn yaml_key(y: &str, key: &str) -> Option<String> {
         .map(|v| v.trim().trim_matches('"').to_string())
 }
 
-/// Create run `alpha` in workspace `workspace` with the run branch
-/// `fleet/alpha`, the verification profile `minimal` (the check, then
-/// land) and an idea in flight (FR-12), and queue 1 task for each ticket
-/// with the check `check`. `horch ledger run new` and `horch ledger add` are
-/// retired, so the test writes the rows. A push launch opens its pane in the
-/// fleet workspace.
 fn queue_run(h: &Harness, workspace: &str, tickets: &[&str], check: &str) {
     use horch_core::taskledger::model::{Actor, VerifyProfile};
     use horch_core::taskledger::runs::{self, NewRun};
@@ -261,7 +238,6 @@ fn queue_run(h: &Harness, workspace: &str, tickets: &[&str], check: &str) {
     }
 }
 
-/// The jobs of kind `kind` in the ledger, as (id, run, state).
 fn jobs_of(h: &Harness, kind: &str) -> Vec<(i64, i64, String)> {
     ledger_rows(
         h,
@@ -279,8 +255,6 @@ fn jobs_of(h: &Harness, kind: &str) -> Vec<(i64, i64, String)> {
     .collect()
 }
 
-/// Wait until each `running` job of kind `kind` has written its result
-/// file: its process ended, and no pass ingested it yet.
 fn wait_jobs_ended(h: &Harness, kind: &str) {
     let fleet_root = h.fleet_root();
     wait_for_or(
@@ -303,8 +277,6 @@ fn wait_jobs_ended(h: &Harness, kind: &str) {
     );
 }
 
-/// The rows of the ledger that tell how far the push path went, for a
-/// failure message.
 fn evidence(h: &Harness) -> String {
     [
         "SELECT 'task ' || task_id || ' ' || status FROM tasks",
@@ -313,6 +285,7 @@ fn evidence(h: &Harness) -> String {
         "SELECT 'branch ' || name || ' ' || ifnull(landing_state, '-') FROM branches",
         "SELECT 'bundle ' || id || ' ' || state FROM bundles",
         "SELECT 'item ' || key || ' ' || state || ' ' || text FROM needs_you",
+        "SELECT 'worker ' || worker_id || ' ' || status || ' pane ' || ifnull(pane_id, '-') FROM workers",
     ]
     .iter()
     .flat_map(|q| ledger_rows(h, q))
@@ -321,19 +294,29 @@ fn evidence(h: &Harness) -> String {
             .iter()
             .map(|c| format!("claude call: {}", c["result"])),
     )
+    .chain(
+        std::fs::read_dir(h.fleet_root().join("run").join("launches"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| format!("launch record: {}", e.file_name().to_string_lossy())),
+    )
+    .chain(
+        std::fs::read_to_string(h.fleet_root().join("run").join("launch.log"))
+            .unwrap_or_default()
+            .lines()
+            .map(|l| format!("launch.log: {l}")),
+    )
+    .chain(
+        std::fs::read_to_string(h.root.join("fleetd.stderr"))
+            .unwrap_or_default()
+            .lines()
+            .map(|l| format!("fleetd: {l}")),
+    )
     .collect::<Vec<_>>()
     .join("\n")
 }
 
-/// The design: when several task branches of 1 feature are `ready`
-/// together, fleetd builds 1 candidate of them, the fast gate runs 1 time on
-/// the candidate, and each branch lands.
-///
-/// 3 push attempts: passes of fleetd bind each task to a spawned attempt,
-/// the test commits the work of each attempt in its worktree before its
-/// launch, and the fake agent of each attempt runs `horch result`. The
-/// check of each task waits for the file `go`, so that the 3 tasks become
-/// `ready` in 1 pass.
 #[test]
 fn given_3_ready_branches_when_bundle_then_fast_gate_runs_once_and_none_is_forgotten() {
     horch_e2e::expected::check(
@@ -345,31 +328,23 @@ fn given_3_ready_branches_when_bundle_then_fast_gate_runs_once_and_none_is_forgo
             h.set("HORCH_LEDGER_DB", db.to_string_lossy());
             h.set("HORCH_NO_WAKE", "1");
             h.set("HORCH_NO_WATCHDOG", "1");
+            h.set("HORCH_FAULT", "drop-watch-events");
             h.set(
                 "HORCH_QUOTA_FILE",
                 fixtures().join("quota/all-ok.json").to_string_lossy(),
             );
-            // The docs jobs of a pass read an empty local folder, not the
-            // network.
             let docs = h.root.join("docs-fixture");
             std::fs::create_dir_all(&docs).unwrap();
             h.set("HORCH_TEST_DOCS_FIXTURE", docs.to_string_lossy());
-            // Each fake agent runs `horch result` in its worktree at launch.
             h.set("HORCH_FAKE_SCENARIO", "exec,result");
             std::os::unix::fs::symlink(Harness::horch_bin(), h.bin.join("horch")).unwrap();
             link_bwrap(&h);
-            // The workspace of the fleet has the label of the project
-            // folder, so fleetd launches each attempt in it.
             let workspace = h.fleet_workspace();
             h.set("HORCH_WORKSPACE_ID", &workspace);
-            // 1 pass at the start of the test fleetd, then only the
-            // channel: the test runs each other pass.
             let fleet = h.fleet_root();
             std::fs::create_dir_all(&fleet).unwrap();
             std::fs::write(fleet.join("fleet.toml"), "pass_period_s = 3600\n").unwrap();
 
-            // The fast gate prints 1 line to its output file each time it
-            // runs. It can write only its gate tree.
             declare_gates(&h, "echo the fast gate ran");
             git_commit_all(&h, "gates");
             add_bare_remote(&h);
@@ -384,11 +359,6 @@ fn given_3_ready_branches_when_bundle_then_fast_gate_runs_once_and_none_is_forgo
                 other => panic!("no file for task {other}"),
             };
 
-            // Passes bind each task to a push attempt and make its
-            // worktree. The test commits the work of each attempt while
-            // fleetd is down, before the pass that launches it, so `horch
-            // result` names the commit. A worktree is ready when its
-            // `worktree_add` job ended.
             let tasks_dir = h.fleet_root().join("tasks");
             let committed = std::cell::RefCell::new(BTreeSet::new());
             let commit_ready = || {
@@ -423,9 +393,6 @@ fn given_3_ready_branches_when_bundle_then_fast_gate_runs_once_and_none_is_forgo
             let committed = committed.into_inner();
             assert_eq!(committed.len(), 3, "{committed:?}");
 
-            // The 3 checks end together while fleetd is down. The next pass
-            // verifies the 3 tasks, and their 3 branches are `ready` in
-            // that pass.
             pass(&h, || {
                 std::fs::write(&go, "").unwrap();
                 wait_jobs_ended(&h, "task_check");
@@ -477,8 +444,6 @@ fn given_3_ready_branches_when_bundle_then_fast_gate_runs_once_and_none_is_forgo
     );
 }
 
-/// Commit `body` as `file` on `branch` with no checkout, because a fleet
-/// worktree can hold the branch. Returns the new tip.
 fn commit_on_branch(h: &Harness, branch: &str, file: &str, body: &str) -> String {
     let project = h.project.clone();
     let index = h.root.join(format!("index-{}", branch.replace('/', "-")));
@@ -506,7 +471,6 @@ fn commit_on_branch(h: &Harness, branch: &str, file: &str, body: &str) -> String
     new
 }
 
-/// Rows of a query on the ledger of the harness, 1 line for each row.
 fn ledger_rows(h: &Harness, sql: &str) -> Vec<String> {
     assert!(h.has_sqlite3(), "this test reads the ledger with sqlite3");
     let db = h.root.join("ledger.sqlite3");
@@ -519,10 +483,6 @@ fn ledger_rows(h: &Harness, sql: &str) -> Vec<String> {
     out(&o).lines().map(str::to_string).collect()
 }
 
-/// The design: 2 open features that change the same line get a trial merge
-/// (`git merge-tree --write-tree`, no checkout). The conflict is a fact in
-/// the ledger, each feature keeps its tip, and the conflict reaches a
-/// decision. Today there is no `horch idea`, no feature and no trial merge.
 #[test]
 fn two_conflicting_features_keep_their_tips_and_reach_a_decision() {
     horch_e2e::expected::check(
@@ -533,8 +493,6 @@ fn two_conflicting_features_keep_their_tips_and_reach_a_decision() {
             let project = h.project.clone();
             std::fs::write(project.join("shared.txt"), "line 1\n").unwrap();
             declare_gates(&h, "true");
-            // The ticket format C1 of Phase 6: plan validation refuses a
-            // ticket with no field block.
             let c1 = |title: &str, own: &str| {
                 format!(
                     "# {title}\n\n<!-- horch-ticket: 1 -->\n\
@@ -550,14 +508,10 @@ fn two_conflicting_features_keep_their_tips_and_reach_a_decision() {
             let retry_ticket = ticket(&h, "01-retry", &c1("01: Retry sync", "src/retry.rs"));
             let log_ticket = ticket(&h, "02-log", &c1("02: Log retries", "src/log.rs"));
             git_commit_all(&h, "base");
-            // fleetd reads the primary tip from the fetched remote.
             add_bare_remote(&h);
 
-            // fleet.toml and the tickets are committed: the test fleetd
-            // reads them at its next start.
             pass(&h, || ());
 
-            // 2 ideas with no `--to`: each one starts its own feature.
             ok(
                 &h,
                 &["idea", "add", "--direct", &retry_ticket.to_string_lossy()],
@@ -566,9 +520,6 @@ fn two_conflicting_features_keep_their_tips_and_reach_a_decision() {
                 &h,
                 &["idea", "add", "--direct", &log_ticket.to_string_lossy()],
             );
-            // (feature id, feature branch) of each idea, from the ledger:
-            // a task branch is not a feature branch. A pass creates the ref
-            // of each feature branch after the commit of its row.
             let features: Vec<(String, String)> = wait_for("2 feature branches", || {
                 pass(&h, || ());
                 let rows = ledger_rows(
@@ -598,7 +549,6 @@ fn two_conflicting_features_keep_their_tips_and_reach_a_decision() {
             });
             assert_eq!(features.len(), 2, "2 ideas make 2 features: {features:?}");
 
-            // Each feature branch changes the same line of shared.txt.
             let tips: Vec<String> = features
                 .iter()
                 .map(|(_, b)| commit_on_branch(&h, b, "shared.txt", &format!("{b}\n")))
@@ -622,9 +572,6 @@ fn two_conflicting_features_keep_their_tips_and_reach_a_decision() {
                 assert_eq!(&now, tip, "feature {b} keeps its tip");
             }
 
-            // The decision: the younger feature is stacked on the older one
-            // (and gets 1 resolver task), or 1 needs-you item names both
-            // features.
             let ids: BTreeSet<&str> = features.iter().map(|(id, _)| id.as_str()).collect();
             let decision = wait_for("a decision on the conflict", || {
                 pass(&h, || ());

@@ -1,10 +1,3 @@
-//! The executor of each worktree job kind.
-//!
-//! `run_job` of fleet runtime calls [`run`] for the kinds `worktree_add`,
-//! `worktree_list`, `rescue` and `worktree_remove` (MAP.md of fleetd-p3,
-//! Q22). It runs in the job process, outside each pass and each
-//! transaction.
-
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -18,6 +11,7 @@ use crate::fleetd::fleet_runtime::domain::jobs::{self, Kind};
 use crate::fleetd::integration::adapters::git::CliGitGateway;
 use crate::fleetd::integration::application::branches;
 use crate::fleetd::task_execution::adapters::sqlite::attempts_of_worker;
+use crate::fleetd::task_execution::domain::task::AttemptState;
 use crate::fleetd::worktree_custody::adapters::git::{self, CliWorktreeGit};
 use crate::fleetd::worktree_custody::adapters::remove_git::{self, CliRemoval, Owner};
 use crate::fleetd::worktree_custody::adapters::rescue_git;
@@ -32,15 +26,10 @@ use crate::runtime::bins::{git_bin, BinOverrides};
 use crate::runtime::context::ProcessEnv;
 use crate::runtime::paths::nonempty_path;
 
-/// Run the job `row` of a worktree kind with the git binary of this process.
-/// Each git call runs in the sandbox, and can write only the paths of its
-/// kind. A host with no sandbox runs no git: the run fails with a text that
-/// starts with [`git::NO_SANDBOX`].
 pub fn run(conn: &Connection, row: &JobRow) -> Result<Ran> {
     run_in(conn, row, sandboxed_hiding)
 }
 
-/// [`run`] with the sandbox host `host`. A test gives a fake answer.
 #[doc(hidden)]
 pub fn run_in(conn: &Connection, row: &JobRow, host: SandboxHost) -> Result<Ran> {
     let root = fleet_root(conn)?;
@@ -67,14 +56,10 @@ pub fn run_in(conn: &Connection, row: &JobRow, host: SandboxHost) -> Result<Ran>
     }
 }
 
-/// The repository root of the ledger row `tree`, which git of its job can
-/// read.
 fn repo(tree: &WorktreeRow) -> [PathBuf; 1] {
     [PathBuf::from(&tree.repo_root)]
 }
 
-/// Run `job` on the ledger row of the tree that is the subject of `row`, or
-/// fail when the ledger has none.
 fn on_tree(
     conn: &Connection,
     row: &JobRow,
@@ -89,7 +74,6 @@ fn on_tree(
     }
 }
 
-/// A `worktree_add` job: git can write the git folder and the tree.
 fn add(git: CliWorktreeGit, tree: &WorktreeRow) -> Result<Ran> {
     Ok(match git::tree_writer(git, tree) {
         Ok(git) => git::worktree_add(&git, tree),
@@ -97,10 +81,6 @@ fn add(git: CliWorktreeGit, tree: &WorktreeRow) -> Result<Ran> {
     })
 }
 
-/// A `worktree_list` job of the repository that is the subject of `row`.
-/// It only reads. A passed run also holds the facts of each rescue ref of
-/// the repository, and its fleet branches and stash names (MAP.md of
-/// fleetd-p4, Q17), or the error of each read.
 fn list(conn: &Connection, row: &JobRow, git: &CliWorktreeGit) -> Result<Ran> {
     let live: Vec<WorktreeState> = WorktreeState::ALL
         .into_iter()
@@ -136,8 +116,6 @@ fn list(conn: &Connection, row: &JobRow, git: &CliWorktreeGit) -> Result<Ran> {
     Ok(ran)
 }
 
-/// A `worktree_remove` job: git can write the git folder, the tree and its
-/// quarantine folder.
 fn remove(
     conn: &Connection,
     git: CliWorktreeGit,
@@ -172,8 +150,6 @@ fn landed_commit(conn: &Connection, id: &str) -> Result<Option<String>> {
     )?)
 }
 
-/// The owner attempt of `tree` and its agent process, as the ledger
-/// records it.
 fn owner(conn: &Connection, tree: &WorktreeRow) -> Result<Owner> {
     let Some(attempt) = tree.owner_attempt.as_deref() else {
         return Ok(Owner::NoAttempt);
@@ -185,20 +161,19 @@ fn owner(conn: &Connection, tree: &WorktreeRow) -> Result<Owner> {
     let found = attempts_of_worker(conn, worker)?
         .into_iter()
         .find(|a| a.id == attempt);
-    match found.map(|a| a.process) {
+    match found {
         None => unknown("is not an attempt of the worker of the row"),
-        Some(None) => unknown("has no recorded process"),
-        Some(Some(p)) => Ok(Owner::Process {
-            pid: p.pid,
-            start: p.pid_start,
-        }),
+        Some(a) => match a.process {
+            Some(p) => Ok(Owner::Process {
+                pid: p.pid,
+                start: p.pid_start,
+            }),
+            None if a.state == AttemptState::Ended => Ok(Owner::Ended),
+            None => unknown("has no recorded process"),
+        },
     }
 }
 
-/// The fleet root of the ledger of `conn`: `$FLEET_ROOT`, else the folder
-/// `fleet` beside the ledger file, the rule of `Paths` (MAP.md of
-/// fleetd-p1, Q4). `horch job run` opens the ledger of its `Paths`, so both
-/// give 1 folder.
 pub(crate) fn fleet_root(conn: &Connection) -> Result<PathBuf> {
     if let Some(root) = nonempty_path(&ProcessEnv, "FLEET_ROOT") {
         return Ok(root);

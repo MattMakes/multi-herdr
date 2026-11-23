@@ -1,47 +1,13 @@
-//! Process identity: a pid with its start time.
-//!
-//! A pid alone does not name a process. Once a process ends, the OS can give
-//! its pid to any later program, so a pid read from a file, a heartbeat or a
-//! lock can name a stranger. A signal to that pid ends the wrong program, and
-//! a liveness check on it keeps a stale lock alive for ever.
-//!
-//! So every stored pid is stored with [`start_time`], and every signal and
-//! liveness check first confirms that the pid still has that start time.
-//! A child the caller still holds unreaped is safe without this: its zombie
-//! keeps the pid.
-//!
-//! The start time is opaque: compare it for equality, never for order across
-//! platforms. macOS gives microseconds since the epoch (`proc_pidinfo`),
-//! Linux gives clock ticks since boot (`/proc/<pid>/stat` field 22),
-//! Windows gives the creation time from `GetProcessTimes` (a `FILETIME`:
-//! 100 ns ticks since 1601-01-01). The OS calls are in
-//! [`horch_platform::process`] and [`horch_platform::signal`].
-//!
-//! [`stop_same`] stops a process only while it has its recorded start time.
-//! On Unix it sends `SIGTERM` or `SIGKILL` through `signal_same`. Windows
-//! has no polite stop for an arbitrary process, so [`Stop::Term`] and
-//! [`Stop::Kill`] both call `TerminateProcess` with exit code 1, on the same
-//! handle the start time was read through.
-
 use horch_platform::signal as platform_signal;
 
-/// The start time of `pid`, or `None` when it does not run or this platform
-/// cannot read it.
 pub fn start_time(pid: u32) -> Option<u64> {
     horch_platform::process::start_time(pid)
 }
 
-/// When `pid` started, on the wall clock, or `None` when it does not run or
-/// this platform cannot read it. For an order with a time this process
-/// took. On Linux it is boot time plus clock ticks, so it can be off by up
-/// to a second.
 pub fn started_at(pid: u32) -> Option<std::time::SystemTime> {
     horch_platform::process::started_at(pid)
 }
 
-/// Whether `pid` runs and is the process that started at `started`. With
-/// `started` unknown (an old record), or a platform that cannot read start
-/// times, this is "the pid exists".
 pub fn alive(pid: u32, started: Option<u64>) -> bool {
     if !crate::fsx::pid_alive(pid) {
         return false;
@@ -52,72 +18,44 @@ pub fn alive(pid: u32, started: Option<u64>) -> bool {
     }
 }
 
-/// Whether `pid` runs with start time `started`. The check before any
-/// signal: an unreadable start time is not a match.
 pub fn is_same(pid: u32, started: u64) -> bool {
     start_time(pid) == Some(started)
 }
 
-/// Whether process group `pgid` is still the one whose leader started at
-/// `started`: the leader runs with that start time and still leads the
-/// group; or the leader has ended and the group still has members, which
-/// keeps the id from being given out again. False on a platform without
-/// process groups (Windows).
+pub fn is_same_sandboxed(pid: u32, started: u64) -> bool {
+    horch_platform::process::start_time_sandboxed(pid) == Some(started)
+}
+
+pub fn parent_sandboxed(pid: u32) -> Option<u32> {
+    horch_platform::process::parent_sandboxed(pid)
+}
+
 pub fn is_same_group(pgid: u32, started: u64) -> bool {
     horch_platform::group::is_same_group(pgid, started).unwrap_or(false)
 }
 
-/// The pids in process group `pgid` now: its members, the leader among
-/// them while it runs. Empty when the group has none, or on a platform that
-/// cannot list them (Windows).
 pub fn group_members(pgid: u32) -> Vec<u32> {
     horch_platform::process::group_members(pgid).unwrap_or_default()
 }
 
-/// Whether `pid` runs and started at or before `t` on the wall clock. An
-/// unknown start time is not a match. Linux compares in clock ticks since
-/// boot, not with [`started_at`], so the whole-second boot time cannot move
-/// a start before `t`.
 pub fn started_by(pid: u32, t: std::time::SystemTime) -> bool {
     horch_platform::process::started_by(pid, t)
 }
 
-/// `pid` as the OS type, when it can name one process: 0 and values that
-/// would turn negative (a process group, or every process) are refused.
-/// Every cast of a stored pid to `pid_t` goes through here.
 pub fn os_pid(pid: u32) -> Option<i32> {
     i32::try_from(pid).ok().filter(|p| *p > 0)
 }
 
-/// Send `signal` to `pid` only while it runs with start time `started`, and
-/// say whether it was sent. See [`horch_platform::signal::signal_same`]: on
-/// Linux through a pidfd, on macOS the check just before `kill`. A platform
-/// without signals (Windows) sends nothing.
 pub fn signal_same(pid: u32, started: u64, signal: i32) -> bool {
     platform_signal::signal_same(pid, started, signal).unwrap_or(false)
 }
 
-/// How hard a stop is. On Unix [`Stop::Term`] is `SIGTERM`, which the
-/// process can catch to clean up, and [`Stop::Kill`] is `SIGKILL`. Windows
-/// has no polite stop for an arbitrary process: both are `TerminateProcess`
-/// with exit code 1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stop {
     Term,
     Kill,
 }
 
-/// Stop `pid` only while it runs with start time `started`, and say whether
-/// a stop was sent.
-///
-/// On Unix this is `signal_same` with `SIGTERM` or `SIGKILL`. On Windows
-/// one handle is opened with `PROCESS_TERMINATE` and
-/// `PROCESS_QUERY_LIMITED_INFORMATION`, the creation time is read through
-/// that handle, and only on a match is `TerminateProcess` called on the same
-/// handle. The handle names the process that had the pid when it was opened
-/// and keeps that pid from being given out, so a reused pid can never be hit
-/// between the check and the stop. Both kinds of stop end the process at
-/// once there, with exit code 1.
 pub fn stop_same(pid: u32, started: u64, how: Stop) -> bool {
     let how = match how {
         Stop::Term => platform_signal::Stop::Term,
@@ -150,6 +88,30 @@ mod tests {
         assert!(!alive(me, Some(started + 1)), "a reused pid is dead");
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_sandbox_safe_sysctl_names_the_same_process_start() {
+        let me = std::process::id();
+        assert_eq!(
+            horch_platform::process::start_time_sandboxed(me),
+            start_time(me),
+            "the sandbox fallback keeps the recorded identity"
+        );
+        assert!(is_same_sandboxed(me, start_time(me).unwrap()));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_sandbox_safe_sysctl_names_the_parent() {
+        // SAFETY: `getppid` has no preconditions.
+        let parent = unsafe { libc::getppid() };
+        assert_eq!(
+            parent_sandboxed(std::process::id()),
+            u32::try_from(parent).ok()
+        );
+        assert_eq!(parent_sandboxed(i32::MAX as u32), None, "no such process");
+    }
+
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn a_new_child_started_after_this_process() {
@@ -164,9 +126,6 @@ mod tests {
         let theirs = started_at(child.id()).expect("the child runs");
         child.kill().unwrap();
         child.wait().unwrap();
-        // Linux counts start times from a boot time in whole seconds, so
-        // the child can read up to 1 s plus 1 clock tick early (CI saw
-        // 1.003 s). Allow 2 s.
         assert!(
             theirs + Duration::from_secs(2) >= before,
             "{theirs:?} {before:?}"
@@ -174,7 +133,6 @@ mod tests {
         assert!(theirs >= mine);
     }
 
-    /// A child that has ended and been reaped: its record names nothing.
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn an_ended_child_is_not_the_same() {
@@ -201,7 +159,6 @@ mod tests {
         assert!(!alive(u32::MAX, None));
     }
 
-    /// The signal goes only to the process with the recorded start time.
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn signal_same_signals_only_the_recorded_process() {
@@ -223,7 +180,6 @@ mod tests {
         assert!(!signal_same(pid, started, libc::SIGKILL), "gone");
     }
 
-    /// This test's own group holds this process and a child it starts.
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn group_members_lists_this_group() {
@@ -242,8 +198,6 @@ mod tests {
         assert_eq!(group_members(u32::MAX), Vec::<u32>::new());
     }
 
-    /// A process started by a time only from its start on, and a gone
-    /// process never.
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn started_by_orders_a_start_with_a_time() {
@@ -266,7 +220,6 @@ mod tests {
         assert!(!started_by(0, after));
     }
 
-    /// `stop_same` stops only the process with the recorded start time.
     #[cfg(unix)]
     #[test]
     fn stop_same_stops_only_the_recorded_process() {
@@ -298,8 +251,6 @@ mod tests {
             .unwrap()
     }
 
-    /// A child has a start time while it runs and none once it has ended,
-    /// even while this process still holds a handle to it.
     #[cfg(windows)]
     #[test]
     fn windows_child_identity_ends_with_it() {
@@ -327,7 +278,6 @@ mod tests {
         assert!(!stop_same(pid, started, Stop::Kill), "gone");
     }
 
-    /// `stop_same` terminates only the process with the recorded start time.
     #[cfg(windows)]
     #[test]
     fn windows_stop_same_stops_only_the_recorded_process() {

@@ -1,13 +1,4 @@
-//! `horch ledger worktree new` and `scratch` write the `reserved` row and
-//! its `worktree_add` job first, then run `git worktree add` with no
-//! transaction open (docs/specs/fleetd/design.md, "Worktrees: leased,
-//! reconciled, never lost"; FR-11; I6; rows W1, W2 and W4 of
-//! preservation-04-behavior.md; docs/tickets/fleetd-p3/08-create-worktree-row-first.md).
-//!
-//! Each test makes its own temporary git repository and ledger. No test
-//! starts a `horch` binary: a job runs in the test process (`TestJobs`),
-//! or in a thread that plays `horch job run` beside a fake `horch` that
-//! sleeps.
+#![cfg_attr(not(unix), allow(dead_code, unused_imports))]
 
 #[path = "common/test_jobs.rs"]
 mod test_jobs;
@@ -54,8 +45,6 @@ use test_jobs::TestJobs;
 
 const RUN_BRANCH: &str = "fleet/r1";
 
-// ─── the world of a test ────────────────────────────────────────────────
-
 struct World {
     tmp: tempfile::TempDir,
     root: PathBuf,
@@ -65,8 +54,6 @@ struct World {
     base: String,
 }
 
-/// Run git in `dir` for the test itself, with no hook and no config of
-/// the user.
 fn git(dir: &Path, args: &[&str]) -> String {
     let o = Command::new("git")
         .arg("-C")
@@ -96,7 +83,6 @@ fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&o.stdout).trim().to_string()
 }
 
-/// Write `file` in the tree `dir`, commit it, and give the new HEAD.
 fn commit(dir: &Path, file: &str) -> String {
     std::fs::write(dir.join(file), "work\n").unwrap();
     git(dir, &["add", file]);
@@ -105,11 +91,9 @@ fn commit(dir: &Path, file: &str) -> String {
 }
 
 impl World {
-    /// A repository with 1 commit on `main` and the run branch, a ledger,
-    /// and a run of the repository.
     fn new() -> World {
         let tmp = tempfile::tempdir().unwrap();
-        let top = tmp.path().canonicalize().unwrap();
+        let top = horch_platform::path::for_child(&tmp.path().canonicalize().unwrap());
         let root = top.join("repo");
         std::fs::create_dir_all(&root).unwrap();
         git(&root, &["init", "--quiet", "-b", "main"]);
@@ -131,7 +115,6 @@ impl World {
                         ..Default::default()
                     },
                 )?;
-                // FR-12: a task needs an idea in flight of the feature of its run.
                 horch_core::taskledger::schema::run_idea(
                     tx,
                     &run.run_id,
@@ -155,7 +138,6 @@ impl World {
         self.store.path().to_path_buf()
     }
 
-    /// A new task, claimed by a new worker; returns the worker id.
     fn claimed(&mut self) -> String {
         let run = self.run.clone();
         self.store
@@ -167,8 +149,6 @@ impl World {
             .unwrap()
     }
 
-    /// The task of `worker_id` goes back to the queue, and a new worker
-    /// claims it; returns the new worker id.
     fn next_worker(&mut self, worker_id: &str) -> String {
         let run = self.run.clone();
         self.store
@@ -191,7 +171,6 @@ impl World {
             .unwrap()
     }
 
-    /// The `live` attempt of `worker_id`.
     fn attempt(&self, worker_id: &str) -> String {
         self.store
             .conn()
@@ -207,7 +186,6 @@ impl World {
         trees::get(self.store.conn(), id).unwrap().unwrap()
     }
 
-    /// The count of open needs-you items of `kind`.
     fn open_items(&self, kind: &str) -> i64 {
         self.store
             .conn()
@@ -226,7 +204,6 @@ impl World {
             .unwrap()
     }
 
-    /// The runs of `kind` of the subject `subject`, oldest first.
     fn jobs(&self, kind: Kind, subject: &str) -> Vec<JobRow> {
         let mut stmt = self
             .store
@@ -243,8 +220,7 @@ impl World {
             .collect()
     }
 
-    /// A fake `horch` that sleeps: `<horch> job run <id>` stays alive
-    /// while a thread of the test runs the executor.
+    #[cfg(unix)]
     fn sleeping_horch(&self) -> PathBuf {
         let path = self.tmp.path().join("fake-horch-sleeps");
         warm::write_warmed(
@@ -255,7 +231,7 @@ impl World {
         path
     }
 
-    /// A fake `horch` whose job process ends at once with no result.
+    #[cfg(unix)]
     fn lost_horch(&self) -> PathBuf {
         let path = self.tmp.path().join("fake-horch-lost");
         warm::write_warmed(&path, "#!/bin/sh\nexit 0\n", &[]);
@@ -263,10 +239,8 @@ impl World {
     }
 }
 
-/// A started worker, bound to the first startable task of `opus`.
 fn worker(tx: &rusqlite::Transaction<'_>, run: &Run) -> anyhow::Result<String> {
     let n: i64 = tx.query_row("SELECT count(*) FROM workers", [], |r| r.get(0))?;
-    // The first startable task of the persona, as the dispatch orders them.
     let task = tasks::startable(tx, &run.run_id)?
         .into_iter()
         .find(|t| t.claimable_by.as_deref() == Some("opus"))
@@ -283,9 +257,6 @@ fn worker(tx: &rusqlite::Transaction<'_>, run: &Run) -> anyhow::Result<String> {
         pid_start: Some(2),
     };
     let id = {
-        // These tests make the tree with `horch ledger worktree new`, as the
-        // worker of a claim did: the bind reserves no tree for a task of the
-        // shared checkout, and the task takes its own mode again after it.
         let mode: String = tx.query_row(
             "SELECT worktree_mode FROM tasks WHERE task_id = ?1",
             [&task],
@@ -332,7 +303,6 @@ impl SandboxProfiles for NoProfiles {
     }
 }
 
-/// The `running` `worktree_add` run, once the command started it.
 fn running_add(conn: &Connection) -> JobRow {
     let until = Instant::now() + Duration::from_secs(20);
     loop {
@@ -345,7 +315,6 @@ fn running_add(conn: &Connection) -> JobRow {
     }
 }
 
-/// Write the result of the run `job` as `horch job run` writes it.
 fn write_result(conn: &mut Connection, job: &JobRow) {
     let config = FleetConfig::default();
     let checks = CheckRunner {
@@ -357,20 +326,13 @@ fn write_result(conn: &mut Connection, job: &JobRow) {
     assert!(written.is_some(), "the job process wrote its result");
 }
 
-// ─── a gateway that records what it saw ─────────────────────────────────
-
-/// What the gateway saw when `git worktree add` started.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Seen {
-    /// The committed state of the row, read on another connection.
     state: String,
-    /// Another connection took the write lock: no transaction was open.
     no_transaction: bool,
-    /// The folder existed.
     folder: bool,
 }
 
-/// The git gateway of custody, with a record of each `add`.
 struct Recording {
     inner: CliWorktreeGit,
     db: PathBuf,
@@ -425,10 +387,7 @@ impl WorktreeGitGateway for Recording {
     }
 }
 
-// ─── the tests ──────────────────────────────────────────────────────────
-
-/// FR-11 and I6: the row commits in `reserved` before `git worktree add`
-/// runs, and the command holds no transaction while it runs.
+#[cfg(unix)]
 #[test]
 fn worktree_row_is_reserved_before_the_folder_exists() {
     let mut w = World::new();
@@ -449,7 +408,6 @@ fn worktree_row_is_reserved_before_the_folder_exists() {
         };
         let ran = custody_git::worktree_add(&gateway, &tree);
         assert!(ran.outcome.passed, "{}", ran.outcome.text);
-        // The executor of the job finds the tree made, at its base tip.
         write_result(&mut conn, &job);
     });
     let jobs = JobProcess::new(w.sleeping_horch());
@@ -477,9 +435,7 @@ fn worktree_row_is_reserved_before_the_folder_exists() {
     assert_eq!(wt.status, "open");
 }
 
-/// Q17: the command gives no path before the job passed. The job process
-/// is slow; the command waits for it, and the lease of the attempt starts
-/// when the command returns.
+#[cfg(unix)]
 #[test]
 fn attempt_waits_for_worktree_add_job_and_lease_starts_at_launch() {
     let mut w = World::new();
@@ -510,14 +466,11 @@ fn attempt_waits_for_worktree_add_job_and_lease_starts_at_launch() {
     assert_eq!(row.owner_attempt, Some(w.attempt(&id)));
 }
 
-/// A failed run drops the `reserved` row, and the command prints the
-/// reason of the job. An abandoned run keeps the row `reserved`, and the
-/// next run of the rule of abandoned runs makes the tree.
+#[cfg(unix)]
 #[test]
 fn failed_worktree_add_drops_the_reserved_row_and_abandoned_runs_again() {
     let mut w = World::new();
     let id = w.claimed();
-    // Another tree holds the branch of the tree: the job refuses it.
     let holder = w.tmp.path().join("holder");
     let holder_text = holder.display().to_string();
     git(
@@ -552,7 +505,6 @@ fn failed_worktree_add_drops_the_reserved_row_and_abandoned_runs_again() {
         .unwrap();
     assert_eq!(dropped, "worktree_add_failed");
 
-    // The job process ends with no result: the run ends abandoned.
     let lost = JobProcess::new(w.lost_horch());
     let e = finish::worktree_new_with(&mut w.store, &w.git, &id, "other", &lost).unwrap_err();
     assert!(e.to_string().contains("ended abandoned"), "{e:#}");
@@ -572,7 +524,6 @@ fn failed_worktree_add_drops_the_reserved_row_and_abandoned_runs_again() {
         "the next run waits its backoff"
     );
 
-    // The next command takes the reserved row and its next run.
     let wt = finish::worktree_new_with(&mut w.store, &w.git, &id, "other", &TestJobs).unwrap();
     assert_eq!(wt.worktree_id, tree);
     assert_eq!(w.row(&tree).state, WorktreeState::Active);
@@ -580,8 +531,6 @@ fn failed_worktree_add_drops_the_reserved_row_and_abandoned_runs_again() {
     assert!(Path::new(&wt.path).is_dir());
 }
 
-/// `idempotent: task-leased`: the same request 2 times has the effect of
-/// 1. The second call finds the row and its run.
 #[test]
 fn create_worktree_twice_has_the_effect_of_once() {
     let mut w = World::new();
@@ -638,19 +587,15 @@ fn create_worktree_twice_has_the_effect_of_once() {
     assert_eq!(w.rows(), 1);
     assert_eq!(w.jobs(Kind::WorktreeAdd, "wt-1").len(), 1);
 
-    // The command after them runs that 1 job.
     let wt = finish::worktree_new_with(&mut w.store, &w.git, &id, "feat", &TestJobs).unwrap();
     assert_eq!(wt.worktree_id, "wt-1");
     assert_eq!(w.rows(), 1);
     assert_eq!(w.jobs(Kind::WorktreeAdd, "wt-1").len(), 1);
-    // A command again takes the same tree with no new job.
     let again = finish::worktree_new_with(&mut w.store, &w.git, &id, "feat", &TestJobs).unwrap();
     assert_eq!(again.worktree_id, "wt-1");
     assert_eq!(w.jobs(Kind::WorktreeAdd, "wt-1").len(), 1);
 }
 
-/// `contract: worktree-created`: the event carries exactly `worktree_id`,
-/// `task_id`, `path` and `branch`.
 #[test]
 fn published_worktree_created_carries_worktree_id_task_id_path_branch() {
     let mut w = World::new();
@@ -658,8 +603,6 @@ fn published_worktree_created_carries_worktree_id_task_id_path_branch() {
     let wt = finish::worktree_new_with(&mut w.store, &w.git, &id, "feat", &TestJobs).unwrap();
     let job = w.jobs(Kind::WorktreeAdd, &wt.worktree_id).remove(0);
 
-    // A reserved row of the same task observes the same run again: build
-    // the event from a fresh row.
     let config = FleetConfig::default();
     let mut conn = open(&w.db());
     let tx = conn
@@ -691,10 +634,6 @@ fn published_worktree_created_carries_worktree_id_task_id_path_branch() {
     assert_eq!(w.row(&wt.worktree_id).state, WorktreeState::Active);
 }
 
-/// Review F1: a passed run whose folder is gone before the observation
-/// does not keep the row `reserved`. The row is dropped with the reason. The
-/// branch of the first run stays, and the retry with the same task and name
-/// attaches it with each of its commits.
 #[test]
 fn passed_worktree_add_with_no_folder_drops_the_reserved_row() {
     let mut w = World::new();
@@ -722,7 +661,6 @@ fn passed_worktree_add_with_no_folder_drops_the_reserved_row() {
     assert!(reason.contains("does not exist"), "{reason}");
     assert_eq!(w.rows(), 0);
 
-    // The retry with the same task and name attaches the kept branch.
     let next = finish::worktree_new_with(&mut w.store, &w.git, &id, "feat", &TestJobs).unwrap();
     assert_eq!(next.path, wt.path);
     assert_eq!(next.branch, wt.branch);
@@ -731,8 +669,6 @@ fn passed_worktree_add_with_no_folder_drops_the_reserved_row() {
     assert!(Path::new(&next.path).join("work.txt").is_file());
 }
 
-/// Row W2: the next attempt of the task gets the same tree. It moves to
-/// the new owner, and its base does not change without a drop.
 #[test]
 fn retry_reuses_the_same_worktree() {
     let mut w = World::new();
@@ -766,8 +702,6 @@ fn retry_reuses_the_same_worktree() {
     assert_eq!(w.row(&first.worktree_id).base, RUN_BRANCH);
 }
 
-/// Q10: an `orphaned` tree is not taken as it is. Its verified rescue
-/// comes first, then the next attempt takes the `rescued` tree.
 #[test]
 fn orphaned_tree_is_rescued_before_the_next_attempt_takes_it() {
     let mut w = World::new();
@@ -830,8 +764,6 @@ fn orphaned_tree_is_rescued_before_the_next_attempt_takes_it() {
     assert!(Path::new(&wt.path).join("u.txt").is_file());
 }
 
-/// Row W4: a scratch tree has no task, and it goes through the
-/// `worktree_add` job too.
 #[test]
 fn scratch_tree_has_no_task_and_goes_through_the_job() {
     let mut w = World::new();
@@ -869,9 +801,7 @@ fn scratch_tree_has_no_task_and_goes_through_the_job() {
     assert_eq!(add[0].state, State::Passed);
 }
 
-/// The fleetd git rule: a hook of the project never runs with the rights
-/// of fleetd. `git worktree add` starts `post-checkout`; the job runs, and
-/// the hook does not.
+#[cfg(unix)]
 #[test]
 fn post_checkout_hook_of_the_project_does_not_run_in_the_job() {
     let mut w = World::new();
@@ -892,8 +822,6 @@ fn post_checkout_hook_of_the_project_does_not_run_in_the_job() {
     );
 }
 
-/// A process that is not `horch` never starts a job process, and never
-/// uses a `horch` from PATH.
 #[test]
 fn a_process_that_is_not_horch_starts_no_job() {
     let mut w = World::new();
@@ -903,9 +831,6 @@ fn a_process_that_is_not_horch_starts_no_job() {
     assert_eq!(w.rows(), 0);
 }
 
-/// Review F1, round 3: a failed add keeps the branch of the task and
-/// name. When no tree holds it any more, the retry with the same name
-/// attaches it, with each commit on it. No branch is deleted.
 #[test]
 fn same_name_retry_after_a_failed_add_attaches_the_kept_branch_with_its_commits() {
     let mut w = World::new();
@@ -928,7 +853,6 @@ fn same_name_retry_after_a_failed_add_attaches_the_kept_branch_with_its_commits(
     assert!(e.to_string().contains("is checked out in"), "{e:#}");
     assert_eq!(w.rows(), 0);
 
-    // The holder lets the branch go; its commit stays on the branch.
     git(&w.root, &["worktree", "remove", &holder_text]);
     let wt = finish::worktree_new_with(&mut w.store, &w.git, &id, "feat", &TestJobs).unwrap();
     assert_eq!(wt.branch, "fleet/r1-T1-feat");

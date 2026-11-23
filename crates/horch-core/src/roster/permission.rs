@@ -1,11 +1,5 @@
-//! How much a teammate may do without stopping to ask.
-
 use serde::{Deserialize, Serialize};
 
-/// How much a teammate may do without stopping to ask.
-///
-/// Claude takes these directly. Codex has no single equivalent, so
-/// `PermissionMode::codex_args` maps them onto its sandbox/approval pair.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PermissionMode {
     #[serde(rename = "acceptEdits")]
@@ -34,31 +28,16 @@ impl PermissionMode {
         }
     }
 
-    /// OpenCode's single approval flag for this mode.
-    ///
-    /// OpenCode has one lever - `--auto`, "auto-approve permissions that are not
-    /// explicitly denied" - so the modes collapse into "pass it" or "do not".
-    /// `Plan` and the two ask-shaped modes have no analogue at all: there is no
-    /// read-only mode to put it in, and a worker left to prompt in a pane nobody
-    /// is watching stalls forever. Returning `None` makes that an error.
     pub(crate) fn opencode_args(self) -> Option<Vec<String>> {
         match self {
             PermissionMode::Auto | PermissionMode::BypassPermissions => {
                 Some(vec!["--auto".to_string()])
             }
-            // OpenCode still asks about anything explicitly denied, which is the
-            // closest thing it has to "accept edits, ask for the rest".
             PermissionMode::AcceptEdits => Some(vec!["--auto".to_string()]),
             PermissionMode::Plan | PermissionMode::Manual | PermissionMode::DontAsk => None,
         }
     }
 
-    /// Antigravity CLI (`agy`) flags for this mode.
-    ///
-    /// `agy` has `--mode plan|accept-edits` and one bypass,
-    /// `--dangerously-skip-permissions`. `Auto` adds `--sandbox`, which
-    /// confines terminal commands, to the bypass: approve everything, inside
-    /// the sandbox. `Manual` and `DontAsk` have no analogue.
     pub(crate) fn antigravity_args(self) -> Option<Vec<String>> {
         let args: &[&str] = match self {
             PermissionMode::Plan => &["--mode", "plan"],
@@ -70,16 +49,6 @@ impl PermissionMode {
         Some(args.iter().map(|s| s.to_string()).collect())
     }
 
-    /// Codex sandbox + approval flags for this mode.
-    ///
-    /// The write modes never ask: a command the sandbox refuses fails back
-    /// to the agent, so nothing outside the pane's folder can be granted.
-    /// This is the plain form; the codex adapter swaps the write modes for
-    /// its fleet permissions profile (`harness::codex::permission_args`).
-    ///
-    /// `Manual` and `DontAsk` have no codex analogue. Returning `None` lets the
-    /// caller raise an error rather than silently downgrade a teammate to
-    /// something more permissive than its file asked for.
     pub(crate) fn codex_args(self) -> Option<Vec<String>> {
         let pair: &[&str] = match self {
             PermissionMode::Plan => &["-s", "read-only", "-a", "on-request"],

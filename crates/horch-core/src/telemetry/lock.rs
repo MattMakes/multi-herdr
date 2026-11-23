@@ -1,22 +1,3 @@
-//! The collector singleton (section 12.2, SPC-01).
-//!
-//! `telemetry/collector.lock/` is created with `create_dir`, which is atomic,
-//! the same idiom as `SessionLedger::lock`. The holder writes `collector.json` next
-//! to it. A lock whose pid is dead is broken, and the breaker says so.
-//!
-//! Liveness is "the pid exists and has the recorded start time"
-//! ([`crate::procid::alive`]), so a reused pid does not keep a stale lock
-//! alive. A `collector.json` without a start time (written before it
-//! existed), or a platform without start times (Windows), falls back to
-//! "the pid exists". The lock is also removed on every normal exit.
-//!
-//! The holder also records its binary ([`crate::exeid::ExeIdentity`]: path, size and
-//! modification time). A collector keeps running the binary it started
-//! with, so after `just install` replaces that file it runs old code: old
-//! prices, old readers. [`runs_other_binary`] finds it, and [`stop`] ends
-//! it, by pid and start time only, so `horch telemetry ensure` and
-//! `horch install` can start a current one.
-
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -34,23 +15,14 @@ pub struct LockInfo {
     pub workspace_id: Option<String>,
     #[serde(default)]
     pub pane_id: Option<String>,
-    /// The holder's [`crate::procid::start_time`]; `None` in a file written
-    /// before it existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid_start: Option<u64>,
-    /// The binary the holder runs; `None` in a file written before it
-    /// existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exe: Option<ExeIdentity>,
 }
 
 use crate::exeid::{exe_identity, ExeIdentity};
 
-/// Whether the live holder `info` runs another binary than `current`, the
-/// binary that should collect now. A holder that recorded no binary was
-/// written by a horch older than this check, so it is not current either.
-/// With `current` unknown, or a holder without a pid (a lock being taken
-/// right now), nothing can be told: `false`.
 pub fn runs_other_binary(info: &LockInfo, current: Option<&ExeIdentity>) -> bool {
     match current {
         Some(want) if info.pid != 0 => info.exe.as_ref() != Some(want),
@@ -58,12 +30,6 @@ pub fn runs_other_binary(info: &LockInfo, current: Option<&ExeIdentity>) -> bool
     }
 }
 
-/// Stop the live holder `info` with SIGTERM, then wait up to `wait` for it
-/// to give up the lock. The signal goes only to the pid that still has the
-/// recorded start time ([`horch_platform::signal::terminate_politely`]):
-/// never to a holder without a start time, and never to a process that got
-/// the pid later. A platform without signals (Windows) sends nothing: a
-/// stale collector is reported, not stopped.
 pub fn stop(state_root: &Path, info: &LockInfo, wait: std::time::Duration) -> Result<()> {
     let Some(started) = info.pid_start else {
         anyhow::bail!(
@@ -109,12 +75,10 @@ pub(crate) fn info_path(state_root: &Path) -> PathBuf {
 
 use crate::procid;
 
-/// Who holds the lock, if anyone.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Holder {
     Free,
     Live(LockInfo),
-    /// The lock exists but its holder is gone (or never wrote its info).
     Stale(Option<LockInfo>),
 }
 
@@ -132,8 +96,6 @@ pub fn holder(state_root: &Path) -> Holder {
         Some(info) if procid::alive(info.pid, info.pid_start) => Holder::Live(info),
         Some(info) => Holder::Stale(Some(info)),
         None => {
-            // A holder between `create_dir` and writing its info is live for
-            // a moment; only an old, empty lock is stale.
             let young = std::fs::metadata(lock_dir(state_root))
                 .and_then(|m| m.modified())
                 .ok()
@@ -148,12 +110,10 @@ pub fn holder(state_root: &Path) -> Holder {
     }
 }
 
-/// Whether a live collector holds the lock.
 pub fn collector_live(state_root: &Path) -> bool {
     matches!(holder(state_root), Holder::Live(_))
 }
 
-/// The held lock. Dropping it releases the lock.
 #[derive(Debug)]
 pub struct CollectorLock {
     dir: PathBuf,
@@ -168,19 +128,15 @@ impl Drop for CollectorLock {
 }
 
 impl CollectorLock {
-    /// Release now (the same as dropping it).
     pub fn release(self) {}
 }
 
-/// The result of one try to take the lock.
 enum Attempt {
     Taken(CollectorLock),
     Held(LockInfo),
-    /// A stale lock was broken or the holder left; try again.
     Retry,
 }
 
-/// Break the lock of a holder that is gone.
 fn break_stale(state_root: &Path, dir: &Path, old: Option<&LockInfo>) {
     eprintln!(
         "horch: removed stale telemetry lock {}",
@@ -193,7 +149,6 @@ fn break_stale(state_root: &Path, dir: &Path, old: Option<&LockInfo>) {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-/// The lock directory exists: find out who holds it.
 fn on_exists(state_root: &Path, dir: &Path) -> Attempt {
     match holder(state_root) {
         Holder::Live(other) => Attempt::Held(other),
@@ -205,7 +160,6 @@ fn on_exists(state_root: &Path, dir: &Path) -> Attempt {
     }
 }
 
-/// One try to take the lock.
 fn try_take(state_root: &Path, dir: &Path, info: &LockInfo) -> Result<Attempt> {
     match std::fs::create_dir(dir) {
         Ok(()) => {
@@ -221,8 +175,6 @@ fn try_take(state_root: &Path, dir: &Path, info: &LockInfo) -> Result<Attempt> {
     }
 }
 
-/// Take the lock, breaking a stale one. `Ok(Err(info))` when a live
-/// collector holds it.
 pub fn acquire(
     state_root: &Path,
     info: &LockInfo,
@@ -237,13 +189,10 @@ pub fn acquire(
     Ok(match last {
         Attempt::Taken(lock) => Ok(lock),
         Attempt::Held(other) => Err(other),
-        // Lost a race twice: someone else holds it now.
         Attempt::Retry => Err(read_info(state_root).unwrap_or_default()),
     })
 }
 
-/// This process's lock info: its host, herdr session, workspace and pane
-/// come from the context.
 pub fn this_process(now: &str, ctx: &crate::runtime::RuntimeContext) -> LockInfo {
     LockInfo {
         pid: std::process::id(),
@@ -285,7 +234,6 @@ mod tests {
     fn spc_01_stale_lock_is_broken() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(lock_dir(tmp.path())).unwrap();
-        // A pid that cannot be running: beyond every platform's pid range.
         let dead = LockInfo {
             pid: 999_999_999,
             started_at: "2026-09-28T17:00:00Z".into(),
@@ -298,8 +246,6 @@ mod tests {
         assert_eq!(read_info(tmp.path()).unwrap().pid, std::process::id());
     }
 
-    /// An old lock directory with no info file has no recorded holder; it
-    /// is broken and taken.
     #[test]
     fn an_old_lock_with_no_holder_info_is_broken() {
         let tmp = tempfile::tempdir().unwrap();
@@ -316,7 +262,6 @@ mod tests {
         assert_eq!(read_info(tmp.path()).unwrap().pid, std::process::id());
     }
 
-    /// A young lock directory with no info is a holder mid-write: live.
     #[test]
     fn a_young_lock_with_no_holder_info_is_refused() {
         let tmp = tempfile::tempdir().unwrap();
@@ -326,8 +271,6 @@ mod tests {
         assert!(lock_dir(tmp.path()).is_dir(), "the young lock is kept");
     }
 
-    /// A pid that names no single process (it would turn into -1, every
-    /// process, as a `pid_t`) is a dead holder.
     #[test]
     fn a_pid_out_of_range_is_a_stale_lock() {
         let tmp = tempfile::tempdir().unwrap();
@@ -346,8 +289,6 @@ mod tests {
         }
     }
 
-    /// W9: a collector that recorded another binary, or no binary at all
-    /// (a horch older than the record), runs other code than `current`.
     #[test]
     fn a_collector_on_another_binary_is_found() {
         let tmp = tempfile::tempdir().unwrap();
@@ -360,7 +301,6 @@ mod tests {
             ..LockInfo::default()
         };
         assert!(!runs_other_binary(&info, Some(&old)), "the same binary");
-        // `just install` replaces the file: another size and mtime.
         std::fs::write(&bin, b"a newer, longer build").unwrap();
         let new = exe_identity(&bin).unwrap();
         assert_ne!(new, old);
@@ -384,8 +324,6 @@ mod tests {
         assert!(serde_json::from_str::<LockInfo>(r#"{"pid":1,"started_at":"x"}"#).is_ok());
     }
 
-    /// A fake collector: a child process recorded as the lock holder, with
-    /// a thread that reaps it so its pid goes away when it ends.
     #[cfg(unix)]
     fn fake_collector(
         root: &Path,
@@ -413,14 +351,13 @@ mod tests {
         (info, rx)
     }
 
-    /// W9: `stop` ends the recorded collector, by pid and start time.
     #[cfg(unix)]
     #[test]
     fn stop_ends_the_recorded_collector() {
         let tmp = tempfile::tempdir().unwrap();
         let (info, ended) = fake_collector(tmp.path(), procid::start_time);
         if info.pid_start.is_none() {
-            return; // No start times on this platform.
+            return;
         }
         assert!(matches!(holder(tmp.path()), Holder::Live(_)));
         stop(tmp.path(), &info, std::time::Duration::from_secs(5)).unwrap();
@@ -430,9 +367,6 @@ mod tests {
         assert!(matches!(holder(tmp.path()), Holder::Stale(_)));
     }
 
-    /// W9: never a signal to a process that is not the recorded collector:
-    /// not to a pid whose start time differs, not to a holder that recorded
-    /// no start time.
     #[cfg(unix)]
     #[test]
     fn stop_never_signals_a_process_that_is_not_the_recorded_collector() {
@@ -462,9 +396,6 @@ mod tests {
         }
     }
 
-    /// A lock whose pid runs with another start time is stale: the pid was
-    /// given to a later program. Without a start time (an old file), the
-    /// pid alone decides, as before.
     #[test]
     fn spc_01_a_reused_pid_is_a_stale_lock() {
         let tmp = tempfile::tempdir().unwrap();
@@ -486,7 +417,7 @@ mod tests {
         .unwrap();
         assert!(matches!(holder(tmp.path()), Holder::Live(_)), "an old file");
         let Some(mine) = procid::start_time(me) else {
-            return; // No start times on this platform.
+            return;
         };
         put(&info(Some(mine)));
         assert!(matches!(holder(tmp.path()), Holder::Live(_)));

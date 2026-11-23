@@ -1,6 +1,3 @@
-//! `runs::resolve`: which run a `horch ledger` command acts on (#78); and the
-//! checks of `runs::create` and `runs::close_run`.
-
 use std::path::Path;
 
 use horch_core::taskledger::model::{Actor, RunStatus};
@@ -54,7 +51,6 @@ fn a_slug_picks_the_active_run_over_a_newer_closed_one() {
     let old = new_run(&mut s, "/repo", "dup", None);
     runs::close(s.conn(), &old.run_id, RunStatus::Done).unwrap();
     let live = new_run(&mut s, "/repo", "dup", None);
-    // Make the closed run the newest: the active one must still win.
     s.conn()
         .execute(
             "UPDATE runs SET started_at = '2999-01-01T00:00:00Z' WHERE run_id = ?1",
@@ -199,15 +195,11 @@ fn a_run_needs_a_slug_and_at_least_one_attempt() {
     assert_eq!(run.max_attempts, 1, "the least that is accepted");
 }
 
-/// `close_run` refuses open work and says how to abandon it, `--abandon`
-/// cancels the work and closes the run as abandoned, and a closed run does
-/// not close again.
 #[test]
 fn a_run_with_open_work_closes_only_with_abandon_and_closes_once() {
     let (_d, mut s) = store();
     let run = new_run(&mut s, "/repo", "a", None);
     s.immediate(|tx| {
-        // FR-12: a task needs an idea in flight of the feature of its run.
         horch_core::taskledger::schema::run_idea(
             tx,
             &run.run_id,
@@ -266,13 +258,10 @@ fn a_run_with_open_work_closes_only_with_abandon_and_closes_once() {
     assert_eq!(err, "run a is already abandoned");
 }
 
-/// A parked worktree with no triage decision keeps a run open: the close is
-/// refused with the way out, and with `--abandon` the run stays active.
 #[test]
 fn a_parked_worktree_without_a_decision_keeps_the_run_open() {
     let (dir, mut s) = store();
     let run = new_run(&mut s, "/repo", "a", None);
-    // The folder must be on disk: a parked worktree that is gone blocks nothing.
     let path = dir.path().join("wt1");
     std::fs::create_dir_all(&path).unwrap();
     s.conn()

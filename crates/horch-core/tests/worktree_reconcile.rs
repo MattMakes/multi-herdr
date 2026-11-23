@@ -1,15 +1,3 @@
-//! The worktree reconciler: it adopts each tree with no row, marks the tree
-//! of a dead owner `orphaned`, observes the worktree jobs, escalates a
-//! vanished folder, checks I6, and queues the rescue of each orphan and the
-//! removal of each landed tree (docs/specs/fleetd/design.md, "Worktrees:
-//! leased, reconciled, never lost", "Ledger" I6, RR-10, FM-25, FM-26,
-//! FM-27; docs/tickets/fleetd-p3/09-worktree-reconciler-report-only.md and
-//! 18-reconciler-acts.md).
-//!
-//! The reconciler runs no git and reads no folder: each test gives the
-//! facts of part 1 of a pass as values. Each test has its own temporary
-//! ledger and project folder, with no git repository.
-
 use std::path::{Path, PathBuf};
 
 use horch_core::fleetd::fleet_runtime::adapters::jobs_store;
@@ -46,7 +34,6 @@ const CLOCK: FleetSeconds = FleetSeconds(1_000);
 
 struct World {
     _tmp: tempfile::TempDir,
-    /// The project folder, as its canonical path.
     repo: PathBuf,
     store: Store,
     run: Run,
@@ -63,7 +50,7 @@ fn cause() -> Cause<'static> {
 impl World {
     fn new() -> World {
         let tmp = tempfile::tempdir().unwrap();
-        let top = tmp.path().canonicalize().unwrap();
+        let top = horch_platform::path::canonicalize(tmp.path()).unwrap();
         let repo = top.join("repo");
         std::fs::create_dir_all(repo.join(".worktrees")).unwrap();
         let mut store = Store::open(&top.join("ledger.sqlite3")).unwrap();
@@ -79,7 +66,6 @@ impl World {
                         ..Default::default()
                     },
                 )?;
-                // FR-12: a task needs an idea in flight of the feature of its run.
                 horch_core::taskledger::schema::run_idea(
                     tx,
                     &run.run_id,
@@ -106,14 +92,12 @@ impl World {
         self.repo.display().to_string()
     }
 
-    /// The folder `<repo>/.worktrees/<name>`, made on disk.
     fn folder(&self, name: &str) -> String {
         let path = self.repo.join(".worktrees").join(name);
         std::fs::create_dir_all(&path).unwrap();
         path.display().to_string()
     }
 
-    /// A path under `<repo>/.worktrees/` with no folder.
     fn no_folder(&self, name: &str) -> String {
         self.repo
             .join(".worktrees")
@@ -122,14 +106,10 @@ impl World {
             .to_string()
     }
 
-    /// A new task `T<n>`, claimed by a new worker with a live attempt:
-    /// (task id, worker id, attempt id).
     fn claimed(&mut self, n: u32) -> (String, String, String) {
         let run = self.run.clone();
         self.store
             .immediate(|tx| {
-                // A shared task: the bind makes no tree, so each test
-                // writes the rows it needs.
                 let mut t = NewTask::work(&format!("t{n}"), &format!("t{n}.md"), "opus");
                 t.worktree_mode = WorktreeMode::Shared;
                 let task = tasks::add(tx, &run, &t, Actor::Orchestrator)?;
@@ -159,8 +139,6 @@ impl World {
             .unwrap()
     }
 
-    /// A row `id` at `path` in `state`, of the task, the worker and the
-    /// owner attempt given.
     fn row_in(
         &mut self,
         id: &str,
@@ -217,8 +195,6 @@ impl World {
         check_i6(self.conn(), facts).unwrap()
     }
 
-    /// The `worktree_add` run of the reserved row `id`, ended with the
-    /// result `passed` and its text.
     fn ended_add(&mut self, id: &str, passed: bool) -> i64 {
         let config = self.config.clone();
         let row = self.row(id);
@@ -247,7 +223,6 @@ impl World {
             .unwrap()
     }
 
-    /// Each row of the tables that the reconciler writes, as text.
     fn snapshot(&self) -> Vec<String> {
         let mut out = Vec::new();
         for sql in [
@@ -267,8 +242,6 @@ impl World {
         out
     }
 
-    /// The list result of the repository: its main tree, then `entries`
-    /// as (path, branch, row of the path).
     fn listed(&self, entries: &[(&str, &str, Option<&str>)]) -> Listed {
         let entry = |path: &str, branch: &str| ListEntry {
             path: path.to_string(),
@@ -296,8 +269,6 @@ impl World {
         }
     }
 
-    /// 1 run of `kind` on `subject`, queued, started and passed through the
-    /// door. Gives its id.
     fn passed_run(&mut self, kind: Kind, subject: &str) -> i64 {
         let config = self.config.clone();
         let repo = self.repo_s();
@@ -318,7 +289,6 @@ impl World {
             .unwrap()
     }
 
-    /// A `removed` row `id` at `path`, whose removal run passed.
     fn removed(&mut self, id: &str, path: &str) {
         self.row_in(id, path, "removed", (None, None, None));
         self.passed_run(Kind::WorktreeRemove, id);
@@ -358,8 +328,6 @@ fn ctx(config: &FleetConfig) -> JobCtx<'_> {
     }
 }
 
-/// End the `queued` run `job_id` as its process does: `running`, then its
-/// result, then a pass sees its process gone.
 fn end_run(
     tx: &Transaction<'_>,
     config: &FleetConfig,
@@ -397,10 +365,6 @@ fn exists(path: &str) -> bool {
     Path::new(path).is_dir()
 }
 
-// ─── the tests ──────────────────────────────────────────────────────────
-
-/// I6, RR-10, FM-26: a tree that the work directory and `git worktree
-/// list` show, with no row, gets an `orphaned` row; nothing is deleted.
 #[test]
 fn i6_worktree_on_disk_without_row_is_adopted_not_deleted() {
     let mut w = World::new();
@@ -435,7 +399,6 @@ fn i6_worktree_on_disk_without_row_is_adopted_not_deleted() {
         1
     );
     assert!(exists(&path), "the folder stays");
-    // The adopted orphan gets its rescue, and nothing removes it.
     assert_eq!(
         w.count(
             "SELECT count(*) FROM jobs WHERE kind = 'rescue' AND subject = ?1",
@@ -444,16 +407,12 @@ fn i6_worktree_on_disk_without_row_is_adopted_not_deleted() {
         1
     );
     assert_eq!(w.count("SELECT count(*) FROM jobs", &[]), 1);
-    // The facts of the list are on the new row in the same call.
     assert_eq!(row.head_sha.as_deref(), Some("h1"));
     let mut after = facts.clone();
     after.folders = vec![folder_fact(&row.worktree_id, Presence::Present)];
     assert_eq!(w.i6(&after), vec![]);
 }
 
-/// I6 with history: a folder at the path of a `removed` row (a tree that
-/// triage removed, made again by hand) gets a new `orphaned` row; the
-/// removed row stays as it is, and nothing is removed.
 #[test]
 fn a_folder_at_the_path_of_a_removed_row_is_adopted_as_a_new_row() {
     let mut w = World::new();
@@ -484,7 +443,6 @@ fn a_folder_at_the_path_of_a_removed_row_is_adopted_as_a_new_row() {
     assert_eq!(row.state, WorktreeState::Orphaned);
     assert_eq!(w.row("old").state, WorktreeState::Removed);
     assert!(exists(&path), "the folder stays");
-    // The adopted orphan gets its rescue, and nothing removes it.
     assert_eq!(
         w.count(
             "SELECT count(*) FROM jobs WHERE kind = 'rescue' AND subject = ?1",
@@ -495,8 +453,6 @@ fn a_folder_at_the_path_of_a_removed_row_is_adopted_as_a_new_row() {
     assert_eq!(w.count("SELECT count(*) FROM jobs", &[]), 1);
 }
 
-/// A tree that the list names by its path alone refreshes the live row of
-/// that path, not a `removed` row of the same path.
 #[test]
 fn worktree_list_result_by_path_refreshes_the_live_row_and_not_a_removed_row() {
     let mut w = World::new();
@@ -521,8 +477,6 @@ fn worktree_list_result_by_path_refreshes_the_live_row_and_not_a_removed_row() {
     assert_eq!(w.row("old").head_sha, None);
 }
 
-/// FM-25: the attempt that owns an `active` tree ends; the same call
-/// marks the tree `orphaned`. A live owner keeps it.
 #[test]
 fn owner_death_marks_the_tree_orphaned_in_the_same_pass() {
     let mut w = World::new();
@@ -555,8 +509,6 @@ fn owner_death_marks_the_tree_orphaned_in_the_same_pass() {
     assert_eq!(w.count("SELECT count(*) FROM jobs", &[]), 0);
 }
 
-/// Q23: an `active` tree with no owner attempt stays while its worker is
-/// live, and is `orphaned` when it is not.
 #[test]
 fn active_tree_with_no_attempt_follows_the_liveness_of_its_worker() {
     let mut w = World::new();
@@ -575,7 +527,6 @@ fn active_tree_with_no_attempt_follows_the_liveness_of_its_worker() {
     assert_eq!(w.row("wt1").state, WorktreeState::Orphaned);
 }
 
-/// A cancelled task orphans its `active` tree.
 #[test]
 fn cancelled_task_orphans_its_tree() {
     let mut w = World::new();
@@ -595,8 +546,6 @@ fn cancelled_task_orphans_its_tree() {
     assert_eq!(report.orphaned, vec!["wt1".to_string()]);
 }
 
-/// Q10: the attempt of a task parked by `done --unlanded` ended; its tree
-/// is `created` with no owner, so a requeue resumes it.
 #[test]
 fn parked_attempt_leaves_the_tree_created_with_no_owner() {
     let mut w = World::new();
@@ -628,10 +577,6 @@ fn parked_attempt_leaves_the_tree_created_with_no_owner() {
     assert!(exists(&path));
 }
 
-/// FR-11: a command that crashed after its `worktree_add` run ended left
-/// the row `reserved`. The next call observes the run: a passed run with
-/// its folder makes the tree, a failed run drops the row. A `reserved`
-/// row with no run cannot exist; I6 names it.
 #[test]
 fn reserved_row_left_by_crash_is_created_or_dropped_next_pass() {
     let mut w = World::new();
@@ -667,8 +612,6 @@ fn reserved_row_left_by_crash_is_created_or_dropped_next_pass() {
         .contains(&Breach::ReservedWithNoJob { id: "none".into() }));
 }
 
-/// FM-27: a folder that vanished without a removal opens 1 needs-you
-/// item and 1 event, 1 time, and the row stays.
 #[test]
 fn vanished_folder_opens_1_needs_you_item_and_keeps_the_row() {
     let mut w = World::new();
@@ -683,7 +626,6 @@ fn vanished_folder_opens_1_needs_you_item_and_keeps_the_row() {
             folder_fact("gone", Presence::Missing),
             folder_fact("listed", Presence::Missing),
         ],
-        // git still shows `listed`; the scan did not reach `unread`.
         lists: vec![w.listed(&[(&listed, "fleet/r1-listed", Some("listed"))])],
         ..Facts::default()
     };
@@ -719,8 +661,6 @@ fn vanished_folder_opens_1_needs_you_item_and_keeps_the_row() {
         .contains(&Breach::NoFolder { id: "gone".into() }));
 }
 
-/// Q15: an adopted tree on `<run branch>-T<seq>-<name>` gets the task
-/// `T<seq>` of that run; another branch gets no task.
 #[test]
 fn adopted_tree_is_linked_to_the_task_its_branch_names() {
     let mut w = World::new();
@@ -754,9 +694,6 @@ fn adopted_tree_is_linked_to_the_task_its_branch_names() {
     );
 }
 
-/// A `worktree_list` result that a removal outdated adopts nothing: the
-/// list named the tree, then its `worktree_remove` run passed, and the same
-/// pass reads that list. No new row, and no rescue run (FM-27, FM-28).
 #[test]
 fn a_list_that_a_removal_outdated_adopts_no_new_row() {
     let mut w = World::new();
@@ -765,8 +702,6 @@ fn a_list_that_a_removal_outdated_adopts_no_new_row() {
     let list = w.passed_run(Kind::WorktreeList, &w.repo_s());
     w.removed("wt-gone", &gone);
     w.removed("wt-raced", &raced);
-    // The scan of this pass shows no folder at `gone`; a folder at `raced`
-    // came back after the removal, and only a newer list can name it.
     let mut listed = w.listed(&[(&gone, "b-gone", None), (&raced, "b-raced", None)]);
     listed.job = list;
     let facts = Facts {
@@ -793,9 +728,6 @@ fn a_list_that_a_removal_outdated_adopts_no_new_row() {
     assert_eq!(no_row, 0, "{:?}", w.i6(&facts));
 }
 
-/// The list run and the removal run end in the same second; the order of
-/// their run ids decides. A list run queued before the removal run is
-/// stale: the folder at the path gets no row.
 #[test]
 fn a_list_that_ended_before_a_removal_in_the_same_second_adopts_nothing() {
     let mut w = World::new();
@@ -816,8 +748,6 @@ fn a_list_that_ended_before_a_removal_in_the_same_second_adopts_nothing() {
     assert!(report.adopted.is_empty(), "{report:?}");
 }
 
-/// A list run that started after the removal ended, in the same second,
-/// is fresh: the folder at the path is a tree, and gets a new row.
 #[test]
 fn a_list_that_started_after_a_removal_in_the_same_second_adopts_the_tree() {
     let mut w = World::new();
@@ -840,11 +770,8 @@ fn a_list_that_started_after_a_removal_in_the_same_second_adopts_the_tree() {
     assert_eq!(row.state, WorktreeState::Orphaned);
 }
 
-/// The end second of both runs of a same-second test. The fixture writes it
-/// to each ended run, so the test does not depend on the wall clock.
 const SAME_SECOND: &str = "2026-11-17T10:00:00Z";
 
-/// Give each ended run the end time [`SAME_SECOND`], and give it.
 fn same_second(w: &mut World) -> String {
     w.sql(
         "UPDATE jobs SET ended_at = ?1 WHERE ended_at IS NOT NULL",
@@ -858,10 +785,6 @@ fn same_second(w: &mut World) -> String {
     SAME_SECOND.to_string()
 }
 
-/// Q9, the act: the reconciler queues 1 rescue of each orphan and 1
-/// removal of each landed tree, once, and nothing else. The ref of an
-/// earlier rescue of a reused tree does not save the orphan now. An orphan
-/// whose HEAD no `worktree_list` result gave yet waits for it.
 #[test]
 fn act_queues_1_rescue_of_each_orphan_and_1_removal_of_each_landed_tree() {
     let mut w = World::new();
@@ -916,8 +839,6 @@ fn act_queues_1_rescue_of_each_orphan_and_1_removal_of_each_landed_tree() {
     }
 }
 
-/// The reconciler is level-triggered: a second call with the same facts
-/// writes nothing more.
 #[test]
 fn reconcile_twice_with_the_same_facts_writes_nothing_more() {
     let mut w = World::new();
@@ -963,8 +884,6 @@ fn reconcile_twice_with_the_same_facts_writes_nothing_more() {
     assert_eq!(w.snapshot(), after_first);
 }
 
-/// Q11: the `worktree_list` result gives the HEAD, the dirty flag and the
-/// size of each tree of a row, seen at the time of the run.
 #[test]
 fn worktree_list_result_refreshes_head_dirty_and_size() {
     let mut w = World::new();
@@ -996,4 +915,275 @@ fn worktree_list_result_refreshes_head_dirty_and_size() {
     let bad_row = w.row("bad");
     assert_eq!(bad_row.head_sha, None, "a fact that git could not give");
     assert_eq!(bad_row.seen_at, None);
+}
+
+impl World {
+    fn task_branch(&mut self, branch: &str, task: &str, state: &str) {
+        self.sql(
+            "INSERT INTO branches (name, feature_id, task_id, landing_state, owner, due_at)
+             SELECT ?1, id, ?2, 'in_bundle', 'fleetd', 0 FROM features LIMIT 1",
+            &[branch, task],
+        );
+        if state != "in_bundle" {
+            self.task_branch_to(branch, state);
+        }
+    }
+
+    fn list_at(&self, id: &str, path: &str, head: &str, seen_at: &str) -> Facts {
+        let mut listed = self.listed(&[(path, "b", Some(id))]);
+        listed.result.trees[1].head = Some(head.to_string());
+        listed.seen_at = seen_at.to_string();
+        Facts {
+            folders: vec![folder_fact(id, Presence::Present)],
+            lists: vec![listed],
+            ..Facts::default()
+        }
+    }
+
+    fn task_branch_to(&mut self, branch: &str, state: &str) {
+        self.store
+            .immediate(|tx| {
+                transition(
+                    tx,
+                    None,
+                    Entity::TaskBranch,
+                    branch,
+                    state,
+                    cause(),
+                    &NeedsYouList,
+                )?;
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    fn jobs_of(&self, kind: &str, id: &str) -> i64 {
+        self.count(
+            "SELECT count(*) FROM jobs WHERE kind = ?1 AND subject = ?2",
+            &[kind, id],
+        )
+    }
+}
+
+#[test]
+fn verified_attempt_moves_its_tree_to_landing_with_no_rescue() {
+    let mut w = World::new();
+    let (task, worker, attempt) = w.claimed(1);
+    let path = w.folder("T1-feat");
+    w.row_in(
+        "wt1",
+        &path,
+        "active",
+        (Some(&task), Some(&worker), Some(&attempt)),
+    );
+    w.sql(
+        "UPDATE attempts SET state = 'ended', outcome = 'done' WHERE id = ?1",
+        &[&attempt],
+    );
+    w.sql(
+        "UPDATE tasks SET status = 'verifying' WHERE task_id = ?1",
+        &[&task],
+    );
+    let facts = w.list_at("wt1", &path, "h1", "2026-11-17T10:00:00Z");
+    let report = w.reconcile(&facts);
+    assert_eq!(w.row("wt1").state, WorktreeState::Active, "{report:?}");
+
+    w.sql(
+        "UPDATE tasks SET status = 'done' WHERE task_id = ?1",
+        &[&task],
+    );
+    let report = w.reconcile(&facts);
+
+    assert_eq!(report.landing, vec!["wt1".to_string()]);
+    assert!(report.orphaned.is_empty(), "{report:?}");
+    assert_eq!(w.row("wt1").state, WorktreeState::Landing);
+    assert_eq!(w.jobs_of("rescue", "wt1"), 0);
+    let again = w.reconcile(&facts);
+    assert!(again.rescues.is_empty(), "{again:?}");
+    assert_eq!(w.jobs_of("rescue", "wt1"), 0);
+}
+
+#[test]
+fn landed_task_branch_moves_its_landing_tree_to_landed_and_queues_1_removal() {
+    let mut w = World::new();
+    let (task, _, _) = w.claimed(1);
+    let path = w.folder("T1-feat");
+    w.row_in("wt1", &path, "landing", (Some(&task), None, None));
+    let branch = w.row("wt1").branch;
+    w.task_branch(&branch, &task, "in_bundle");
+    let before = w.list_at("wt1", &path, "h1", "2000-01-01T00:00:00Z");
+    let report = w.reconcile(&before);
+    assert_eq!(w.row("wt1").state, WorktreeState::Landing, "{report:?}");
+
+    w.task_branch_to(&branch, "landed");
+    let report = w.reconcile(&before);
+    assert_eq!(w.row("wt1").state, WorktreeState::Landing, "{report:?}");
+
+    let after = w.list_at("wt1", &path, "h2", "2999-01-01T00:00:00Z");
+    let report = w.reconcile(&after);
+
+    assert_eq!(report.landed, vec!["wt1".to_string()]);
+    assert_eq!(report.removals, vec!["wt1".to_string()]);
+    assert_eq!(w.row("wt1").state, WorktreeState::Landed);
+    assert_eq!(w.row("wt1").status, WorktreeStatus::Landed);
+    let landed: String = w
+        .conn()
+        .query_row(
+            "SELECT landed_commit FROM worktrees WHERE worktree_id = 'wt1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(landed, "h2");
+    assert_eq!(w.jobs_of("worktree_remove", "wt1"), 1);
+    assert_eq!(w.jobs_of("rescue", "wt1"), 0);
+    let again = w.reconcile(&after);
+    assert!(again.removals.is_empty(), "{again:?}");
+    assert_eq!(w.jobs_of("worktree_remove", "wt1"), 1);
+}
+
+#[test]
+fn abandoned_task_branch_queues_1_rescue_of_its_landing_tree() {
+    let mut w = World::new();
+    let (task, _, _) = w.claimed(1);
+    let path = w.folder("T1-feat");
+    w.row_in("wt1", &path, "landing", (Some(&task), None, None));
+    let branch = w.row("wt1").branch;
+    w.task_branch(&branch, &task, "abandoned");
+    let facts = w.list_at("wt1", &path, "h1", "2999-01-01T00:00:00Z");
+
+    let report = w.reconcile(&facts);
+    let again = w.reconcile(&facts);
+
+    assert_eq!(report.rescues, vec!["wt1".to_string()]);
+    assert!(again.rescues.is_empty(), "{again:?}");
+    assert_eq!(w.jobs_of("rescue", "wt1"), 1);
+    assert_eq!(w.jobs_of("worktree_remove", "wt1"), 0);
+    assert_eq!(w.row("wt1").state, WorktreeState::Landing);
+}
+
+#[test]
+fn retried_attempt_moves_its_tree_to_created_with_no_owner() {
+    let mut w = World::new();
+    let (task, worker, attempt) = w.claimed(1);
+    let path = w.folder("T1-feat");
+    w.row_in(
+        "wt1",
+        &path,
+        "active",
+        (Some(&task), Some(&worker), Some(&attempt)),
+    );
+    w.sql(
+        "UPDATE attempts SET state = 'ended', outcome = 'rejected' WHERE id = ?1",
+        &[&attempt],
+    );
+    w.sql(
+        "UPDATE tasks SET status = 'ready', current_worker_id = NULL WHERE task_id = ?1",
+        &[&task],
+    );
+
+    let report = w.reconcile(&Facts::default());
+
+    assert_eq!(report.created, vec!["wt1".to_string()]);
+    assert!(report.orphaned.is_empty(), "{report:?}");
+    let row = w.row("wt1");
+    assert_eq!(row.state, WorktreeState::Created);
+    assert_eq!(row.owner_attempt, None);
+    assert_eq!(w.jobs_of("rescue", "wt1"), 0);
+}
+
+#[test]
+fn crashed_attempt_of_a_retried_task_orphans_its_tree() {
+    let mut w = World::new();
+    let (task, worker, attempt) = w.claimed(1);
+    let path = w.folder("T1-feat");
+    w.row_in(
+        "wt1",
+        &path,
+        "active",
+        (Some(&task), Some(&worker), Some(&attempt)),
+    );
+    w.sql(
+        "UPDATE attempts SET state = 'ended', outcome = 'crashed' WHERE id = ?1",
+        &[&attempt],
+    );
+    w.sql(
+        "UPDATE tasks SET status = 'ready', current_worker_id = NULL WHERE task_id = ?1",
+        &[&task],
+    );
+
+    let report = w.reconcile(&Facts::default());
+
+    assert_eq!(report.orphaned, vec!["wt1".to_string()]);
+    assert!(report.created.is_empty(), "{report:?}");
+    assert_eq!(w.row("wt1").state, WorktreeState::Orphaned);
+}
+
+#[test]
+fn owner_reads_of_3_and_of_300_active_trees_run_the_same_count_of_statements() {
+    let count = |n: u32| {
+        let mut w = World::new();
+        for i in 1..=n {
+            let (task, worker, attempt) = w.claimed(i);
+            let path = w.folder(&format!("T{i}-feat"));
+            w.row_in(
+                &format!("wt{i}"),
+                &path,
+                "active",
+                (Some(&task), Some(&worker), Some(&attempt)),
+            );
+        }
+        let config = w.config.clone();
+        let conn = w.store.conn();
+        let (report, statements) = horch_core::taskledger::testing::count_statements(conn, || {
+            reconcile_worktrees(&ctx(&config), conn, &Facts::default(), CLOCK).unwrap()
+        });
+        assert!(report.orphaned.is_empty(), "{report:?}");
+        assert_eq!(w.row("wt1").state, WorktreeState::Active);
+        statements
+    };
+    assert_eq!(count(3), count(300));
+}
+
+#[test]
+fn owner_with_no_attempt_row_no_worker_row_or_no_task_row() {
+    let mut w = World::new();
+    w.conn().execute_batch("PRAGMA foreign_keys = OFF").unwrap();
+    let (task, worker, _) = w.claimed(1);
+    let path = w.folder("T1-feat");
+    w.row_in(
+        "wt1",
+        &path,
+        "active",
+        (Some(&task), Some(&worker), Some("no-such-attempt")),
+    );
+    let (task2, _, attempt2) = w.claimed(2);
+    let path2 = w.folder("T2-feat");
+    w.row_in(
+        "wt2",
+        &path2,
+        "active",
+        (Some(&task2), Some("no-such-worker"), Some(&attempt2)),
+    );
+    let report = w.reconcile(&Facts::default());
+    assert_eq!(report.orphaned, ["wt1"], "{report:?}");
+    assert_eq!(w.row("wt2").state, WorktreeState::Active);
+
+    let (_, worker3, attempt3) = w.claimed(3);
+    let path3 = w.folder("T3-feat");
+    w.row_in(
+        "wt3",
+        &path3,
+        "active",
+        (Some("no-such-task"), Some(&worker3), Some(&attempt3)),
+    );
+    let config = w.config.clone();
+    let err = w
+        .store
+        .immediate(|tx| reconcile_worktrees(&ctx(&config), tx, &Facts::default(), CLOCK))
+        .unwrap_err();
+    assert!(
+        format!("{err:#}").contains("no task no-such-task"),
+        "{err:#}"
+    );
 }

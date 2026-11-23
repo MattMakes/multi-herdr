@@ -1,13 +1,3 @@
-//! Phase 0 red tests of fleetd (`docs/specs/fleetd/design.md`): a herdr
-//! server restart (FM-13) and a worker killed with dirty and untracked files
-//! in its worktree (FM-25). The tests began as Phase 0 red tests on the list
-//! of expected failures, `expected-failures/p0_rescue.txt`. Phases 1 and 3
-//! made them green, and they now run as normal tests.
-//!
-//! The test plays the agent: a `sleep` process stands in for it, and the
-//! test runs the worker commands with `HORCH_WORKER_ID`. A herdr restart
-//! ends every agent process and closes the panes of the fake herdr.
-
 #![cfg(unix)]
 
 use std::path::{Path, PathBuf};
@@ -20,11 +10,10 @@ use horch_core::taskledger::workers::NewWorker;
 use horch_core::taskledger::{tasks, watchdog, workers, Store};
 use horch_e2e::expected::check;
 use horch_e2e::fleetd::Fleetds;
-use horch_e2e::harness::{fixtures, wait_for, Harness};
+use horch_e2e::harness::{fixtures, wait_for, wait_for_or, Harness};
+use horch_e2e::ledger_seed::{seed_run, seed_task};
 use serde_json::Value;
 
-/// The time in which the design catches a herdr restart and a dead worker
-/// (FM-13 and FM-25: 5 to 30 s), with 5 s for a slow machine.
 const CAUGHT_S: u64 = 35;
 
 fn text(o: &Output) -> String {
@@ -36,8 +25,6 @@ fn text(o: &Output) -> String {
     )
 }
 
-/// A harness in workspace `w1` (root pane `w1:p1`) with its own ledger file
-/// and a git repository. The watchdog is off until a test turns it on.
 fn fleet(name: &str) -> Harness {
     let mut h = Harness::new(name).with_git();
     h.set("HORCH_LEDGER_DB", ledger(&h).to_string_lossy());
@@ -49,7 +36,13 @@ fn fleet(name: &str) -> Harness {
     );
     h.set("HORCH_WORKSPACE_ID", "w1");
     herdr(&h, &["workspace", "create", "--label", name]);
-    h.serve_fleetd();
+    let root = h.fleet_root();
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(
+        root.join("fleet.toml"),
+        "pass_period_s = 1\nworktree_list_period_s = 5\n",
+    )
+    .unwrap();
     h
 }
 
@@ -62,24 +55,6 @@ fn herdr(h: &Harness, args: &[&str]) -> String {
     h.seal(&mut cmd);
     let o = cmd.args(args).output().unwrap();
     assert!(o.status.success(), "herdr {}: {}", args.join(" "), text(&o));
-    String::from_utf8_lossy(&o.stdout).into_owned()
-}
-
-fn ok(h: &Harness, args: &[&str]) -> String {
-    let o = h.run(args);
-    assert!(o.status.success(), "horch {}: {}", args.join(" "), text(&o));
-    String::from_utf8_lossy(&o.stdout).into_owned()
-}
-
-fn as_worker(h: &Harness, worker: &str, args: &[&str]) -> Output {
-    let mut cmd = h.horch(args);
-    cmd.env("HORCH_WORKER_ID", worker);
-    cmd.output().unwrap()
-}
-
-fn ok_as(h: &Harness, worker: &str, args: &[&str]) -> String {
-    let o = as_worker(h, worker, args);
-    assert!(o.status.success(), "horch {}: {}", args.join(" "), text(&o));
     String::from_utf8_lossy(&o.stdout).into_owned()
 }
 
@@ -99,8 +74,6 @@ fn git_in(h: &Harness, dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&o.stdout).trim().to_string()
 }
 
-/// Kills the stand-in agents and the fleetds of the test when dropped, so a
-/// failed assertion leaks none.
 struct Teardown {
     agents: Vec<Child>,
     fleetds: Fleetds,
@@ -115,12 +88,9 @@ impl Drop for Teardown {
     }
 }
 
-/// 1 worker that holds task `name` in its own pane, with a `sleep` process
-/// as its agent (FR-5). Returns the worker id and the pane.
-fn held_task(h: &Harness, td: &mut Teardown, name: &str) -> (String, String) {
+fn held_task(h: &Harness, td: &mut Teardown, run: &Run, name: &str) -> (String, String, PathBuf) {
     let p = ticket(h, name, &format!("# {name}\n\n**Check:** none\n"));
-    let file = p.to_string_lossy();
-    ok(h, &["ledger", "add", "--file", &file, "--primary", "opus"]);
+    seed_task(h, run, &p, "opus");
     let split: Value = serde_json::from_str(&herdr(h, &["pane", "split", "w1:p1"])).unwrap();
     let pane = split["result"]["pane"]["pane_id"]
         .as_str()
@@ -135,12 +105,48 @@ fn held_task(h: &Harness, td: &mut Teardown, name: &str) -> (String, String) {
         pane_id: Some(pane.clone()),
         ..Default::default()
     };
-    let w = horch_e2e::bind::bind_worker(h, worker, Some(agent.id())).worker_id;
+    let bound = horch_e2e::bind::bind_worker(h, worker, Some(agent.id()));
     td.agents.push(agent);
-    (w, pane)
+    let tree = PathBuf::from(
+        &bound
+            .worktree
+            .expect("a worktree task binds a worktree")
+            .path,
+    );
+    (bound.worker_id, pane, tree)
 }
 
-/// A herdr server restart: every agent process ends, and the panes are gone.
+fn wait_tree(h: &Harness, tree: &Path) {
+    wait_for(&format!("the worktree {}", tree.display()), || {
+        let s = Store::open_read_only(&ledger(h)).unwrap();
+        let states: Vec<String> = s
+            .conn()
+            .prepare("SELECT state FROM jobs WHERE kind = 'worktree_add'")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .flatten()
+            .collect();
+        assert!(
+            !states.iter().any(|s| s == "failed"),
+            "the worktree_add job of {} failed",
+            tree.display()
+        );
+        states.iter().any(|s| s == "passed").then_some(())
+    });
+}
+
+fn set_stall_rounds(h: &Harness, run: &Run, rounds: i64) {
+    Store::open(&ledger(h))
+        .unwrap()
+        .conn()
+        .execute(
+            "UPDATE runs SET stall_rounds = ?2 WHERE run_id = ?1",
+            rusqlite::params![run.run_id, rounds],
+        )
+        .unwrap();
+}
+
 fn restart_herdr(h: &Harness, td: &mut Teardown, panes: &[String]) {
     for agent in &mut td.agents {
         agent.kill().unwrap();
@@ -151,29 +157,17 @@ fn restart_herdr(h: &Harness, td: &mut Teardown, panes: &[String]) {
     }
 }
 
-/// The ledger worktree of `worker` with 1 commit of `feature.txt`.
-fn worktree_with_commit(h: &Harness, worker: &str) -> (PathBuf, String) {
-    let wt = ok_as(h, worker, &["ledger", "worktree", "new", "feat"]);
-    let path = PathBuf::from(wt.lines().find_map(|l| l.strip_prefix("path: ")).unwrap());
+fn commit_feature(h: &Harness, path: &Path) -> String {
     std::fs::write(path.join("feature.txt"), "committed\n").unwrap();
-    git_in(h, &path, &["add", "feature.txt"]);
+    git_in(h, path, &["add", "feature.txt"]);
     git_in(
         h,
-        &path,
+        path,
         &["commit", "--quiet", "--no-gpg-sign", "-m", "feature"],
     );
-    let head = git_in(h, &path, &["rev-parse", "HEAD"]);
-    (path, head)
+    git_in(h, path, &["rev-parse", "HEAD"])
 }
 
-/// The reconcile of today, 1 pass that checks each worker now.
-fn reconcile(h: &Harness) -> Output {
-    let o = h.without_fleetd(|| h.run(&["ledger", "watch", "--once", "--force", "--json"]));
-    assert!(o.status.success(), "{}", text(&o));
-    o
-}
-
-/// The refs under `refs/horch/rescue/`, as `<object> <ref>` lines.
 fn rescue_refs(h: &Harness) -> Vec<String> {
     let project = h.project.clone();
     let refs = git_in(
@@ -188,17 +182,34 @@ fn rescue_refs(h: &Harness) -> Vec<String> {
     refs.lines().map(str::to_string).collect()
 }
 
-/// The 1 rescue ref, or a panic that names the last reconcile output. The
-/// design runs the rescue as a job after the pass that sees the death, so
-/// the reconcile runs once a second until the ref exists, for at most
-/// [`CAUGHT_S`] after `first`, the first reconcile.
-fn the_rescue_ref(h: &Harness, first: &Output) -> String {
+fn evidence(h: &Harness) -> String {
+    let s = Store::open_read_only(&ledger(h)).unwrap();
+    [
+        "SELECT 'tree ' || path || ' ' || state || ' ' || ifnull(rescue_ref, '-') FROM worktrees",
+        "SELECT 'job ' || id || ' ' || kind || ' ' || state || ' ' || substr(ifnull(result_json, '-'), 1, 300) \
+         FROM jobs WHERE kind NOT IN ('docs_sync', 'conformance', 'fetch')",
+        "SELECT 'attempt ' || id || ' ' || state || ' ' || ifnull(outcome, '-') FROM attempts",
+        "SELECT 'task ' || task_id || ' ' || status FROM tasks",
+    ]
+    .iter()
+    .flat_map(|q| {
+        let mut stmt = s.conn().prepare(q).unwrap();
+        let rows: Vec<String> = stmt
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .flatten()
+            .collect();
+        rows
+    })
+    .collect::<Vec<_>>()
+    .join("\n")
+}
+
+fn the_rescue_ref(h: &Harness) -> String {
     let until = Instant::now() + Duration::from_secs(CAUGHT_S);
-    let mut last = text(first);
     let mut refs = rescue_refs(h);
     while refs.is_empty() && Instant::now() < until {
-        std::thread::sleep(Duration::from_secs(1));
-        last = text(&reconcile(h));
+        std::thread::sleep(Duration::from_millis(500));
         refs = rescue_refs(h);
     }
     let all = git_in(
@@ -208,13 +219,13 @@ fn the_rescue_ref(h: &Harness, first: &Output) -> String {
     );
     assert!(
         refs.len() == 1,
-        "no ref under refs/horch/rescue/ holds the work {CAUGHT_S} s after the reconcile saw the death: \
-         {refs:?}\nall refs:\n{all}\nlast reconcile:\n{last}"
+        "no ref under refs/horch/rescue/ holds the work {CAUGHT_S} s after the death: \
+         {refs:?}\nall refs:\n{all}\n{}",
+        evidence(h)
     );
     refs[0].split(' ').nth(1).unwrap().to_string()
 }
 
-/// The bytes of `file` in the tree of `rev`.
 fn file_at(h: &Harness, rev: &str, file: &str) -> Vec<u8> {
     let o = h
         .git_cmd(&["cat-file", "blob", &format!("{rev}:{file}")])
@@ -225,8 +236,6 @@ fn file_at(h: &Harness, rev: &str, file: &str) -> Vec<u8> {
     o.stdout
 }
 
-/// The active run, its tasks and its workers (not its orchestrator), read
-/// from the ledger file without a `horch` call.
 fn board(h: &Harness) -> (Run, Vec<tasks::Task>, Vec<workers::Worker>) {
     let s = Store::open_read_only(&ledger(h)).unwrap();
     let run = watchdog::active_runs(s.conn()).unwrap().remove(0);
@@ -247,22 +256,19 @@ fn fm13_herdr_restart_ends_attempts_and_queues_tasks_again() {
         "fm13_herdr_restart_ends_attempts_and_queues_tasks_again",
         || {
             let h = fleet("p0-fm13-p1");
-            // The default timers of the run: the design's numbers apply.
-            ok(&h, &["ledger", "run", "new", "fm13"]);
+            let run = seed_run(&h, "fm13", None, "w1:p1");
             let mut td = Teardown {
                 agents: Vec::new(),
                 fleetds: Fleetds::new(&h),
             };
-            let (_, p1) = held_task(&h, &mut td, "t1");
-            let (_, p2) = held_task(&h, &mut td, "t2");
+            let (_, p1, _) = held_task(&h, &mut td, &run, "t1");
+            let (_, p2, _) = held_task(&h, &mut td, &run, "t2");
             let (run, ts, ws) = board(&h);
-            // fleetd supervises the run.
             td.fleetds.start(&h, "fleetd");
             assert!(ts.iter().all(|t| t.status == "running"), "{ts:?}");
             assert_eq!(ws.iter().filter(|w| live(w)).count(), 2, "{ws:?}");
 
             restart_herdr(&h, &mut td, &[p1, p2]);
-            // No `horch` call from here: fleetd alone must act.
             let until = Instant::now() + Duration::from_secs(CAUGHT_S);
             let (_, mut ts, mut ws) = board(&h);
             while Instant::now() < until {
@@ -301,18 +307,19 @@ fn fm13_herdr_restart_rescues_each_worktree_and_the_next_attempt_reuses_it() {
         "fm13_herdr_restart_rescues_each_worktree_and_the_next_attempt_reuses_it",
         || {
             let h = fleet("p0-fm13-p3");
-            ok(&h, &["ledger", "run", "new", "fm13"]);
+            let run = seed_run(&h, "fm13", None, "w1:p1");
             let mut td = Teardown {
                 agents: Vec::new(),
                 fleetds: Fleetds::new(&h),
             };
-            let (w, pane) = held_task(&h, &mut td, "t1");
-            let (path, head) = worktree_with_commit(&h, &w);
+            let (_, pane, path) = held_task(&h, &mut td, &run, "t1");
+            td.fleetds.start(&h, "fleetd");
+            wait_tree(&h, &path);
+            let head = commit_feature(&h, &path);
             std::fs::write(path.join("feature.txt"), "committed\nand changed\n").unwrap();
 
             restart_herdr(&h, &mut td, &[pane]);
-            let o = reconcile(&h);
-            let rescue = the_rescue_ref(&h, &o);
+            let rescue = the_rescue_ref(&h);
             let project = h.project.clone();
             git_in(
                 &h,
@@ -321,25 +328,17 @@ fn fm13_herdr_restart_rescues_each_worktree_and_the_next_attempt_reuses_it() {
             );
             assert_eq!(
                 file_at(&h, &rescue, "feature.txt"),
-                b"committed\nand changed\n",
-                "{}",
-                text(&o)
+                b"committed\nand changed\n"
             );
-            // The retry waits for its backoff of 30 s on the fleet clock
-            // (rung 6, Phase 2).
             h.advance_fleet_clock(30);
-            let next = horch_e2e::bind::bind(&h, "opus", None);
-            // The bind takes the tree of the last attempt. With no tree in
-            // the bind, the next attempt takes it with
-            // `horch ledger worktree new`.
+            let next = wait_for_or(
+                "the bind of the next attempt",
+                || horch_e2e::bind::try_bind(&h, "opus", None).ok(),
+                || evidence(&h),
+            );
             let reused = match &next.worktree {
                 Some(tree) => tree.path.clone(),
-                None => {
-                    let wt = ok_as(&h, &next.worker_id, &["ledger", "worktree", "new", "feat"]);
-                    let p = wt.lines().find_map(|l| l.strip_prefix("path: "));
-                    p.unwrap_or_else(|| panic!("no path: {wt}\nbind: {next:?}"))
-                        .to_string()
-                }
+                None => panic!("the bind names no worktree: {next:?}"),
             };
             assert_eq!(reused, path.to_string_lossy(), "{next:?}");
         },
@@ -353,14 +352,15 @@ fn fm25_killed_worker_with_dirty_and_untracked_files_loses_nothing() {
         "fm25_killed_worker_with_dirty_and_untracked_files_loses_nothing",
         || {
             let h = fleet("p0-fm25");
-            ok(&h, &["ledger", "run", "new", "fm25", "--stall-rounds", "1"]);
+            let run = seed_run(&h, "fm25", None, "w1:p1");
+            set_stall_rounds(&h, &run, 1);
             let mut td = Teardown {
                 agents: Vec::new(),
                 fleetds: Fleetds::new(&h),
             };
-            let (w, _) = held_task(&h, &mut td, "t1");
-            let wt = ok_as(&h, &w, &["ledger", "worktree", "new", "feat"]);
-            let path = PathBuf::from(wt.lines().find_map(|l| l.strip_prefix("path: ")).unwrap());
+            let (_, _, path) = held_task(&h, &mut td, &run, "t1");
+            td.fleetds.start(&h, "fleetd");
+            wait_tree(&h, &path);
             let tracked = b"one\ntwo\nthree, not committed\n";
             let untracked = b"a new file, never added\n";
             std::fs::write(path.join("notes.txt"), tracked).unwrap();
@@ -369,22 +369,14 @@ fn fm25_killed_worker_with_dirty_and_untracked_files_loses_nothing() {
             let agent = &mut td.agents[0];
             agent.kill().unwrap();
             agent.wait().unwrap();
-            // The pass ends the attempt of the dead agent (I4) before the
-            // duty check, so the reap shows in the ledger, not as a verdict.
-            let o = wait_for("the reap", || {
-                let o = reconcile(&h);
+            wait_for("the reap", || {
                 let (_, _, ws) = board(&h);
-                (!ws.iter().any(live)).then_some(o)
+                (!ws.iter().any(live)).then_some(())
             });
-            let rescue = the_rescue_ref(&h, &o);
-            assert_eq!(file_at(&h, &rescue, "notes.txt"), tracked, "{}", text(&o));
-            assert_eq!(
-                file_at(&h, &rescue, "untracked.txt"),
-                untracked,
-                "{}",
-                text(&o)
-            );
-            assert!(path.is_dir(), "the worktree is gone: {}", text(&o));
+            let rescue = the_rescue_ref(&h);
+            assert_eq!(file_at(&h, &rescue, "notes.txt"), tracked);
+            assert_eq!(file_at(&h, &rescue, "untracked.txt"), untracked);
+            assert!(path.is_dir(), "the worktree is gone");
         },
     );
 }

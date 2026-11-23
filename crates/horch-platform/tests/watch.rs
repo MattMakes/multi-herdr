@@ -1,11 +1,8 @@
-//! The concern watch: file watching as a speed-up (PL-2, RR-4).
-
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use horch_platform::watch::Watcher;
 
-/// Poll `changed` until it gives `dir`, for at most 2 s.
 fn reported_within_2s(watcher: &mut Watcher, dir: &Path) -> bool {
     let end = Instant::now() + Duration::from_secs(2);
     while Instant::now() < end {
@@ -62,7 +59,6 @@ fn changed_never_blocks() {
     let dir = new_dir(root.path(), "outbox");
     let mut watcher = Watcher::new().unwrap();
     watcher.add(&dir).unwrap();
-    // Drain the events of the setup, if the OS gives any.
     let _ = watcher.changed();
 
     let start = Instant::now();
@@ -85,7 +81,6 @@ fn a_removed_folder_is_not_an_error() {
     std::fs::remove_dir(&gone).unwrap();
     let _ = watcher.changed();
     watcher.remove(&gone);
-    // A folder that was never added is not an error either.
     watcher.remove(&root.path().join("never"));
 
     std::fs::write(kept.join("result.json"), b"{}").unwrap();

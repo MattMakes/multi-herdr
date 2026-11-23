@@ -1,16 +1,10 @@
-//! The needs-you folder and the herdr notification (OR-3, FM-29, FM-35):
-//! the mirror of the open items of the `needs_you` table in
-//! `<fleet root>/needs-you/`, and 1 herdr report for a new open item.
-//! Each test uses a temporary ledger, a temporary folder and a scripted
-//! `herdr`.
-
 use horch_core::fleetd::fleet_runtime::domain::budget::{Cursor, PassBudget};
 use horch_core::fleetd::ideas::adapters::needs_you_folder::{self, Mirrored};
 use horch_core::fleetd::ideas::adapters::notify::{self, Notice};
 use horch_core::fleetd::ideas::application::needs_you;
 use horch_core::fleetd::ideas::domain::needs_you::Write;
 use horch_core::taskledger::store::Store;
-use horch_core::workspace::herdr::Herdr;
+use horch_core::workspace::PaneHost;
 
 #[cfg(unix)]
 #[path = "common/warm.rs"]
@@ -60,7 +54,6 @@ impl World {
         assert!(done, "{key} was not open");
     }
 
-    /// 1 pass of the mirror, with a budget that holds every row.
     fn pass(&mut self, now: &str) -> Mirrored {
         let items = needs_you::open_items(self.store.conn()).unwrap();
         needs_you_folder::mirror(
@@ -137,9 +130,8 @@ fn rows_past_the_budget_wait_for_the_next_pass() {
     assert_eq!(w.files().len(), 3);
 }
 
-/// A scripted `herdr` that appends each call to `calls.log`.
 #[cfg(unix)]
-fn scripted_herdr(dir: &std::path::Path) -> (Herdr, std::path::PathBuf) {
+fn scripted_herdr(dir: &std::path::Path) -> (PaneHost, std::path::PathBuf) {
     let log = dir.join("calls.log");
     let script = dir.join("herdr");
     let body = format!(
@@ -147,7 +139,7 @@ fn scripted_herdr(dir: &std::path::Path) -> (Herdr, std::path::PathBuf) {
         log.display()
     );
     warm::write_warmed(&script, &body, &["warm"]);
-    (Herdr::with_bin(&script), log)
+    (PaneHost::herdr_bin(&script), log)
 }
 
 #[cfg(unix)]
@@ -180,7 +172,7 @@ fn new_open_item_reports_1_notification() {
 fn no_herdr_is_not_an_error() {
     let mut w = world();
     let dir = tempfile::tempdir().unwrap();
-    let herdr = Herdr::with_bin(dir.path().join("no-such-herdr"));
+    let herdr = PaneHost::herdr_bin(dir.path().join("no-such-herdr"));
     w.open("question_timeout:Q-7", "Q-7 has no answer.");
     let mirrored = w.pass("t1");
     match notify::notify(&herdr, &mirrored, 1) {

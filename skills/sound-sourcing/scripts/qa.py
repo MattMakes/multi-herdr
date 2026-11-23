@@ -65,8 +65,6 @@ def sos(order, hz, kind):
     return signal.butter(order, hz, btype=kind, fs=SR, output="sos")
 
 
-# ---------------------------------------------------------------- inputs
-
 def read(src_path: str) -> np.ndarray:
     import soundfile as sf
     return mst.as_stereo(sf.read(src_path, dtype="float32", always_2d=True)[0]).astype(np.float32)
@@ -144,8 +142,6 @@ def load_inputs(cli) -> dict:
                       "cues": side["cues_path"], "master": cli.master}}
 
 
-# ---------------------------------------------------------------- layers and groups
-
 def _layer_meta(pl: dict, rules: dict, places) -> dict:
     """pitch, offset, align, cue time, rule name and qa_ok of 1 placement."""
     if pl["kind"] == "place":
@@ -171,7 +167,6 @@ def _layer_span(sig: np.ndarray, rec: dict, dsg: dict, N: int):
     val = rec["start"]
     lo_i, hi_i = max(0, val), min(N, val + len(sig))
     if not len(sig):
-        # an empty trim stays as a silent layer, so audibility can name it
         lo_i = min(max(0, val), N)
         return lo_i, lo_i, np.zeros((0, 2), np.float32), lo_i
     if lo_i >= hi_i:
@@ -282,8 +277,6 @@ def _group_row(grp: dict, master_gain: float) -> dict:
 def group(layers: list, master_gain: float) -> list[dict]:
     return [_group_row(grp, master_gain) for grp in _bucket(layers)]
 
-
-# ---------------------------------------------------------------- clicks
 
 def _window_energy(pw: np.ndarray, half: int) -> np.ndarray:
     cum = np.concatenate([[0.0], np.cumsum(pw)])
@@ -400,8 +393,6 @@ def section_clicks(job, layers, master_gain) -> dict:
         items += [_click_item(label, clk, cx) for clk in cl if clk["kind"] == "click"]
     return _clicks_result(items, counts)
 
-
-# ---------------------------------------------------------------- edges
 
 def _rms_db(sig: np.ndarray) -> float:
     return mst.db(float(np.sqrt(np.mean(sig.astype(np.float64) ** 2)))) if len(sig) else -200.0
@@ -590,8 +581,6 @@ def section_edges(job) -> dict:
             "items": items, "music_splices": splices, "cut_by_film_ends": cut}
 
 
-# ---------------------------------------------------------------- audibility
-
 _BANDS = [10 ** (count / 10) for count in range(20, 42)]
 _MASKS: dict[int, list] = {}
 
@@ -710,8 +699,6 @@ def section_audibility(job, clusters, master_gain, layers_flag) -> dict:
     return acc
 
 
-# ---------------------------------------------------------------- harshness
-
 def _band_peaks(grp: dict, cx: dict):
     """(2-6 kHz power peak, 80-400 Hz power peak, centroid) over the attack window, or None when it is short."""
     pad = cx["pad"]
@@ -772,8 +759,6 @@ def section_harshness(job, clusters, master_gain) -> dict:
     table.sort(key=lambda rec: -rec["pres_db"])
     return _harsh_result(table, bright, has_music, ref)
 
-
-# ---------------------------------------------------------------- sync
 
 def _build_issue(test: str, meas: dict, val: float):
     if test == "end":
@@ -853,8 +838,6 @@ def section_sync(clusters) -> dict:
             "summary": f"{len(issues)} sync issue(s) in {len(table)} judged event(s), {len(deliberate)} deliberate "
                        "(check the deliberate ones on the frames)"}
 
-
-# ---------------------------------------------------------------- density, loudness, coverage
 
 def _per_second(live: list, dur: float) -> list[int]:
     per = [0] * max(1, math.ceil(dur))
@@ -1019,7 +1002,7 @@ def section_coverage(job, clusters) -> dict:
 
 def _load_api():
     import importlib
-    return importlib.import_module("hark.core.api")  # the flat API that `import hark` forwards to
+    return importlib.import_module("hark.core.api")
 
 
 def _try_api():
@@ -1121,8 +1104,6 @@ def section_listen(job, cli, outdir) -> dict:
     status = "warn" if not_real or remarks else "ok"
     return {"status": status, "summary": f"{len(not_real)} recording(s) not real; {len(remarks)} failed call(s)", "notes": remarks, **outcome}
 
-
-# ---------------------------------------------------------------- main
 
 def _lufs(sig) -> float:
     return mst.integrated(sig) if sig is not None and len(sig) >= int(0.4 * SR) else float("-inf")
@@ -1289,9 +1270,9 @@ def _mix_qa(tmp: str, design: str, cues: str = "c.json", master: bool = True, qa
 
 def _test_clicks(ck, fx, tmp: str) -> None:
     """Q1, Q2: a master click at a placement start, and a fade-in that removes it."""
-    fx.write(os.path.join(tmp, "bed.wav"), fx.noise_bed(3.0, 0.002, 4))  # quiet: its 14 kHz noise must not hide the click
+    fx.write(os.path.join(tmp, "bed.wav"), fx.noise_bed(3.0, 0.002, 4))
     tsec = np.arange(int(0.2 * SR)) / SR
-    tone = 0.5 * np.sin(2 * np.pi * 300 * tsec + 1.0) * np.exp(-8 * tsec)  # starts on a non-zero sample
+    tone = 0.5 * np.sin(2 * np.pi * 300 * tsec + 1.0) * np.exp(-8 * tsec)
     fx.write(os.path.join(tmp, "x.wav"), np.stack([tone, tone], 1), subtype="FLOAT")
     fx.put_json(os.path.join(tmp, "c.json"), {"fps": 60, "events": [{"f": 60, "kind": "hit", "id": "q:h:0"}]})
     fx.put_json(os.path.join(tmp, "d.json"), _qa_design(0))
@@ -1311,7 +1292,6 @@ def _test_masking(ck, fx, tmp: str) -> None:
     """Q3: an effect 10 dB under a broadband bed."""
     loud = fx.noise_bed(3.0, 0.2, 8)
     fx.write(os.path.join(tmp, "loud.wav"), loud)
-    # the effect is the bed's own noise 10 dB down, so it is 10 dB under the bed in every band
     fx.write(os.path.join(tmp, "soft.wav"), loud[SR:SR + int(0.15 * SR)] * 10 ** (-10 / 20))
     fx.put_json(os.path.join(tmp, "d3.json"), {
         "duration": 3.0, "samples": {"q.s": {"file": "soft.wav"}}, "pools": {"q.s": ["q.s"]},

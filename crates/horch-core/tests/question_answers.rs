@@ -1,17 +1,3 @@
-//! The 4 answer cases of a worker question and the decision log of the
-//! feature (docs/specs/fleetd/design.md, "Ideas": How a worker's question
-//! is resolved, steps 4 to 6; D13; RR-12;
-//! docs/tickets/fleetd-p6/32-answers.md).
-//!
-//! The sub-orchestrator answers with an `answer` note: `covered` with a
-//! citation that fleetd checks, `revise` to you, `replan` through the
-//! replan file, or `own_decision`, a new assumption that needs no new
-//! approval. Each answer goes to `features/F-NNNN/decisions.md`.
-//!
-//! Each test makes its own temporary ledger and idea folder, and gives the
-//! fleet clock. No test reads the clock, the load or the limits of the
-//! machine, and no test starts a process.
-
 #![cfg(unix)]
 
 use std::os::unix::fs::PermissionsExt;
@@ -28,7 +14,8 @@ use horch_core::fleetd::ideas::adapters::idea_notes_reader::{AnswerCase, Note, N
 use horch_core::fleetd::ideas::adapters::ideas_store::{self, NewIdea};
 use horch_core::fleetd::ideas::adapters::questions_store;
 use horch_core::fleetd::ideas::application::answers::{
-    answer_question, pending_replans, settle_revisions, Answered, Answering, Recorded,
+    answer_question, pending_answer_files, pending_replans, settle_revisions, Answered, Answering,
+    Recorded,
 };
 use horch_core::fleetd::ideas::application::approval::{self, record_approval, Approved};
 use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
@@ -50,13 +37,9 @@ use horch_platform::channel::User;
 use rusqlite::{params, Connection};
 
 const IDEA: &str = "I-0007";
-/// The feature of the run of the test: `F-<run rowid>` (MAP.md, Q5).
 const FEATURE: &str = "F-0001";
-/// The fleet clock when the test starts.
 const START: i64 = 1000;
-/// `question_limit_s` of the design: 15 min.
 const LIMIT_S: u64 = 900;
-/// The live sub-orchestrator attempt of the idea, and its pane.
 const OWNER: &str = "I-0007/supervising/1";
 const PANE: &str = "w1:p1";
 
@@ -82,7 +65,6 @@ requirements:
     cites: [A2]
 ";
 
-/// `a`, `b` after `a`, the judgment task `doc` and its judge `doc-judge`.
 const PLAN: &str = "idea: I-0007
 repo: /fleet/repos/app
 feature: F-0001
@@ -119,7 +101,6 @@ tasks:
     outputs: [docs/sync.review.md]
 ";
 
-/// The replan of `a`: a new `a`, and `a-log` after it.
 const REPLACE_A: &str = "replace:
   - key: a
     title: Add backoff, in 2 steps
@@ -137,8 +118,6 @@ const REPLACE_A: &str = "replace:
     acceptance:
       - run: cargo test -p log
 ";
-
-// ─── the world of a test ────────────────────────────────────────────────
 
 struct World {
     dir: tempfile::TempDir,
@@ -170,9 +149,6 @@ fn profile(name: &str, provider: &str, model: &str, fallback: &str) -> RosterPro
     }
 }
 
-/// A ledger at fleet clock [`START`] with 1 run, its feature, the idea
-/// [`IDEA`] in `in_progress` with the committed plan [`PLAN`], and the live
-/// sub-orchestrator [`OWNER`] of the idea in [`PANE`].
 fn world() -> World {
     let dir = tempfile::tempdir().unwrap();
     let mut store = Store::open(&dir.path().join("ledger.sqlite3")).unwrap();
@@ -293,7 +269,6 @@ impl World {
         IdeaFolder::new(&self.ideas(), IDEA, owner()).unwrap()
     }
 
-    /// Write the file `name` of the idea folder, mode 0600.
     fn write(&self, name: &str, text: &str) {
         let path = self.folder().join(name);
         std::fs::write(&path, text).unwrap();
@@ -322,7 +297,6 @@ impl World {
         ideas_store::idea(self.conn(), IDEA).unwrap().unwrap().state
     }
 
-    /// The id and the status of the task of `key` that is not `cancelled`.
     fn live(&self, key: &str) -> (String, String) {
         let live: Vec<(String, String)> = self
             .tasks(key)
@@ -334,7 +308,6 @@ impl World {
         live.into_iter().next().unwrap()
     }
 
-    /// (id, status, replans) of each task of `key`, oldest first.
     fn tasks(&self, key: &str) -> Vec<(String, String, i64)> {
         let mut stmt = self
             .conn()
@@ -353,8 +326,6 @@ impl World {
         self.live(key).1
     }
 
-    /// The worker of the task of `key` asks question `n` and exits: the
-    /// task waits in `blocked_on_user`.
     fn ask(&mut self, key: &str, n: u32) -> Question {
         let (task, status) = self.live(key);
         if status != "blocked_on_user" {
@@ -380,14 +351,13 @@ impl World {
         let a = Ask {
             task_id: &task,
             attempt_id: &attempt,
-            mail_id: &mail,
+            mail_id: Some(&mail),
             text: "QUESTION: how many retries?",
             asked_at: "2026-11-18T00:00:00Z",
         };
         questions::ask(self.conn(), &a, FleetSeconds(START), LIMIT_S).unwrap()
     }
 
-    /// The sub-orchestrator answers question `q` with the case `case`.
     fn answer(
         &mut self,
         q: &Question,
@@ -418,8 +388,6 @@ impl World {
             .unwrap()
     }
 
-    /// [`World::answer`], which must be recorded; its files are written
-    /// after the commit.
     fn recorded(
         &mut self,
         q: &Question,
@@ -438,7 +406,6 @@ impl World {
         questions_store::get(self.conn(), id).unwrap().unwrap()
     }
 
-    /// The `doorbell` events of the sub-orchestrator attempt.
     fn doorbells(&self) -> i64 {
         self.conn()
             .query_row(
@@ -459,7 +426,6 @@ impl World {
         std::fs::read_to_string(path).ok()
     }
 
-    /// You approved the assumptions.md of the idea as it is now.
     fn approved(&mut self) {
         let folder = self.idea_folder();
         let sha = folder.sha256_of("assumptions.md").unwrap();
@@ -471,7 +437,6 @@ impl World {
         file.write(&folder).unwrap();
     }
 
-    /// I7 for the idea: `true` when it holds.
     fn i7_holds(&mut self) -> bool {
         let folder = self.idea_folder();
         self.store
@@ -501,30 +466,24 @@ impl World {
     }
 }
 
-// ─── covered ────────────────────────────────────────────────────────────
-
 #[test]
 fn covered_answer_with_a_missing_citation_is_refused() {
     let mut w = world();
     let q = w.ask("a", 1);
     let before = w.doorbells();
 
-    // Line 40 of assumptions.md does not exist, and spec.md of an idea of
-    // another feature is not a citation of this feature.
     for cite in ["assumptions.md:40", "I-0099/spec.md:3", "notes.md:1"] {
         let Answered::Refused(r) = w.answer(&q, AnswerCase::Covered, Some(cite), "5 retries")
         else {
             panic!("the citation {cite} is accepted");
         };
         assert!(r.reason.contains(cite), "{}", r.reason);
-        // fleetd rings the owner again, so it answers again.
         let ring = r.ring.expect("a ring to the live owner");
         assert_eq!((ring.attempt.as_str(), ring.pane.as_str()), (OWNER, PANE));
         assert_eq!(ring.questions, vec![q.id.clone()]);
     }
     assert_eq!(w.doorbells(), before + 3);
 
-    // The question stays open, and the task waits.
     assert_eq!(w.question(&q.id).state, State::Open);
     assert_eq!(w.status("a"), "blocked_on_user");
     assert_eq!(w.decisions(), None);
@@ -544,7 +503,6 @@ fn covered_answer_moves_the_task_to_ready() {
     assert_eq!(w.question(&q1.id).state, State::Answered);
     assert_eq!(w.status("a"), "ready");
 
-    // A citation of the assumptions of the idea, with its idea named.
     let q2 = w.ask("doc", 1);
     w.recorded(
         &q2,
@@ -554,15 +512,12 @@ fn covered_answer_moves_the_task_to_ready() {
     );
     assert_eq!(w.status("doc"), "ready");
 
-    // An answered question is not answered again.
     let Answered::Refused(r) = w.answer(&q1, AnswerCase::Covered, Some("spec.md:3"), "again")
     else {
         panic!("an answered question is answered again");
     };
     assert!(r.ring.is_none(), "{r:?}");
 }
-
-// ─── revise ─────────────────────────────────────────────────────────────
 
 #[test]
 fn revise_answer_pauses_only_the_named_tasks() {
@@ -578,16 +533,12 @@ fn revise_answer_pauses_only_the_named_tasks() {
         "The retries need a config option: assumption 2 changes.",
     );
 
-    // The idea goes to you; the question waits for your approval.
     assert_eq!(w.idea_state(), "awaiting_approval");
     let waiting = w.question(&q.id);
     assert_ne!(waiting.state, State::Answered);
     assert_eq!(w.status("a"), "blocked_on_user");
-    // The other tasks of the idea do not pause.
     assert_eq!((w.status("doc"), w.status("b")), (doc, b));
 
-    // The question flow does not ring or escalate it while it waits for
-    // you.
     let flowed = w
         .store
         .immediate(|tx| {
@@ -608,12 +559,10 @@ fn revise_answer_pauses_only_the_named_tasks() {
         "{flowed:?}"
     );
 
-    // Before your approval, nothing settles.
     let settled = w.store.immediate(|tx| settle_revisions(tx)).unwrap();
     assert!(settled.is_empty());
     assert_eq!(w.status("a"), "blocked_on_user");
 
-    // Your approval answers the question, and the task goes on.
     let folder = w.idea_folder();
     let seen = folder.sha256_of("assumptions.md").unwrap();
     let approved = w
@@ -626,8 +575,6 @@ fn revise_answer_pauses_only_the_named_tasks() {
     assert_eq!(w.question(&q.id).state, State::Answered);
     assert_eq!(w.status("a"), "ready");
 }
-
-// ─── own decision ───────────────────────────────────────────────────────
 
 #[test]
 fn own_decision_is_appended_as_an_assumption() {
@@ -653,15 +600,99 @@ fn own_decision_is_appended_as_an_assumption() {
     assert_eq!(parsed.items.len(), 3);
     assert_eq!(parsed.items[2].mark, Mark::OwnDecision);
 
-    // No new approval: the approval follows the decision, so I7 holds and
-    // the idea stays in progress.
     assert!(w.i7_holds());
     assert_eq!(w.idea_state(), "in_progress");
     assert_eq!(w.question(&q.id).state, State::Answered);
     assert_eq!(w.status("a"), "ready");
 }
 
-// ─── the decision log ───────────────────────────────────────────────────
+fn own_note(q: &Question, text: &str) -> Note {
+    Note {
+        idea: IDEA.into(),
+        attempt: OWNER.into(),
+        body: NoteBody::Answer {
+            question: q.id.clone(),
+            case: AnswerCase::OwnDecision,
+            cite: None,
+            text: text.into(),
+        },
+    }
+}
+
+#[test]
+fn own_decision_rollback_before_commit_leaves_assumptions_md_unchanged() {
+    let mut w = world();
+    w.approved();
+    let q = w.ask("a", 1);
+    let note = own_note(&q, "Use the backoff helper of src/net.rs.");
+    let root = w.root();
+    let owner = owner();
+    let ctx = Answering {
+        guard: None,
+        clock: FleetSeconds(START + 10),
+        root: &root,
+        owner: &owner,
+    };
+
+    let tx = w.conn().unchecked_transaction().unwrap();
+    let answered = answer_question(&tx, &ctx, &note).unwrap();
+    assert!(matches!(answered, Answered::Recorded(_)), "{answered:?}");
+    assert_eq!(w.read("assumptions.md"), ASSUMPTIONS);
+    drop(tx);
+
+    assert_eq!(w.read("assumptions.md"), ASSUMPTIONS);
+    assert_eq!(w.decisions(), None);
+    assert_eq!(w.question(&q.id).state, State::Open);
+    assert!(w.i7_holds());
+}
+
+#[test]
+fn own_decision_crash_after_commit_before_effect_recovers_assumptions_and_approval() {
+    let mut w = world();
+    w.approved();
+    let approval_before = w.read("approval.json");
+    let q = w.ask("a", 1);
+
+    let Answered::Recorded(lost) = w.answer(
+        &q,
+        AnswerCase::OwnDecision,
+        None,
+        "Use the backoff helper of src/net.rs.",
+    ) else {
+        panic!("the own decision of {} is refused", q.id);
+    };
+    assert_eq!(w.read("assumptions.md"), ASSUMPTIONS);
+    assert_eq!(w.read("approval.json"), approval_before);
+    assert_eq!(w.decisions(), None);
+
+    let pending = pending_answer_files(w.conn(), &w.root(), &owner()).unwrap();
+    assert_eq!(pending, vec![lost]);
+    for r in &pending {
+        r.write(&w.root(), &owner()).unwrap();
+    }
+    let line = format!(
+        "3. [assumed, own decision] Use the backoff helper of src/net.rs. ({})",
+        q.id
+    );
+    let text = w.read("assumptions.md");
+    assert_eq!(text, format!("{ASSUMPTIONS}{line}\n"));
+    assert_ne!(w.read("approval.json"), approval_before);
+    let log = w.decisions().expect("decisions.md of the feature");
+    assert!(log.contains(&format!("## {}: own_decision", q.id)), "{log}");
+
+    assert!(pending_answer_files(w.conn(), &w.root(), &owner())
+        .unwrap()
+        .is_empty());
+    let approval = w.read("approval.json");
+    for r in &pending {
+        r.write(&w.root(), &owner()).unwrap();
+    }
+    assert_eq!(w.read("assumptions.md"), text);
+    assert_eq!(w.read("approval.json"), approval);
+    assert_eq!(w.decisions().unwrap(), log);
+    assert!(w.i7_holds());
+    assert_eq!(w.idea_state(), "in_progress");
+}
 
 #[test]
 fn each_answer_goes_to_the_decisions_file() {
@@ -675,7 +706,6 @@ fn each_answer_goes_to_the_decisions_file() {
         None,
         "One page in docs/sync.md.",
     );
-    // The resumed worker of `a` asks again.
     let q3 = w.ask("a", 2);
     w.recorded(&q3, AnswerCase::Replan, None, "Task a needs a split.");
 
@@ -695,7 +725,6 @@ fn each_answer_goes_to_the_decisions_file() {
     assert!(file.contains("spec.md:3"), "{file}");
     assert!(file.contains("QUESTION: how many retries?"), "{file}");
 
-    // A second write of the same decision adds nothing.
     r1.write(&w.root(), &owner()).unwrap();
     assert_eq!(w.decisions().unwrap(), file);
     let mode = std::fs::metadata(w.root().join("features").join(FEATURE).join("decisions.md"))
@@ -705,15 +734,12 @@ fn each_answer_goes_to_the_decisions_file() {
     assert_eq!(mode & 0o777, 0o600);
 }
 
-// ─── replan ─────────────────────────────────────────────────────────────
-
 #[test]
 fn replan_answer_with_a_retry_file_moves_the_task_to_ready() {
     let mut w = world();
     let q = w.ask("a", 1);
     w.recorded(&q, AnswerCase::Replan, None, "Do the backoff first.");
 
-    // The question waits for the replan file.
     let (task, status) = w.live("a");
     assert_eq!(status, "blocked_on_user");
     assert_eq!(w.question(&q.id).state, State::Open);
@@ -742,8 +768,6 @@ fn replan_answer_with_a_replace_file_cancels_the_task_and_adds_the_new_tasks() {
     let keys: Vec<&str> = tasks.iter().map(|(k, _)| k.as_str()).collect();
     assert_eq!(keys, ["a", "a-log"]);
 
-    // The old task follows A cancel from `blocked_on_user`, and its
-    // question is answered.
     let all = w.tasks("a");
     assert_eq!(
         (all[0].0.as_str(), all[0].1.as_str(), all[0].2),
@@ -763,7 +787,6 @@ fn replan_answer_with_no_replan_file_escalates_at_the_question_limit() {
     let (task, _) = w.live("a");
     assert_eq!(w.replan(&task, START + 20), Replanned::Waiting);
 
-    // The owner runs, and no replan file comes within the question limit.
     let flow = |clock: i64| Flow {
         guard: None,
         clock: FleetSeconds(clock),
@@ -782,7 +805,6 @@ fn replan_answer_with_no_replan_file_escalates_at_the_question_limit() {
         .unwrap();
     assert_eq!(at.escalated, vec![q.id.clone()]);
 
-    // The question goes to you; the task still waits.
     assert_eq!(w.question(&q.id).state, State::Escalated);
     assert_eq!(w.status("a"), "blocked_on_user");
     let open: i64 = w

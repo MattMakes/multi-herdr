@@ -1,8 +1,5 @@
-//! The concern awake for the code of macOS and Linux.
-
 use std::io;
 
-/// The time of `clock` in milliseconds.
 pub(crate) fn clock_ms(clock: libc::clockid_t) -> io::Result<u64> {
     let mut ts = libc::timespec {
         tv_sec: 0,

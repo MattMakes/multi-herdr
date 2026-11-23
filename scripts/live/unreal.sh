@@ -1,13 +1,4 @@
 #!/usr/bin/env bash
-# Live check: Unreal Engine 5.8 on this Mac (U-19, U-56). Builds a blank C++
-# project with UnrealBuildTool, runs 1 automation test and 1 Python commandlet,
-# and checks the Git LFS lockable behaviour the ue-* skills describe.
-# Result table: docs/live-checks/unreal.md. The gate never runs this.
-#
-# Usage: scripts/live/unreal.sh            (engine: /Users/Shared/Epic Games/UE_5.8)
-#        UE_ENGINE=<engine root> scripts/live/unreal.sh
-#        UE_KEEP=1 scripts/live/unreal.sh  (keep Binaries/ and Intermediate/)
-# A cold editor-target build can take up to 60 minutes (UE_BUILD_TIMEOUT, s).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -24,7 +15,6 @@ pass() { echo "PASS $1${2:+: $2}"; }
 fail() { echo "FAIL $1: $2"; FAILS=$((FAILS + 1)); }
 skip() { echo "SKIP $1: $2"; }
 
-# run_bg <timeout s> <log> <cmd...>: run in the background, poll, return its exit code (124 on timeout).
 run_bg() {
   local limit="$1" log="$2"; shift 2
   "$@" >"$log" 2>&1 &
@@ -54,7 +44,6 @@ mkdir -p "$LOGS"
 CMD="$ENGINE/Engine/Binaries/Mac/UnrealEditor-Cmd"
 EDITOR_FLAGS=(-unattended -nullrhi -nosplash -stdout)
 
-# 1. Engine version.
 VERSION_FILE="$ENGINE/Engine/Build/Build.version"
 if [ ! -f "$VERSION_FILE" ]; then
   skip engine-version "no engine at $ENGINE"
@@ -71,7 +60,6 @@ for p in "$ENGINE/Engine/Build/BatchFiles" "$ENGINE/Engine/Binaries/Mac" "$ENGIN
 done
 [ "$FAILS" -eq 0 ] && pass engine-layout "BatchFiles/Mac/Build.sh and Binaries/Mac/UnrealEditor-Cmd exist"
 
-# 2. A minimal C++ project, written by hand (no template download).
 rm -rf "$PROJ_DIR/Content/Live" "$PROJ_DIR/Saved"
 mkdir -p "$PROJ_DIR/Source/LiveUE/Private" "$PROJ_DIR/Config" "$PROJ_DIR/Content" "$SCR/scripts"
 cat >"$PROJ" <<'EOF'
@@ -173,7 +161,6 @@ bool FLiveUESmokeAddTest::RunTest(const FString& Parameters)
 EOF
 pass project "LiveUE.uproject, 1 module, LiveUE + LiveUEEditor targets under $PROJ_DIR"
 
-# 3. Build the editor target with UBT (skills/ue-build-verify/references/commands.md, "Build").
 BUILD_LOG="$LOGS/build-editor.log"
 start=$(date +%s)
 rc=0
@@ -192,9 +179,6 @@ else
 fi
 BUILT=$([ "$rc" -eq 0 ] && echo 1 || echo 0)
 
-# 3b. The conflicting-instance message, checked by a second UBT while one runs, is not
-# reproduced here; the engine source holds the text (docs/live-checks/unreal.md).
-
 if [ "$BUILT" -ne 1 ]; then
   skip automation-list "build failed"
   skip automation-run "build failed"
@@ -205,7 +189,6 @@ if [ "$BUILT" -ne 1 ]; then
   exit 1
 fi
 
-# 4a. Automation List (skills/ue-build-verify step 7).
 LIST_LOG="$LOGS/automation-list.log"
 rc=0
 run_bg "$EDITOR_TIMEOUT" "$LIST_LOG" "$CMD" "$PROJ" -ExecCmds="Automation List;Quit" \
@@ -216,7 +199,6 @@ else
   fail automation-list "exit $rc; LiveUE.Smoke.Add not in $LIST_LOG"
 fi
 
-# 4b. Automation RunTest headless with a JSON report (skills/ue-build-verify steps 8-9).
 REPORT="$SCR/report"
 RUN_LOG="$LOGS/automation-run.log"
 rm -rf "$REPORT"
@@ -245,7 +227,6 @@ else
 fi
 grep -E "LogAutomationController" "$RUN_LOG" | grep -E "Test Completed|Result=|Succeeded|Error" | head -5 || true
 
-# 5. Python commandlet (skills/ue-editor-scripting step 5, Form 1).
 PY_OK="$SCR/scripts/live_list_assets.py"
 cat >"$PY_OK" <<'EOF'
 import unreal
@@ -279,7 +260,6 @@ PY_LOG="$LOGS/python-commandlet.log"
 rc=0
 run_bg "$EDITOR_TIMEOUT" "$PY_LOG" "$CMD" "$PROJ" -run=pythonscript -script="$PY_OK" \
   "${EDITOR_FLAGS[@]}" -abslog="$LOGS/python-commandlet.abs.log" || rc=$?
-# unreal.log() writes at Log verbosity: it reaches the -abslog file, not -stdout.
 PY_ABS="$LOGS/python-commandlet.abs.log"
 py_errors=$(grep -c "LogPython: Error" "$PY_ABS" || true)
 if grep -q "EDITOR-SCRIPT-OK live-unreal" "$PY_ABS" && [ "$py_errors" -eq 0 ]; then
@@ -290,7 +270,6 @@ else
 fi
 grep -E "LIVE-UE" "$PY_ABS" | sed 's/^.*LogPython: //' || true
 
-# 5b. Exit code of a commandlet whose Python raises (ue-editor-scripting, "Exit status and logs").
 PY_BAD="$SCR/scripts/live_raise.py"
 printf 'import unreal\nraise RuntimeError("LIVE-UE deliberate failure")\n' >"$PY_BAD"
 BAD_LOG="$LOGS/python-error.log"
@@ -303,7 +282,6 @@ else
   fail python-error-exit "exit $rc; no LogPython: Error with Traceback in $BAD_LOG"
 fi
 
-# 6. Git LFS lockable behaviour (skills/ue-build-verify/references/git-lfs.md).
 if ! command -v git-lfs >/dev/null 2>&1; then
   skip lfs-lockable "git-lfs is not installed"
 else

@@ -122,7 +122,7 @@ answer.
 | `run_branch` | TEXT | the integration branch the orchestrator creates for the run, e.g. `fleet/<slug>`. Every task lands here. |
 | `remote` | TEXT | the git remote the run branch is pushed to, e.g. `origin` |
 | `pr_number`, `pr_url` | INTEGER NULL, TEXT NULL | the 1 pull request from `run_branch` into `base_branch`. Created by the first task that lands; updated by every later one. |
-| `finish_steps` | TEXT (JSON array) | the ordered finish pipeline every task of the run runs (section 5.5). Default: `["check", "code-sweep", "complexity-sweep", "recheck", "land", "pr", "cleanup"]`. |
+| `finish_steps` | TEXT (JSON array) | the ordered finish pipeline every task of the run runs (section 5.5). Default: `["check", "comment-sweep", "code-sweep", "complexity-sweep", "recheck", "land", "pr", "cleanup"]`. |
 | `check_every_s` | INTEGER | progress check interval. Default 600 (10 min). |
 | `stall_rounds` | INTEGER | checks in a row without progress before a worker is declared dead. Default 3. |
 | `heartbeat_every_s` | INTEGER | how often `horch worker` writes `last_checkin_at`. Default 30. |
@@ -367,12 +367,12 @@ out of order, or mark one passed by saying so: horch checks the evidence.
 |---|---|---|
 | `task_id`, `worker_id` | TEXT FK | the task and the attempt |
 | `seq` | INTEGER | position in `runs.finish_steps`, from 1 |
-| `name` | TEXT | `check`, `code-sweep`, `complexity-sweep`, `recheck`, `land`, `pr`, `cleanup` |
+| `name` | TEXT | `check`, `comment-sweep`, `code-sweep`, `complexity-sweep`, `recheck`, `land`, `pr`, `cleanup` |
 | `status` | TEXT | `pending`, `running`, `passed`, `failed`, `not_applicable` |
 | `rounds` | INTEGER | how many times the step ran: a sweep runs, the worker fixes, the sweep runs again |
 | `evidence_path` | TEXT NULL | the report, the analysis JSON or the check log that proves the result |
 | `verdict` | TEXT NULL | the parsed result, e.g. `PASS`, `WARN`, `0 violations`, `exit 0` |
-| `review_task_ids` | TEXT NULL (JSON array) | for `code-sweep`: the reviewer tasks it queued (5.5 step 2) |
+| `review_task_ids` | TEXT NULL (JSON array) | for `code-sweep`: the reviewer tasks it queued (5.5 step 2); for `comment-sweep`: its 1 task |
 | `started_at`, `ended_at` | TEXT | audit |
 | `note` | TEXT NULL | why `failed` or `not_applicable` |
 
@@ -606,6 +606,13 @@ without a flag, 1 line on stderr says why.
    `**Check:** none` (`check_none`): then the step is `not_applicable`. A
    shared-checkout task diffs from its claim commit, so the sweeps see its
    work.
+   - **comment-sweep** runs between steps 1 and 2 (see
+     [comment-sweep.md](comment-sweep.md)): `finish` queues 1 review task
+     for the `comment-remover` teammate, which deletes the comments on the
+     lines the task changed and commits in the work folder. The author
+     waits. Passes when that task ended. `not_applicable` when the change
+     has no code file. Its commit moves the tree, so step 1 runs again.
+     Evidence: the teammate's report.
 2. **code-sweep** - the `code-sweep` skill's review, on the branch diff
    against `run_branch`. A worker may not start subagents, so the review
    runs through the ledger: `finish` picks the reviewers by the skill's
@@ -975,6 +982,6 @@ Kinds:
 | Quota | a warning to the operator only; spawning goes on unless redirected |
 | Database | SQLite at `~/.horch/ledger.sqlite3` on every OS |
 | Where work lands | the run branch the orchestrator created; 1 PR from it into the main branch, updated by every task |
-| Finish steps | check, code-sweep, complexity-sweep, recheck, land, pr, cleanup - in order, evidence-checked, none skippable (5.5) |
+| Finish steps | check, comment-sweep, code-sweep, complexity-sweep, recheck, land, pr, cleanup - in order, evidence-checked, none skippable (5.5) |
 | code-sweep reviewers | ledger reviewer tasks, not subagents: workers never start subagents |
 | Cleanup safety | never `--force`, never `-D`; refuse unless the remote has the commit and the worktree is clean |

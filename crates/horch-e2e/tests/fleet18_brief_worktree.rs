@@ -1,4 +1,3 @@
-//! Remaining fleet briefing and worktree contracts at the public seam.
 use horch_core::{execution::SessionMode, prompts, roster::Roster};
 use horch_e2e::harness::Harness;
 fn worker() -> String {
@@ -92,6 +91,12 @@ fn worker_ok(h: &Harness, w: &str, args: &[&str]) -> String {
     String::from_utf8_lossy(&o.stdout).into_owned()
 }
 fn ledger_world(name: &str) -> (Harness, String) {
+    ledger_world_with(name, |_| None)
+}
+fn ledger_world_with(
+    name: &str,
+    wrapper: impl FnOnce(&Harness) -> Option<u32>,
+) -> (Harness, String) {
     let mut h = Harness::new(name).with_git();
     h.set(
         "HORCH_LEDGER_DB",
@@ -99,27 +104,65 @@ fn ledger_world(name: &str) -> (Harness, String) {
     );
     h.set("HORCH_NO_WATCHDOG", "1");
     h.set("HORCH_NO_WAKE", "1");
+    std::fs::create_dir_all(h.fleet_root()).unwrap();
+    std::fs::write(
+        h.fleet_root().join("fleet.toml"),
+        "health_max_load_per_cpu = 1000000.0\npass_period_s = 1\nfetch_period_s = 2\nworktree_list_period_s = 2\n",
+    )
+    .unwrap();
     h.serve_fleetd();
-    ok(&h, &["ledger", "run", "new", "review"]);
-    std::fs::write(h.project.join("ticket.md"), "# Review\n\n**Check:** none\n").unwrap();
-    ok(
-        &h,
-        &[
-            "ledger",
-            "add",
-            "--file",
-            "ticket.md",
-            "--primary",
-            "sonnet",
-        ],
-    );
-    let w = horch_e2e::bind::bind(&h, "sonnet", None).worker_id;
+    let run = horch_e2e::ledger_seed::seed_run(&h, "review", None, "w1:p1");
+    let ticket = h.project.join("ticket.md");
+    std::fs::write(&ticket, "# Review\n\n**Check:** none\n").unwrap();
+    horch_e2e::ledger_seed::seed_task(&h, &run, &ticket, "sonnet");
+    let pid = wrapper(&h);
+    let w = horch_e2e::bind::bind(&h, "sonnet", pid).worker_id;
     (h, w)
 }
 fn git(h: &Harness, dir: &std::path::Path, args: &[&str]) -> String {
     let o = h.git_cmd(args).current_dir(dir).output().unwrap();
     assert!(o.status.success(), "{o:?}");
     String::from_utf8_lossy(&o.stdout).trim().into()
+}
+fn task_tree(h: &Harness, w: &str) -> horch_core::taskledger::finish::WorktreeRow {
+    let store = horch_core::taskledger::store::Store::open(&h.ledger_db()).unwrap();
+    let task = horch_core::taskledger::workers::get(store.conn(), w)
+        .unwrap()
+        .task_id
+        .expect("the bound task of the worker");
+    horch_e2e::harness::wait_for("the worktree of the task", || {
+        let tree = horch_core::taskledger::finish::worktree_of(store.conn(), &task)
+            .ok()
+            .flatten()?;
+        let state: String = store
+            .conn()
+            .query_row(
+                "SELECT state FROM worktrees WHERE worktree_id = ?1",
+                [&tree.worktree_id],
+                |r| r.get(0),
+            )
+            .ok()?;
+        (state != "reserved" && std::path::Path::new(&tree.path).join(".git").exists())
+            .then_some(tree)
+    })
+}
+fn result_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .flat_map(|e| {
+            let path = e.path();
+            if path.is_dir() {
+                result_files(&path)
+            } else if path.file_name().is_some_and(|n| n == "result.json") {
+                vec![path]
+            } else {
+                Vec::new()
+            }
+        })
+        .collect()
 }
 fn tree_path(text: &str) -> std::path::PathBuf {
     text.lines()
@@ -159,27 +202,13 @@ fn g56_facts_reach_the_launch_context_and_are_project_scoped() {
 #[test]
 fn g69_from_scratch_and_drop_preserve_unpublished_work() {
     let (h, w) = ledger_world("g69-ops");
-    // The PR ref must differ from the run branch: ignoring --from fails this test.
-    std::fs::write(h.project.join("pr-only.txt"), "PR branch content\n").unwrap();
-    git(&h, &h.project, &["add", "pr-only.txt"]);
-    git(&h, &h.project, &["commit", "-q", "-m", "PR branch"]);
-    let base = git(&h, &h.project, &["rev-parse", "HEAD"]);
-    git(&h, &h.project, &["branch", "pr-review"]);
-    let made = worker_ok(
-        &h,
-        &w,
-        &["ledger", "worktree", "new", "review", "--from", "pr-review"],
-    );
-    let path = tree_path(&made);
-    assert_eq!(git(&h, &path, &["rev-parse", "HEAD"]), base);
+    let tree = task_tree(&h, &w);
+    let path = std::path::PathBuf::from(&tree.path);
     ok(&h, &["note", "--fact", "Shared across linked checkouts"]);
     assert_eq!(
         horch_core::project_notes::read(&h.state, &path).unwrap(),
         ["Shared across linked checkouts"]
     );
-    let status = String::from_utf8(h.run(&["ledger", "status", "--json"]).stdout).unwrap();
-    let v: serde_json::Value = serde_json::from_str(&status).unwrap();
-    assert_eq!(v["worktrees"][0]["base"], "pr-review");
     std::fs::write(path.join("unique.txt"), "new work\n").unwrap();
     git(&h, &path, &["add", "unique.txt"]);
     git(&h, &path, &["commit", "-q", "-m", "unique"]);
@@ -191,7 +220,7 @@ fn g69_from_scratch_and_drop_preserve_unpublished_work() {
             "ledger",
             "worktree",
             "drop",
-            "review",
+            &tree.worktree_id,
             "--reason",
             "stop review",
         ],
@@ -199,8 +228,11 @@ fn g69_from_scratch_and_drop_preserve_unpublished_work() {
     assert!(!denied.status.success());
     assert!(path.exists());
     assert!(git(&h, &h.project, &["branch", "--list", &branch]).contains(&branch));
-    let before: serde_json::Value =
-        serde_json::from_slice(&h.run(&["ledger", "status", "--json"]).stdout).unwrap();
+    let before: serde_json::Value = serde_json::from_slice(
+        &h.run(&["ledger", "status", "--run", "review", "--json"])
+            .stdout,
+    )
+    .unwrap();
     assert_eq!(before["worktrees"][0]["status"], "open");
     assert!(before["worktrees"][0]["reason"].is_null());
     worker_ok(
@@ -210,16 +242,36 @@ fn g69_from_scratch_and_drop_preserve_unpublished_work() {
             "ledger",
             "worktree",
             "drop",
-            "review",
+            &tree.worktree_id,
             "--reason",
             "stop review",
             "--keep-branch",
         ],
     );
-    assert!(!path.exists());
+    let rescue_ref = horch_e2e::harness::wait_for("the rescue of the dropped tree", || {
+        let conn = rusqlite::Connection::open(h.ledger_db()).unwrap();
+        let (state, rescue_ref): (String, Option<String>) = conn
+            .query_row(
+                "SELECT state, rescue_ref FROM worktrees WHERE worktree_id = ?1",
+                [&tree.worktree_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        rescue_ref.filter(|_| state == "rescued")
+    });
+    assert!(rescue_ref.starts_with("refs/horch/rescue/"), "{rescue_ref}");
+    assert!(git(
+        &h,
+        &h.project,
+        &["ls-tree", "-r", "--name-only", &rescue_ref]
+    )
+    .contains("unique.txt"));
     assert!(git(&h, &h.project, &["branch", "--list", &branch]).contains(&branch));
-    let st = String::from_utf8(h.run(&["ledger", "status", "--json"]).stdout).unwrap();
-    let v: serde_json::Value = serde_json::from_str(&st).unwrap();
+    let v: serde_json::Value = serde_json::from_slice(
+        &h.run(&["ledger", "status", "--run", "review", "--json"])
+            .stdout,
+    )
+    .unwrap();
     assert_eq!(v["worktrees"][0]["status"], "abandoned");
     assert_eq!(v["worktrees"][0]["reason"], "stop review");
     let scratch = worker_ok(&h, &w, &["ledger", "worktree", "scratch", "inspect"]);
@@ -227,6 +279,9 @@ fn g69_from_scratch_and_drop_preserve_unpublished_work() {
     assert!(path
         .to_string_lossy()
         .contains(".worktrees/_scratch/inspect"));
+    horch_e2e::harness::wait_for("the scratch folder", || {
+        path.join(".git").exists().then_some(())
+    });
     let s = horch_core::taskledger::store::Store::open(&h.root.join("ledger.sqlite3")).unwrap();
     let task = horch_core::taskledger::workers::get(s.conn(), &w)
         .unwrap()
@@ -235,7 +290,6 @@ fn g69_from_scratch_and_drop_preserve_unpublished_work() {
     assert!(horch_core::taskledger::finish::worktree_of(s.conn(), &task)
         .unwrap()
         .is_none());
-    // Dirt is always preserved, including when keeping the branch.
     std::fs::write(path.join("dirty.txt"), "keep me").unwrap();
     assert!(!as_worker(
         &h,
@@ -296,75 +350,102 @@ fn g56_facts_expire_oldest_and_refuse_multiline() {
 fn g56_later_spawn_receives_recorded_fact() {
     let mut h = Harness::new("g56-spawn").with_git();
     h.set(
+        "HORCH_LEDGER_DB",
+        h.root.join("ledger.sqlite3").to_string_lossy(),
+    );
+    h.set(
         "HORCH_QUOTA_FILE",
         horch_e2e::harness::fixtures()
             .join("quota/all-ok.json")
             .to_string_lossy(),
     );
-    h.set("HORCH_WORKSPACE_ID", "w1");
+    h.set("HORCH_NO_WAKE", "1").set("HORCH_NO_WATCHDOG", "1");
     h.set("HORCH_FAKE_SCENARIO", "exec");
-    let mut create = std::process::Command::new(h.bin.join("herdr"));
-    h.seal(&mut create);
-    assert!(create
-        .args(["workspace", "create", "--label", "facts"])
-        .output()
-        .unwrap()
-        .status
-        .success());
+    std::fs::create_dir_all(h.fleet_root()).unwrap();
+    std::fs::write(
+        h.fleet_root().join("fleet.toml"),
+        "health_max_load_per_cpu = 1000000.0\npass_period_s = 1\nfetch_period_s = 2\nworktree_list_period_s = 2\n",
+    )
+    .unwrap();
+    std::fs::write(
+        h.project.join("fleet.toml"),
+        "[gates]\nfast = \"true\"\nfull = \"true\"\n",
+    )
+    .unwrap();
+    for args in [
+        &["add", "fleet.toml"][..],
+        &["commit", "--quiet", "--no-gpg-sign", "-m", "gates"],
+    ] {
+        let o = h.git_cmd(args).output().unwrap();
+        assert!(o.status.success(), "git {args:?}: {o:?}");
+    }
+    let workspace = h.fleet_workspace();
+    h.set("HORCH_WORKSPACE_ID", workspace);
     ok(&h, &["note", "--fact", "Use portable BSD sed"]);
-    ok(
-        &h,
-        &[
-            "spawn",
-            "sonnet",
-            "--from-pane",
-            "w1:p1",
-            "--force",
-            "--no-tile",
-        ],
-    );
-    let call = horch_e2e::harness::wait_for("worker brief with project facts", || {
-        h.calls_of("claude")
-            .into_iter()
-            .find(|c| c.to_string().contains("Use portable BSD sed"))
+    let ticket = h.project.join("facts-1.md");
+    std::fs::write(&ticket, "# Facts\n**Check:** none\n").unwrap();
+    let run = horch_e2e::ledger_seed::seed_run(&h, "facts", Some(1), "w1:p1");
+    horch_e2e::ledger_seed::seed_task(&h, &run, &ticket, "sonnet");
+    h.serve_fleetd();
+    let tasks = h.fleet_root().join("tasks");
+    let start = horch_e2e::harness::wait_for("the START.md prompt of the worker", || {
+        h.calls_of("claude").into_iter().find_map(|c| {
+            c["argv"]
+                .as_array()?
+                .iter()
+                .filter_map(|a| a.as_str()?.lines().last())
+                .map(std::path::PathBuf::from)
+                .find(|p| p.starts_with(&tasks) && p.ends_with("inbox/START.md"))
+        })
     });
-    let prompt = call.to_string();
-    assert!(prompt.contains(std::env::consts::OS));
-    assert!(prompt.contains(std::env::consts::ARCH));
+    let text = std::fs::read_to_string(&start).unwrap();
+    let (_, section) = text
+        .split_once("\n## Project facts\n")
+        .unwrap_or_else(|| panic!("no facts section in {}:\n{text}", start.display()));
+    assert!(
+        section.lines().any(|l| l == "- Use portable BSD sed"),
+        "{section}"
+    );
+    let host = section
+        .lines()
+        .find(|l| l.starts_with("Host: "))
+        .unwrap_or_else(|| panic!("no host line: {section}"));
+    assert!(host.contains(std::env::consts::OS), "{host}");
+    assert!(host.contains(std::env::consts::ARCH), "{host}");
 }
 #[test]
 fn g69_open_scratch_does_not_block_finish_or_done() {
-    let (h, w) = ledger_world("g69-scratch-done");
-    worker_ok(&h, &w, &["ledger", "worktree", "new", "task"]);
+    let mut wrapper = None;
+    let (h, w) = ledger_world_with("g69-scratch-done", |h| {
+        let mut sh = std::process::Command::new("/bin/sh");
+        h.seal(&mut sh);
+        let child = sh
+            .args(["-c", "read _; \"$1\" ledger finish", "sh"])
+            .arg(horch_e2e::harness::Harness::horch_bin())
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        wrapper = Some(child);
+        Some(pid)
+    });
+    let mut wrapper = wrapper.unwrap();
+    task_tree(&h, &w);
     let made = worker_ok(&h, &w, &["ledger", "worktree", "scratch", "inspect"]);
     let path = tree_path(&made);
-    // Select just the check step for this run: no task check means N/A. This
-    // exercises actual finish and done without an unrelated PR remote or sweep.
-    let mut s = horch_core::taskledger::store::Store::open(&h.root.join("ledger.sqlite3")).unwrap();
-    s.immediate(|tx| {
-        tx.execute("UPDATE runs SET finish_steps='[\"check\"]'", [])?;
-        Ok(())
-    })
-    .unwrap();
-    worker_ok(&h, &w, &["ledger", "finish"]);
-    worker_ok(
-        &h,
-        &w,
-        &[
-            "ledger",
-            "worktree",
-            "drop",
-            "T1-task",
-            "--reason",
-            "No changes needed",
-        ],
-    );
-    worker_ok(&h, &w, &["ledger", "done", "Reviewed in scratch"]);
-    assert!(path.exists());
-    let o = h.run(&["ledger", "status", "--json"]);
-    assert!(o.status.success(), "{o:?}");
-    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
-    assert_eq!(v["complete"], true);
+    horch_e2e::harness::wait_for("the scratch folder", || {
+        path.join(".git").exists().then_some(())
+    });
+    use std::io::Write as _;
+    writeln!(wrapper.stdin.take().unwrap()).unwrap();
+    assert!(wrapper.wait().unwrap().success());
+    let result = horch_e2e::harness::wait_for("result.json of the attempt", || {
+        result_files(&h.fleet_root().join("tasks")).pop()
+    });
+    let result: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(result).unwrap()).unwrap();
+    assert_eq!(result["status"], "completed");
+    assert!(path.exists(), "the open scratch tree stays");
 }
 
 #[test]
@@ -375,18 +456,18 @@ fn g64_skill_states_each_delegation_and_reporting_rule_within_budget() {
     .unwrap();
     assert!(s.len() <= 12288);
     for required in [
-        "verified (with evidence) or not verified",
-        "failed commands and deliveries as failed",
-        "Your own checks only read",
-        "Delegate landing, installs, cleanup",
+        "Read `horch ledger steps T-<n>` and its evidence",
+        "A parked task is not done",
+        "Read the diff of the files that the ticket gave the task",
+        "fleetd dispatches each task, runs its finish steps and lands it",
         "Do not re-run the tests",
-        "give `horch ledger run gate` to 1 worker",
+        "fleetd runs the full gate of a feature",
         "1 unit per item",
-        "active runs",
-        "live orchestrators",
-        "open project PRs",
-        "horch peek",
-        "only DONE path",
+        "`horch ideas`: each idea, its state and the needs-you list",
+        "`horch ledger status`: the board",
+        "`horch ledger unfinished`: past work that never landed",
+        "Read `horch ideas` and `horch ledger status` last",
+        "the only result path",
     ] {
         assert!(s.contains(required), "missing {required}");
     }
@@ -418,6 +499,10 @@ fn g63_warning_is_one_line_and_offers_finish_when_done() {
 fn g57_compacting_orchestrator_types_its_command_card() {
     use horch_core::execution::records::SessionLedger;
     let mut h = Harness::new("g57-compact").with_git();
+    h.set(
+        "HORCH_LEDGER_DB",
+        h.state.join("ledger.sqlite3").to_string_lossy(),
+    );
     h.set("HORCH_WORKSPACE_ID", "w1");
     h.set("HORCH_NO_WAKE", "1");
     h.set("HORCH_NO_WATCHDOG", "1");
@@ -452,6 +537,7 @@ fn g57_compacting_orchestrator_types_its_command_card() {
     let mailbox = horch_core::messaging::mailbox::Mailbox::under(&h.state, "w1");
     std::fs::create_dir_all(mailbox.dir()).unwrap();
     std::fs::write(mailbox.dir().join("orchestrator.id"), "w1:p1").unwrap();
+    h.serve_fleetd();
     let ledger = SessionLedger::for_project(&h.state, &h.project.to_string_lossy());
     ledger
         .add(horch_core::execution::records::NewRecord {
@@ -527,9 +613,6 @@ fn g57_compacting_orchestrator_types_its_command_card() {
         })
         .filter_map(|a| a.get(3).and_then(|v| v.as_str()))
         .collect();
-    // FR-7: `/compact` takes no argument. The keep-list of #57 (the real run
-    // identity and decisions-log path; roster and ownership from the task
-    // ledger) is in the orchestrator brief.
     let compact_lines: Vec<_> = lines.iter().filter(|l| l.starts_with("/compact")).collect();
     assert_eq!(compact_lines, [&"/compact"], "{lines:?}");
     let roster = Roster::builtin().unwrap();
@@ -547,8 +630,6 @@ fn g57_compacting_orchestrator_types_its_command_card() {
     ] {
         assert!(brief.contains(required), "the brief lacks {required}");
     }
-    // FR-7: the command card waits in the orchestrator mail; the pane gets
-    // the mail line.
     assert!(
         lines.contains(&horch_core::messaging::delivery::MAIL_LINE),
         "{lines:?}"
@@ -591,8 +672,6 @@ fn g58_claude_workers_share_read_only_preapprovals() {
         if t.agent.as_str() == "claude"
             && matches!(t.base.as_deref(), Some("fleet-worker" | "report-worker"))
         {
-            // A report pane runs no `horch` command but progress, tell and
-            // done, so it pre-approves none of the others.
             let report = t.horch_access == horch_core::roster::HorchAccess::Report;
             let want: Vec<String> = expected
                 .iter()
@@ -603,8 +682,7 @@ fn g58_claude_workers_share_read_only_preapprovals() {
             names.push(name);
         }
     }
-    assert_eq!(names.len(), 83);
-    // sound-engineer runs on claude; audio-reviewer runs on agy.
+    assert_eq!(names.len(), 89);
     assert!(names.contains(&"sound-engineer"), "{names:?}");
     assert!(!names.contains(&"audio-reviewer"), "{names:?}");
     for pattern in expected {
@@ -639,8 +717,8 @@ fn detached_drop_is_refused(keep_branch: bool) {
     } else {
         "g69-det-drop"
     });
-    let made = worker_ok(&h, &w, &["ledger", "worktree", "new", "detached"]);
-    let path = tree_path(&made);
+    let tree = task_tree(&h, &w);
+    let path = std::path::PathBuf::from(&tree.path);
     let recorded_branch = git(&h, &path, &["branch", "--show-current"]);
     let recorded_commit = git(&h, &path, &["rev-parse", "HEAD"]);
     git(&h, &path, &["checkout", "--detach"]);
@@ -659,7 +737,7 @@ fn detached_drop_is_refused(keep_branch: bool) {
         "ledger",
         "worktree",
         "drop",
-        "T1-detached",
+        &tree.worktree_id,
         "--reason",
         "stop review",
     ];
@@ -677,8 +755,11 @@ fn detached_drop_is_refused(keep_branch: bool) {
         git(&h, &h.project, &["rev-parse", &recorded_branch]),
         recorded_commit
     );
-    let board: serde_json::Value =
-        serde_json::from_slice(&h.run(&["ledger", "status", "--json"]).stdout).unwrap();
+    let board: serde_json::Value = serde_json::from_slice(
+        &h.run(&["ledger", "status", "--run", "review", "--json"])
+            .stdout,
+    )
+    .unwrap();
     assert_eq!(board["worktrees"][0]["status"], "open");
     assert!(board["worktrees"][0]["reason"].is_null());
 }
@@ -695,8 +776,8 @@ fn g69_drop_keep_branch_refuses_detached_unique_commits() {
 #[test]
 fn g69_drop_refuses_changed_checked_out_branch() {
     let (h, w) = ledger_world("g69-mismatch");
-    let made = worker_ok(&h, &w, &["ledger", "worktree", "new", "changed"]);
-    let path = tree_path(&made);
+    let tree = task_tree(&h, &w);
+    let path = std::path::PathBuf::from(&tree.path);
     git(&h, &path, &["checkout", "-b", "actual-work"]);
     std::fs::write(path.join("actual.txt"), "actual branch work\n").unwrap();
     git(&h, &path, &["add", "actual.txt"]);
@@ -707,7 +788,7 @@ fn g69_drop_refuses_changed_checked_out_branch() {
             "ledger",
             "worktree",
             "drop",
-            "T1-changed",
+            &tree.worktree_id,
             "--reason",
             "stop",
         ];

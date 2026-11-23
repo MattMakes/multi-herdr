@@ -1,10 +1,3 @@
-//! Process helpers: PATH search, executable bits, PATH editing, a detached
-//! spawn, and the child-only environment.
-//!
-//! Every function here is pure in its inputs. The PATH, PATHEXT and the
-//! executable path come in as parameters, read once by the binary's bootstrap
-//! into a [`RuntimeContext`](super::context::RuntimeContext).
-
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus};
@@ -12,13 +5,10 @@ use std::time::{Duration, Instant};
 
 use horch_platform::start;
 
-/// Find `name` on a PATH value, honouring `PATHEXT` on Windows.
 pub fn which(path: Option<&OsStr>, pathext: Option<&str>, name: &str) -> Option<PathBuf> {
     which_in(path?, name, &horch_platform::rest::path_extensions(pathext))
 }
 
-/// Find `name` in an explicit PATH-formatted list. A directory is searched
-/// whole, the bare name first and then each extension, before the next one.
 pub(crate) fn which_in(paths: &OsStr, name: &str, extensions: &[String]) -> Option<PathBuf> {
     std::env::split_paths(paths)
         .filter(|d| !d.as_os_str().is_empty())
@@ -32,8 +22,6 @@ pub(crate) fn which_in(paths: &OsStr, name: &str, extensions: &[String]) -> Opti
         })
 }
 
-/// The binary a name or path stands for, when it exists: a path with a
-/// separator must be a file, a bare name is searched on the context's PATH.
 pub fn resolve(ctx: &super::context::RuntimeContext, bin: &Path) -> Option<PathBuf> {
     if bin.components().count() > 1 || bin.is_absolute() {
         return bin.is_file().then(|| bin.to_path_buf());
@@ -45,23 +33,14 @@ pub fn resolve(ctx: &super::context::RuntimeContext, bin: &Path) -> Option<PathB
     )
 }
 
-/// SIGKILL the process group `pgid` (a child started with `process_group(0)`).
-/// Whether the signal was sent; a group that is already gone gives ESRCH.
-/// False on a platform without process groups (Windows).
 pub fn kill_pgid(pgid: u32) -> bool {
     horch_platform::group::kill_group_id(pgid).unwrap_or(false)
 }
 
-/// Kill the group of `child`, which was started with `process_group(0)`.
-/// The child must not be reaped yet, so its pid still names its group. Off
-/// unix there is no group, so only the child dies.
 pub fn kill_group(child: &mut Child) {
     horch_platform::group::kill_child_group(child);
 }
 
-/// Poll `child` every `poll` until it exits or `deadline` passes. `Ok(None)`
-/// means the deadline passed with the child still running; the child is left
-/// alone, so the caller decides whether to kill it.
 pub fn wait_until(
     child: &mut Child,
     deadline: Instant,
@@ -82,13 +61,10 @@ fn is_executable(path: &Path) -> bool {
     std::fs::metadata(path).is_ok_and(|m| horch_platform::fs::is_executable(&m))
 }
 
-/// Mark a freshly written file executable. No-op on Windows, where the
-/// extension decides.
 pub fn make_executable(path: &Path) -> std::io::Result<()> {
     horch_platform::fs::make_executable(path)
 }
 
-/// A PATH with `dir` first, or `None` when it is already first.
 pub(crate) fn path_with_prepended(current: &OsStr, dir: &Path) -> Option<OsString> {
     let existing: Vec<PathBuf> = std::env::split_paths(current)
         .filter(|p| !p.as_os_str().is_empty())
@@ -102,26 +78,16 @@ pub(crate) fn path_with_prepended(current: &OsStr, dir: &Path) -> Option<OsStrin
     std::env::join_paths(entries).ok()
 }
 
-/// The PATH a child of this binary needs: this binary's own directory first.
-///
-/// Every worker briefing tells the agent that `horch` is on its PATH, and the
-/// agent invokes it by bare name from its own shell tool. The bash launchers made
-/// that true with `export PATH="$root/bin:$PATH"`; without the equivalent, a
-/// `horch` run from a build directory would leave every worker unable to reach the
-/// orchestrator - its only channel. `None` when nothing needs to change.
 pub(crate) fn path_with_own_dir(current_exe: &Path, path: Option<&OsStr>) -> Option<OsString> {
     let dir = current_exe.parent()?;
     path_with_prepended(path.unwrap_or_default(), dir)
 }
 
-/// Is `dir` present in an explicit PATH-formatted list?
 pub fn on_path_in(paths: &OsStr, dir: &Path) -> bool {
     let target = normalize(dir);
     std::env::split_paths(paths).any(|p| normalize(&p) == target)
 }
 
-/// Compare paths the way the platform does: trailing separators are
-/// insignificant, and Windows is case-insensitive.
 fn normalize(p: &Path) -> OsString {
     let s = p.to_string_lossy();
     let trimmed = s.trim_end_matches(std::path::MAIN_SEPARATOR);
@@ -133,11 +99,7 @@ fn normalize(p: &Path) -> OsString {
     OsString::from(horch_platform::shell::fold_path_case(trimmed))
 }
 
-/// A command that the helpers of this file prepare and start: a
-/// [`start::Command`], or a `std` command of a caller that has not moved to
-/// [`start::Command`] yet (SR-7).
 pub trait ChildCommand: start::Start {
-    /// Each variable that the command sets (`Some`) or removes (`None`).
     fn env_changes(&self) -> Vec<(OsString, Option<OsString>)>;
     fn remove_env(&mut self, key: &OsStr);
     fn set_env(&mut self, key: &OsStr, value: &OsStr);
@@ -178,14 +140,6 @@ impl ChildCommand for Command {
     }
 }
 
-/// Remove every [`FORBIDDEN_ENV`](crate::harness::launch::FORBIDDEN_ENV) variable and
-/// every git repository variable
-/// ([`REPO_ENV`](horch_marketplace::git::REPO_ENV) and the numbered
-/// `GIT_CONFIG_KEY_<n>` and `GIT_CONFIG_VALUE_<n>`) from a child's environment.
-///
-/// A horch started under `git rebase -x` or a git hook has `GIT_DIR` set; an
-/// agent or judge that inherited it would run its git in that repository.
-/// Call it after any `env` call.
 pub fn scrub_child_env(cmd: &mut impl ChildCommand) {
     for key in crate::harness::launch::FORBIDDEN_ENV {
         cmd.remove_env(OsStr::new(key));
@@ -193,9 +147,6 @@ pub fn scrub_child_env(cmd: &mut impl ChildCommand) {
     scrub_repo_env(cmd);
 }
 
-/// [`horch_marketplace::git::scrub_repo_env`] for each [`ChildCommand`]:
-/// remove each [`REPO_ENV`](horch_marketplace::git::REPO_ENV) variable, and
-/// each numbered one that this process has or that `cmd` sets.
 fn scrub_repo_env(cmd: &mut impl ChildCommand) {
     use horch_marketplace::git::{REPO_ENV, REPO_ENV_NUMBERED};
     for key in REPO_ENV {
@@ -214,11 +165,6 @@ fn scrub_repo_env(cmd: &mut impl ChildCommand) {
     }
 }
 
-/// Give a child `vars`, except a key the command already sets or removes.
-///
-/// This is what inheriting them from the parent used to mean: a value the
-/// builder put on the command itself always won over the parent's. A
-/// forbidden key never gets through.
 pub(crate) fn inherit_env<C, K, V>(cmd: &mut C, vars: impl IntoIterator<Item = (K, V)>)
 where
     C: ChildCommand,
@@ -239,36 +185,22 @@ where
     }
 }
 
-/// Spawn `cmd` so that it outlives this process's pane.
-///
-/// A new SESSION, not merely a new process group. Measured against herdr
-/// 0.7.4: closing a pane tears down its whole session, so a child that only
-/// left the process group is killed along with it, while one that called
-/// `setsid` survives.
-///
-/// The child's environment is scrubbed here (`scrub_child_env`), right
-/// before the spawn: no detached child (the judge job, the compaction job,
-/// the grid tidy) can carry a forbidden key, whatever its caller set.
 pub fn spawn_detached(cmd: &mut impl ChildCommand) -> std::io::Result<Child> {
     detach(cmd);
-    cmd.start()
+    horch_platform::group::spawn_detached(cmd)
 }
 
-/// The pane identity of the process that starts a detached child (#218).
-/// The child outlives that pane and serves the whole project, so it must not
-/// act as that pane: it gets none of these unless its caller sets them.
 pub const PANE_IDENTITY_ENV: &[&str] = &[
     "HORCH_ROLE",
     "HORCH_RECORD_ID",
     "HORCH_WORKER_ID",
     "HORCH_WORKSPACE_ID",
     "HERDR_PANE_ID",
+    "HC_TERMINAL_ID",
+    "HC_SCOPE",
+    "HORCH_BACKEND",
 ];
 
-/// Remove from `cmd` the [`PANE_IDENTITY_ENV`] it would inherit from
-/// `inherited`, and a `TMPDIR` under `<state_root>/tmp/`: a pane's private
-/// temp dir, which the pane removes when it ends. A key the caller set or
-/// removed on `cmd` itself is left as the caller wants it.
 fn scrub_pane_identity(cmd: &mut impl ChildCommand, inherited: &dyn super::context::EnvSource) {
     let changes = cmd.env_changes();
     let is_taken = |key: &str| changes.iter().any(|(k, _)| k == key);
@@ -294,12 +226,9 @@ fn scrub_pane_identity(cmd: &mut impl ChildCommand, inherited: &dyn super::conte
     }
 }
 
-/// What [`spawn_detached`] does to `cmd` before the spawn.
 fn detach(cmd: &mut impl ChildCommand) {
     scrub_child_env(cmd);
     scrub_pane_identity(cmd, &super::context::ProcessEnv);
-    // Windows has no detach: the child dies with the pane there, as before.
-    let _ = horch_platform::group::detach(cmd);
 }
 
 #[cfg(test)]
@@ -339,7 +268,6 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn kill_group_kills_the_grandchildren_too() {
-        // `sh` backgrounds a sleeper that prints its pid, then waits on it.
         let mut cmd = Command::new("sh");
         cmd.args(["-c", "sleep 60 & echo $!; wait"]);
         cmd.stdout(std::process::Stdio::piped());
@@ -394,8 +322,6 @@ mod tests {
         assert_eq!(resolve(&ctx, Path::new("absent")), None);
     }
 
-    /// A detached child never carries a forbidden key: `spawn_detached`
-    /// removes every one itself, after the caller's `env` calls.
     #[test]
     fn spawn_detached_scrubs_every_forbidden_key() {
         let mut cmd = Command::new("true");
@@ -416,8 +342,6 @@ mod tests {
             .any(|(k, v)| k == "HORCH_TEST_KEEP" && v.as_deref() == Some(OsStr::new("1"))));
     }
 
-    /// The env `cmd` gives its child, as the caller and the scrub left it:
-    /// `None` is a removed key.
     fn envs_of(cmd: &Command) -> Vec<(String, Option<String>)> {
         cmd.get_envs()
             .map(|(k, v)| {
@@ -429,19 +353,41 @@ mod tests {
             .collect()
     }
 
-    /// The keys #218 names, written out. The tests read this list and not
-    /// `PANE_IDENTITY_ENV`: a loop over the list under test passes when a key
-    /// is dropped from it, or when the list is empty.
-    const PANE_KEYS: [&str; 5] = [
+    const PANE_KEYS: [&str; 8] = [
         "HORCH_ROLE",
         "HORCH_RECORD_ID",
         "HORCH_WORKER_ID",
         "HORCH_WORKSPACE_ID",
         "HERDR_PANE_ID",
+        "HC_TERMINAL_ID",
+        "HC_SCOPE",
+        "HORCH_BACKEND",
     ];
 
-    /// #218 through a real spawn: this test binary runs again as a process
-    /// of a worker pane, and its `spawn_detached` child prints its env.
+    #[test]
+    fn hcb_02_detached_child_gets_no_backend_or_terminal_id() {
+        let inherited = MapEnv::new("/cwd")
+            .with("HOME", "/home/a")
+            .with("HC_TERMINAL_ID", "t7")
+            .with("HC_SCOPE", "sp123")
+            .with("HORCH_BACKEND", "hc")
+            .with("HERDR_PANE_ID", "p_9");
+        let mut cmd = Command::new("true");
+        scrub_pane_identity(&mut cmd, &inherited);
+        let envs = envs_of(&cmd);
+        for key in [
+            "HC_TERMINAL_ID",
+            "HC_SCOPE",
+            "HORCH_BACKEND",
+            "HERDR_PANE_ID",
+        ] {
+            assert!(
+                envs.contains(&(key.to_string(), None)),
+                "{key} is not removed: {envs:?}"
+            );
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn spawn_detached_gives_its_child_none_of_the_panes_identity() {
@@ -465,6 +411,9 @@ mod tests {
             .env("HORCH_WORKER_ID", "w-123")
             .env("HORCH_WORKSPACE_ID", "W2")
             .env("HERDR_PANE_ID", "p_9")
+            .env("HC_TERMINAL_ID", "t7")
+            .env("HC_SCOPE", "sp1")
+            .env("HORCH_BACKEND", "hc")
             .output()
             .unwrap();
         let stdout = String::from_utf8_lossy(&out.stdout);
@@ -495,9 +444,6 @@ mod tests {
         assert!(spawn_detached(&mut cmd).unwrap().wait().unwrap().success());
     }
 
-    /// SR-7 through a real spawn: this test binary runs again with each
-    /// forbidden name in its environment, and the `start::Command` that its
-    /// `spawn_detached` starts prints its env.
     #[cfg(unix)]
     #[test]
     fn spawn_detached_of_a_start_command_removes_a_forbidden_name_of_the_parent() {
@@ -547,8 +493,6 @@ mod tests {
         assert!(spawn_detached(&mut cmd).unwrap().wait().unwrap().success());
     }
 
-    /// #218: a child started from a worker pane does not carry that pane's
-    /// identity or its private TMPDIR.
     #[test]
     fn a_detached_child_drops_the_starting_panes_identity() {
         let mut inherited = MapEnv::new("/cwd");
@@ -559,6 +503,9 @@ mod tests {
         inherited = inherited.with("HORCH_WORKER_ID", "w-123");
         inherited = inherited.with("HORCH_WORKSPACE_ID", "W2");
         inherited = inherited.with("HERDR_PANE_ID", "p_9");
+        inherited = inherited.with("HC_TERMINAL_ID", "t7");
+        inherited = inherited.with("HC_SCOPE", "sp1");
+        inherited = inherited.with("HORCH_BACKEND", "hc");
         inherited = inherited.with("TMPDIR", "/state/tmp/sonnet-2");
         let mut cmd = Command::new("true");
         scrub_pane_identity(&mut cmd, &inherited);
@@ -571,8 +518,6 @@ mod tests {
         }
     }
 
-    /// What the caller sets on purpose stays: the watchdog's run workspace,
-    /// the Prime stop's TMPDIR. An operator's own TMPDIR is not a pane's.
     #[test]
     fn a_detached_child_keeps_what_its_caller_sets_and_a_plain_tmpdir() {
         let mut inherited = MapEnv::new("/cwd");
@@ -586,7 +531,6 @@ mod tests {
         assert!(envs.contains(&("HORCH_WORKSPACE_ID".into(), Some("W1".into()))));
         assert!(!envs.iter().any(|(k, _)| k == "TMPDIR"), "{envs:?}");
 
-        // The default state root, and a state dir the caller passes.
         for (state_dir, tmp) in [
             (None, "/home/a/.local/state/horch/tmp/codex-1"),
             (Some("/elsewhere"), "/elsewhere/tmp/codex-1"),
@@ -629,7 +573,6 @@ mod tests {
         assert_eq!(which(None, None, "runnable"), None, "no PATH, no match");
     }
 
-    /// On Windows the bare name has no extension, so PATHEXT must be tried.
     #[test]
     fn which_in_tries_path_extensions() {
         let tmp = tempfile::tempdir().unwrap();
@@ -657,7 +600,6 @@ mod tests {
         }
     }
 
-    /// Earlier PATH entries win.
     #[test]
     fn which_in_respects_path_order() {
         let first = tempfile::tempdir().unwrap();
@@ -671,8 +613,6 @@ mod tests {
         assert_eq!(which_in(&paths, "dup", &[]), Some(first.path().join("dup")));
     }
 
-    /// In one directory the bare name beats an extension, and the extensions
-    /// go in the order given.
     #[test]
     fn which_in_tries_the_bare_name_then_each_extension_in_order() {
         let tmp = tempfile::tempdir().unwrap();
@@ -693,8 +633,6 @@ mod tests {
         );
     }
 
-    /// A directory is searched whole before the next one: an extension in an
-    /// earlier directory beats the bare name in a later one.
     #[test]
     fn which_in_finishes_a_directory_before_the_next() {
         let first = tempfile::tempdir().unwrap();
@@ -710,8 +648,6 @@ mod tests {
         );
     }
 
-    /// A file without the executable bit stops nothing: the extension in the
-    /// same directory and the bare name in a later one still match.
     #[cfg(unix)]
     #[test]
     fn which_in_passes_over_files_without_the_executable_bit() {
@@ -753,7 +689,6 @@ mod tests {
         assert!(!on_path_in(&OsString::new(), tmp.path()));
     }
 
-    /// Workers invoke `horch` by bare name, so its own directory must come first.
     #[test]
     fn path_with_prepended_puts_the_directory_first() {
         let dir = Path::new("/opt/horch/bin");
@@ -769,8 +704,6 @@ mod tests {
         assert_eq!(path_with_prepended(&current, dir), None);
     }
 
-    /// An entry further down is moved to the front, not duplicated, so repeated
-    /// nesting cannot grow PATH without bound.
     #[test]
     fn path_with_prepended_moves_rather_than_duplicates() {
         let dir = Path::new("/opt/horch/bin");
@@ -788,8 +721,6 @@ mod tests {
         assert_eq!(entries, vec![dir.to_path_buf()]);
     }
 
-    /// The child PATH must make the running binary's directory reachable, and
-    /// the test process's own PATH stays as it was.
     #[test]
     fn path_with_own_dir_makes_this_binary_findable() {
         let exe = Path::new("/opt/horch/bin/horch");

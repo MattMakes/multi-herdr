@@ -8,8 +8,6 @@ on:
       tag:
         description: "Existing tag to release, for example v0.2.0"
         required: true
-  # auto-release.yml calls this after it pushes the tag: a tag pushed with
-  # GITHUB_TOKEN does not trigger the push event above.
   workflow_call:
     inputs:
       tag:
@@ -76,7 +74,6 @@ jobs:
         if: runner.os != 'Windows'
         shell: bash
         env:
-          # macOS tar would add AppleDouble `._*` entries for extended attributes.
           COPYFILE_DISABLE: "1"
         run: |
           name="multi-herdr-v${{ needs.verify.outputs.version }}-${{ matrix.target }}.tar.gz"

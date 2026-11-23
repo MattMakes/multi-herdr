@@ -1,13 +1,6 @@
-//! SR-7 for the marketplace crate: a git child of `GitRunner` never has a
-//! forbidden name, whether this process has it or the runner sets it.
-//! This file holds 1 test, because it sets a name in the environment of
-//! this test process.
-
 use horch_marketplace::git::GitRunner;
 use horch_platform::start::FORBIDDEN_ENV;
 
-/// A name that the child must see, so the test cannot pass because the
-/// child prints no environment at all.
 const CONTROL: &str = "HORCH_P7_GIT_START_CONTROL";
 
 #[test]

@@ -1,6 +1,3 @@
-//! The concern watch for macOS: kqueue with `EVFILT_VNODE` on each open
-//! folder. kqueue needs no run loop, unlike FSEvents.
-
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
@@ -8,19 +5,13 @@ use std::path::{Path, PathBuf};
 
 use crate::unix::watch::c_path;
 
-/// The events of 1 read of the queue. A full read reads again.
 const BATCH: usize = 64;
 
-/// The most reads of the queue in 1 call of `changed`. A busy folder
-/// cannot hold the call: the events after the last read wait for the next
-/// call.
 const MAX_READS: usize = 16;
 
 #[derive(Debug)]
 pub(crate) struct Watcher {
     queue: OwnedFd,
-    /// Each watched folder with its open fd. The fd is the ident of its
-    /// kevent, and its close removes the kevent.
     dirs: HashMap<PathBuf, OwnedFd>,
 }
 
@@ -84,7 +75,6 @@ impl Watcher {
     }
 
     pub(crate) fn remove(&mut self, dir: &Path) {
-        // The close of the fd removes its kevent.
         self.dirs.remove(dir);
     }
 
@@ -109,7 +99,6 @@ impl Watcher {
                     &zero,
                 )
             };
-            // An error is a missed hint: the pass scans each folder anyway.
             let Ok(n) = usize::try_from(n) else { break };
             idents.extend(events[..n].iter().map(|e| e.ident as RawFd));
             if n < BATCH {

@@ -39,7 +39,6 @@ def _wholes(ids: Sequence[str]) -> list[tuple]:
     return [(i, 1, "whole") for i in ids]
 
 
-# category -> (query, (min s, max s), forge entries, bench entries)
 CATS: dict[str, tuple[str, tuple[float, float], list, list]] = {
     "whoosh_fast": ("a fast crisp whoosh of a stick swung through the air", (0.2, 0.9),
                     _kits("whoosh_fast", range(1, 5)) + _wholes(["fs-719636"]),
@@ -108,8 +107,6 @@ NOTES = {
 }
 
 
-# ---------------------------------------------------------------- families and the plan
-
 def family(src: dict) -> str:
     """The split unit of a source: one library, one Freesound author, or the file itself."""
     sid = str(src.get("id", ""))
@@ -145,8 +142,6 @@ def plan(cats: dict, sources: dict, kit: dict, log: Callable = print) -> list[st
     log(f"family leaks: {', '.join(leaks) if leaks else 'none'}")
     return leaks
 
-
-# ---------------------------------------------------------------- cuts
 
 def _frames5(m: np.ndarray) -> np.ndarray:
     n = int(0.005 * SR)
@@ -212,8 +207,6 @@ def export(x: np.ndarray, a: int, b: int, path: Any, fade_out: float) -> float:
     return round(20 * math.log10(g), 2)
 
 
-# ---------------------------------------------------------------- find (listen unit)
-
 def _find(path: str, query: str, top: int, start: float | None, end: float | None, cache: dict) -> list[dict]:
     key = f"{path}|{query}|{top}|{start}|{end}"
     if key not in cache:
@@ -266,8 +259,6 @@ def pick_find(segs: list[dict], k: int, dur: tuple, zmin: float, r0: float, r1: 
             kept.append((s["start"], s["end"]))
     return picks, rejected
 
-
-# ---------------------------------------------------------------- one category
 
 class _Build:
     """Cuts one category's splits and collects its manifest records."""
@@ -379,8 +370,6 @@ def _load(path: str) -> np.ndarray:
 
     return np.asarray(load(str(path), sr=SR), dtype=float)
 
-
-# ---------------------------------------------------------------- run
 
 def _read_json(path: Path, default: Any) -> Any:
     return json.loads(path.read_text()) if path.is_file() else default

@@ -66,8 +66,6 @@ STUDY_TARGETS: dict[str, dict[str, tuple[float, float]]] = {
 _PART_CAP = {"tone": 3.0, "env": 2.0, "polish": 1.5}
 
 
-# ---------------------------------------------------------------- listen services
-
 class ListenServices:
     """The listen-unit calls the critic makes. Loads the models on construction."""
 
@@ -156,8 +154,6 @@ def services() -> Any:
             _SHARED_SVC = ListenServices()
         return _SHARED_SVC
 
-
-# ---------------------------------------------------------------- study targets
 
 def _lr_correlation(sig: np.ndarray) -> float:
     if sig.ndim != 2:
@@ -248,8 +244,6 @@ def study_penalties(sm: dict, targets: dict) -> tuple[dict, dict, str]:
     return cost, miss, ("study targets: " + "; ".join(notes)) if notes else "study targets met"
 
 
-# ---------------------------------------------------------------- pure helpers
-
 def holdout_key(mono: np.ndarray) -> str:
     """sha1 of the mono float32 samples."""
     return hashlib.sha1(np.ascontiguousarray(np.asarray(mono, dtype=np.float32)).tobytes()).hexdigest()
@@ -335,7 +329,6 @@ def _file_label(pv: Any) -> str:
 
 _TONE_FIELDS = ("tone_db", "tone_ratio", "outside", "t40_ms", "t40_ref", "length_s", "length_ref", "shares",
               "shares_ref_med", "words")
-# (penalty part, the row key that, when set, means another check already judged this part)
 _TARGET_SLOTS = (("tone", "tone_ratio"), ("env", "env_ratio"), ("polish", None))
 
 
@@ -376,8 +369,6 @@ def _add_target_costs(rec: dict, cost: dict) -> dict:
     return applied
 
 
-# ---------------------------------------------------------------- Critic
-
 class Critic:
     """Scores sounds against a target text, confusions and real references."""
 
@@ -417,8 +408,6 @@ class Critic:
 
         return np.asarray(load(pv), dtype=np.float32)
 
-    # -- embedding and ref sets
-
     def embed(self, xs: Sequence[Any], batch: int = 16) -> np.ndarray:
         """Text-audio embeddings of the mono mixes."""
         res = [self.listen.embed_audio([_flat32(sig) for sig in xs[ix:ix + batch]]) for ix in range(0, len(xs), batch)]
@@ -431,8 +420,6 @@ class Critic:
         if left not in self._loo_spread:
             self._loo_spread[left] = _feature_spread([self.ref_fv[ix] for ix in kept])
         return kept, self._loo_spread[left]
-
-    # -- scoring
 
     def score(self, xs: Sequence[Any], E: np.ndarray | None = None, exclude: Sequence[int | None] | None = None
               ) -> list[dict]:
@@ -579,8 +566,6 @@ class Critic:
         bits = ["outside the refs: " + ", ".join(limit)] if limit else []
         bits.append("sounds like: " + ", ".join(rw.get("sounds_like") or []))
         return bits + _note_list(rw)
-
-    # -- refs and checks
 
     def score_files(self, paths: Sequence[str]) -> list[dict]:
         """Score audio files."""

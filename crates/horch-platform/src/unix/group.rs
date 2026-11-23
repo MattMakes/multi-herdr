@@ -1,5 +1,3 @@
-//! The concern group for the code of macOS and Linux.
-
 use crate::NotSupported;
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command};
@@ -8,29 +6,30 @@ pub(crate) fn new_group(cmd: &mut Command) {
     cmd.process_group(0);
 }
 
-/// `SIGKILL` to group `pgid`. 0 names the group of the caller, and a value
-/// above `i32::MAX` becomes a negative `pid_t`, so both send nothing.
 fn kill_pgid(pgid: u32) -> bool {
+    signal_pgid(pgid, libc::SIGKILL)
+}
+
+fn signal_pgid(pgid: u32, signal: libc::c_int) -> bool {
     let Some(group) = i32::try_from(pgid).ok().filter(|p| *p > 0) else {
         return false;
     };
     // SAFETY: killpg takes plain integers and touches no memory.
-    unsafe { libc::killpg(group, libc::SIGKILL) == 0 }
+    unsafe { libc::killpg(group, signal) == 0 }
 }
 
 pub(crate) fn kill_group_id(pgid: u32) -> Result<bool, NotSupported> {
     Ok(kill_pgid(pgid))
 }
 
-/// The pid of the child names its group. The child is unreaped, so the
-/// group is ours.
 pub(crate) fn kill_child_group(child: &mut Child) -> bool {
     kill_pgid(child.id())
 }
 
-/// `waitid` on `child` with `WNOWAIT`: it does not reap. The caller reads
-/// the pid field, which is 0 while the child runs. The layout of that field
-/// differs between macOS and Linux.
+pub(crate) fn term_child_group(child: &mut Child) -> bool {
+    signal_pgid(child.id(), libc::SIGTERM)
+}
+
 pub(crate) fn wait_without_reap(child: &Child) -> std::io::Result<libc::siginfo_t> {
     // SAFETY: an all-zero `siginfo_t` is valid; `waitid` fills it in.
     let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
@@ -61,6 +60,10 @@ pub(crate) fn detach(cmd: &mut Command) -> Result<(), NotSupported> {
     Ok(())
 }
 
+pub(crate) fn spawn_without_inherited_stdio(cmd: &mut Command) -> std::io::Result<Child> {
+    cmd.spawn()
+}
+
 pub(crate) fn is_same_group(pgid: u32, started: u64) -> Result<bool, NotSupported> {
     let Some(group) = i32::try_from(pgid).ok().filter(|p| *p > 0) else {
         return Ok(false);
@@ -73,8 +76,15 @@ pub(crate) fn is_same_group(pgid: u32, started: u64) -> Result<bool, NotSupporte
     })
 }
 
-/// The process group of the child holds it: nothing to set up or to end
-/// here. `kill_child_group` kills the group.
+pub(crate) fn is_group_leader(pgid: u32, started: u64) -> Result<bool, NotSupported> {
+    let Some(group) = i32::try_from(pgid).ok().filter(|p| *p > 0) else {
+        return Ok(false);
+    };
+    // SAFETY: plain syscall; a pid that has gone answers -1.
+    Ok(crate::process::start_time(pgid) == Some(started)
+        && (unsafe { libc::getpgid(group) }) == group)
+}
+
 pub(crate) struct Contained;
 
 impl Contained {

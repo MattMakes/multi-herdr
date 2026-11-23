@@ -1,5 +1,3 @@
-//! The adapters layer of ideas: I/O: SQLite, files and processes.
-
 pub mod idea_folder_files;
 pub mod idea_notes_reader;
 pub mod ideas_store;

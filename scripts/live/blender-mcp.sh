@@ -1,13 +1,4 @@
 #!/usr/bin/env bash
-# Live check, ahujasid Blender MCP server (mcp-for-blender) of blender-builder,
-# blender-qa and blender-3d-printer. Checks that the 3 teammate files carry
-# the same server line, that the pinned flags resolve to PIN_SET, that the
-# server starts as the teammates launch it, that tools/list has every tool
-# that the teammates deny (so a rename upstream fails here), and that
-# telemetry is off.
-# Result file: docs/live-checks/blender-mcp.md. Needs uv/uvx, git and network
-# for the first uvx download. Blender is not needed: tools/list and
-# get_addon_status answer without it. Starts no model session.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 unset ANTHROPIC_API_KEY 2>/dev/null || true
@@ -23,15 +14,11 @@ skip() { echo "SKIP $1: $2"; }
 TEAMMATES="blender-builder blender-qa blender-3d-printer"
 MCP_REPO=https://github.com/ahujasid/mcp-for-blender
 MCP_COMMIT=992233bb258975a05eec8b5691465c50c2831e34
-# The full set that uv resolved for the pin on 2026-11-04 (Python 3.12).
 PIN_SET="annotated-types==0.8.0 anyio==4.16.0 attrs==26.1.0 certifi==2026.10.23 cffi==2.1.1 click==8.5.0 cryptography==50.0.2 h11==0.16.0 httpcore==1.0.9 httpx==0.28.1 httpx-sse==0.4.3 idna==3.20 jsonschema==4.26.0 jsonschema-specifications==2025.9.1 mcp==1.30.0 pycparser==3.12 pydantic==2.14.2 pydantic-core==2.50.2 pydantic-settings==2.16.2 pyjwt==2.15.1 python-dotenv==1.2.4 python-multipart==0.0.33 referencing==0.37.0 rpds-py==2026.9.1 sse-starlette==3.6.0 starlette==1.10.0 typing-extensions==4.16.0 typing-inspection==0.4.4 uvicorn==0.54.0"
 
-# Prints the JSON of the `blender:` line of a teammate file.
 spec_of() { python3 -I -c 'import re,sys; l=next(l for l in open(sys.argv[1]) if re.match(r"\s+blender:\s*\{", l)); print(l.split(":",1)[1].strip())' "$1"; }
-# Prints the mcp__blender__* entries of the disallowed_tools line, 1 per line.
 denied_of() { sed -n 's/^disallowed_tools: \[\(.*\)\]$/\1/p' "$1" | tr ',' '\n' | tr -d ' ' | sed -n 's/^mcp__blender__//p'; }
 
-# 1. The 3 teammates carry 1 server line, with telemetry off and the denied tools.
 FIRST=teammates/blender-builder.md
 SPEC=$(spec_of "$FIRST")
 DENIED=$(denied_of "$FIRST")
@@ -50,8 +37,6 @@ elif [ $same = 1 ]; then
   pass "teammate-lines: 3 files, 1 server line, telemetry off, denied: $(tr '\n' ' ' <<<"$DENIED" | sed 's/ $//')"
 fi
 
-# 2. The pinned flags resolve to PIN_SET, and the source at the pin reads
-#    DISABLE_TELEMETRY before it sends anything.
 if command -v uv >/dev/null && command -v git >/dev/null; then
   [ -d "$SCRATCH/src/.git" ] || git clone -q "$MCP_REPO" "$SCRATCH/src"
   git -C "$SCRATCH/src" checkout -q "$MCP_COMMIT"
@@ -68,8 +53,6 @@ if command -v uv >/dev/null && command -v git >/dev/null; then
     else fail "mcp-pin" "resolved set differs: $got"; fi
   fi
   T="$SCRATCH/src/src/blender_mcp/telemetry.py"
-  # Every HTTP post of telemetry and trajectory data checks config.enabled,
-  # and DISABLE_TELEMETRY sets it to False.
   if grep -q '"DISABLE_TELEMETRY"' "$T" && grep -q 'self.config.enabled = False' "$T" \
      && [ "$(grep -c 'if not self.config.enabled' "$T")" -ge 2 ] \
      && grep -q 'if not telemetry.config.enabled' "$SCRATCH/src/src/blender_mcp/trajectory.py"; then
@@ -82,7 +65,6 @@ else
   skip "telemetry-source" "uv or git not found"
 fi
 
-# 3. The server, launched as the teammates launch it.
 cat >"$SCRATCH/mcp.py" <<'PY'
 # MCP stdio client: launch the server from the teammate's spec, list its
 # tools, then call get_addon_status (read-only; answers without Blender).
@@ -152,6 +134,5 @@ else
   skip "mcp-denied-tools" "server did not start"
 fi
 
-# Clean up the server clone. Keep the stderr log for review.
 rm -rf "$SCRATCH/src"
 exit $FAILED

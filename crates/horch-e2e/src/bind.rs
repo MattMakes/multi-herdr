@@ -1,10 +1,3 @@
-//! The bind of a ledger task in an end-to-end test (FR-5).
-//!
-//! No worker finds its task with `horch ledger claim`: fleetd binds each
-//! task. A test that needs a task held by a worker calls [`bind`]. It binds
-//! the task with `horch_core::taskledger::testing::bind_live`, the helper of
-//! the fixtures of `horch-core`, in the ledger of the harness.
-
 use horch_core::fleetd::task_execution::application::dispatch::Bound;
 use horch_core::fleetd::task_execution::domain::task::Recorded;
 use horch_core::taskledger::tasks::{self, Task};
@@ -13,26 +6,14 @@ use horch_core::taskledger::{testing, Store};
 
 use crate::harness::Harness;
 
-/// Bind the first startable task of persona `persona` in the ledger of `h`
-/// to a new worker of that persona. The attempt is `live`, the task is
-/// `running` and the worker is `working`. `agent` is the PID of the agent
-/// process of the worker, if the test has one.
-///
-/// A test uses [`Bound::worker_id`] as `HORCH_WORKER_ID` of its worker
-/// commands. It panics when no task of `persona` can start.
 pub fn bind(h: &Harness, persona: &str, agent: Option<u32>) -> Bound {
     try_bind(h, persona, agent).unwrap_or_else(|e| panic!("{e}"))
 }
 
-/// [`bind`] with the fields of `worker`, such as its pane. The bind takes
-/// the persona of `worker`, and the run of the task it finds.
 pub fn bind_worker(h: &Harness, worker: NewWorker, agent: Option<u32>) -> Bound {
     try_bind_worker(h, worker, agent).unwrap_or_else(|e| panic!("{e}"))
 }
 
-/// [`bind`] that gives the reason as an error when no task of `persona`
-/// can start or the bind refuses. A test of a task that must not start
-/// uses it.
 pub fn try_bind(h: &Harness, persona: &str, agent: Option<u32>) -> Result<Bound, String> {
     let worker = NewWorker {
         persona: persona.to_string(),
@@ -63,8 +44,6 @@ fn try_bind_worker(h: &Harness, worker: NewWorker, agent: Option<u32>) -> Result
         .map_err(|e| format!("bind {} to {persona}: {e:#}", task.short()))
 }
 
-/// The first startable task of `persona`: the runs in the order they were
-/// made, and the tasks of a run in the order of the board.
 fn next_task(store: &Store, persona: &str) -> Option<Task> {
     let conn = store.conn();
     let runs: Vec<String> = conn

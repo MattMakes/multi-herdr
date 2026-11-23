@@ -1,14 +1,3 @@
-//! The holds on dispatch in `horch ledger status` (ticket 29 of fleetd-p7;
-//! OR-1, FM-45): a ready task that does not run shows the cause of its
-//! hold, for a health floor, pacing, an unhealthy profile, a git job that
-//! holds the repository, a missing fast gate and `not_before`. The board
-//! shows each lease and the last signal of its worker, and fleetd records
-//! an event when a global hold starts and when it ends.
-//!
-//! Each test runs the real binary with its own ledger, state and fleet
-//! folders, and the watchdog off. The facts are ledger rows that the test
-//! writes; no test reads the real machine or the real clock.
-
 #![cfg(unix)]
 
 use std::path::PathBuf;
@@ -32,7 +21,6 @@ const PATH: &str = "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin";
 
 const AT: &str = "2026-11-01T00:00:00Z";
 
-/// The persona of each task. The built-in roster gives it its pool.
 const PERSONA: &str = "opus";
 
 struct World {
@@ -41,10 +29,9 @@ struct World {
 }
 
 impl World {
-    /// A git project with 1 run `r1`.
     fn new() -> World {
         let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().canonicalize().unwrap();
+        let root = horch_platform::path::canonicalize(tmp.path()).unwrap();
         let w = World { _tmp: tmp, root };
         let proj = w.proj();
         std::fs::create_dir_all(&proj).unwrap();
@@ -66,7 +53,6 @@ impl World {
             ..Default::default()
         };
         runs::create(store.conn(), &w.proj(), &new).unwrap();
-        // A task needs an idea in flight of the feature of its run (FR-12).
         store
             .conn()
             .execute_batch(&format!(
@@ -109,8 +95,6 @@ impl World {
         assert!(out.status.success(), "git {args:?}");
     }
 
-    /// Run `horch <args>` as the operator; return stdout. A board with work
-    /// left exits 1, so each exit code but 0 and 1 fails.
     fn horch(&self, args: &[&str]) -> String {
         let root = &self.root;
         let o = Command::new(env!("CARGO_BIN_EXE_horch"))
@@ -147,7 +131,6 @@ impl World {
         self.store().conn().execute_batch(sql).unwrap();
     }
 
-    /// Add the ready task `title` of [`PERSONA`]; return its id.
     fn task(&self, title: &str) -> String {
         let store = self.store();
         let run = runs::resolve(store.conn(), &self.proj(), Some("r1"), None)
@@ -168,8 +151,6 @@ impl World {
         id
     }
 
-    /// The `fleetd` row of a fleetd that ran, with the fleet clock at
-    /// `clock` and a pid that no process has.
     fn fleet_clock(&self, clock: i64) {
         self.sql(&format!(
             "INSERT INTO fleetd (id, generation, pid, pid_start, started_at, fleet_clock_s,
@@ -187,7 +168,6 @@ impl World {
             .unwrap()
     }
 
-    /// The hold events, as `(kind, cause)`.
     fn hold_events(&self) -> Vec<(String, String)> {
         let store = self.store();
         let mut stmt = store
@@ -204,7 +184,6 @@ impl World {
     }
 }
 
-/// The board line of the task `title`.
 fn task_line(board: &str, title: &str) -> String {
     board
         .lines()
@@ -220,8 +199,6 @@ fn floor() -> Hold {
     }
 }
 
-/// Make 1 hold of `cause` for the ready task `title`; return the text that
-/// its task line must show.
 fn make_hold(w: &World, cause: &str, task_id: &str) -> String {
     let store = w.store();
     let conn = store.conn();
@@ -392,9 +369,6 @@ fn global_hold_records_start_and_end_events() {
             ("hold_started".to_string(), disk.cause().to_string()),
         ]
     );
-    // A new fleetd starts with no holds in memory: the ledger keeps the
-    // open holds, so the same holds start no new event, and a hold that
-    // ended while no fleetd ran ends now.
     {
         let store = w.store();
         record_hold_changes(store.conn(), &[], &[floor()]).unwrap();

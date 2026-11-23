@@ -1,19 +1,3 @@
-//! Plan commit: fleetd validates plan.yaml, writes plan.verdict.json, and
-//! commits each task of a valid plan in 1 transaction
-//! (docs/specs/fleetd/design.md, FR-3, FM-1, FM-10; "The idea state
-//! machine", `ticketing`; "Ledger", `tasks`, `task_deps`, `task_covers`;
-//! docs/tickets/fleetd-p6/14-plan-commit.md).
-//!
-//! No AI creates a task: the sub-orchestrator writes plan.yaml and its
-//! tickets, and fleetd commits the plan all-or-nothing after the plan
-//! validator passes. A refused plan keeps the idea in `ticketing` with the
-//! problems in plan.verdict.json, so the sub-orchestrator runs ticketing
-//! again with them.
-//!
-//! Each test makes its own temporary ledger and idea folder. No test reads
-//! the clock, the load or the limits of the machine, and no test starts a
-//! process.
-
 #![cfg(unix)]
 
 use std::os::unix::fs::PermissionsExt;
@@ -39,10 +23,8 @@ use rusqlite::Connection;
 use serde_json::Value;
 
 const IDEA: &str = "I-0007";
-/// The feature of the run of the test: `F-<run rowid>` (MAP.md, Q5).
 const FEATURE: &str = "F-0001";
 
-/// A ticket in format C1.
 const TICKET_A: &str = "# 01: Add backoff
 
 <!-- horch-ticket: 1 -->
@@ -63,7 +45,6 @@ feature: retry-sync
 2. [assumed] The retry log goes to docs/sync.md.
 ";
 
-/// R1 and R2, each cited by an approved assumption.
 const REQUIREMENTS: &str = "idea: I-0007
 requirements:
   - id: R1
@@ -74,8 +55,6 @@ requirements:
     cites: [A2]
 ";
 
-/// A valid plan: `a`, `b` after `a`, the judgment task `doc` and its judge
-/// `doc-judge` on another provider.
 const PLAN: &str = "idea: I-0007
 repo: /fleet/repos/app
 feature: F-0001
@@ -114,8 +93,6 @@ tasks:
     outputs: [docs/sync.review.md]
 ";
 
-// ─── the world of a test ────────────────────────────────────────────────
-
 struct World {
     dir: tempfile::TempDir,
     store: Store,
@@ -142,9 +119,6 @@ fn profile(name: &str, provider: &str, model: &str, fallback: &str) -> RosterPro
     }
 }
 
-/// A ledger with 1 run, its feature, and the idea [`IDEA`] in `ticketing`,
-/// with its folder: assumptions.md, requirements.yaml, the ticket of `a`
-/// and plan.yaml (`plan`).
 fn world(plan: &str) -> World {
     let dir = tempfile::tempdir().unwrap();
     let mut store = Store::open(&dir.path().join("ledger.sqlite3")).unwrap();
@@ -229,7 +203,6 @@ impl World {
         self.ideas().join(IDEA)
     }
 
-    /// Write the file `name` of the idea folder, mode 0600.
     fn write(&self, name: &str, text: &str) {
         let path = self.folder().join(name);
         std::fs::write(&path, text).unwrap();
@@ -263,8 +236,6 @@ impl World {
         Some(serde_json::from_str(&text).unwrap())
     }
 
-    /// The task of `key` of the idea: (task_id, status, primary_persona,
-    /// work_kind, kind, parent_task_id, run_id, spec_json).
     fn task(&self, key: &str) -> TaskRow {
         let sql = "SELECT task_id, status, primary_persona, work_kind, kind, parent_task_id,
                 run_id, spec_json, task_file, ticket_snapshot, ticket_sha, land_check
@@ -326,10 +297,6 @@ fn assert_nothing_committed(w: &World) {
     assert_eq!(idea.plan_sha256, None);
 }
 
-// ─── the tests ──────────────────────────────────────────────────────────
-
-/// The rows of the 4 tasks of [`PLAN`]: each is of the idea, in the
-/// internal run of its feature, with its profile, kind and check.
 fn assert_task_rows(w: &World, tasks: &[(String, String)]) -> [TaskRow; 4] {
     let keys: Vec<&str> = tasks.iter().map(|(k, _)| k.as_str()).collect();
     assert_eq!(keys, ["a", "b", "doc", "doc-judge"]);
@@ -359,7 +326,6 @@ fn assert_task_rows(w: &World, tasks: &[(String, String)]) -> [TaskRow; 4] {
         Some("cargo test -p x && cargo clippy")
     );
     assert_eq!(doc.land_check, None, "a structural check is no command");
-    // A task with no dependency is ready; the others wait.
     assert_eq!(
         [&a.status, &b.status, &doc.status, &judge.status],
         ["ready", "pending", "ready", "pending"]
@@ -367,7 +333,6 @@ fn assert_task_rows(w: &World, tasks: &[(String, String)]) -> [TaskRow; 4] {
     rows
 }
 
-/// The pairs of 2 text columns of `sql`.
 fn pairs(w: &World, sql: &str) -> Vec<(String, String)> {
     w.conn()
         .prepare(sql)
@@ -378,8 +343,6 @@ fn pairs(w: &World, sql: &str) -> Vec<(String, String)> {
         .unwrap()
 }
 
-/// `after:` is a task_deps row, `judges:` is the judge link and not a dep,
-/// and the requirements and the covers of [`PLAN`] are in the ledger.
 fn assert_links_and_covers(w: &World, [a, b, doc, judge]: &[TaskRow; 4]) {
     let deps = pairs(w, "SELECT task_id, blocked_by FROM task_deps");
     assert_eq!(deps, vec![(b.id.clone(), a.id.clone())]);
@@ -409,7 +372,6 @@ fn assert_links_and_covers(w: &World, [a, b, doc, judge]: &[TaskRow; 4]) {
     assert_eq!(covers, want);
 }
 
-/// plan.verdict.json says valid, with mode 0600.
 fn assert_valid_verdict_file(w: &World) {
     let verdict = w.verdict().expect("plan.verdict.json");
     assert_eq!(verdict["idea"], IDEA);
@@ -434,7 +396,6 @@ fn valid_plan_commits_each_task_in_1_transaction() {
     let idea = w.idea();
     assert_eq!(idea.state, "in_progress");
     assert_eq!(idea.phase_attempts, 0);
-    // Each task has its created event.
     assert_eq!(
         w.count(
             "SELECT count(DISTINCT e.task_id) FROM events e JOIN tasks t ON t.task_id = e.task_id
@@ -443,7 +404,6 @@ fn valid_plan_commits_each_task_in_1_transaction() {
         4
     );
     assert_valid_verdict_file(&w);
-    // A second pass commits nothing more: the idea left ticketing.
     assert!(w.commit().is_err());
     assert_eq!(
         w.count("SELECT count(*) FROM tasks WHERE idea_id = 'I-0007'"),
@@ -454,7 +414,6 @@ fn valid_plan_commits_each_task_in_1_transaction() {
 #[test]
 fn a_failure_in_the_middle_commits_nothing() {
     let mut w = world(PLAN);
-    // The fault seam: the 3rd task insert of the idea fails.
     w.conn()
         .execute_batch(
             "CREATE TEMP TRIGGER fault_on_3rd_task BEFORE INSERT ON main.tasks
@@ -472,7 +431,6 @@ fn a_failure_in_the_middle_commits_nothing() {
         "no verdict for a plan that did not commit"
     );
 
-    // With the fault gone, the same plan commits whole.
     w.conn()
         .execute_batch("DROP TRIGGER temp.fault_on_3rd_task")
         .unwrap();
@@ -486,7 +444,6 @@ fn a_failure_in_the_middle_commits_nothing() {
 
 #[test]
 fn refused_plan_writes_the_verdict_and_stays_in_ticketing() {
-    // FM-1: R2 has no task.
     let uncovered = PLAN.replace("covers: [R2]", "covers: [R1]");
     let mut w = world(&uncovered);
     let verdict = w.commit().unwrap();
@@ -511,12 +468,10 @@ fn refused_plan_writes_the_verdict_and_stays_in_ticketing() {
         .iter()
         .any(|p| p["rule"] == "coverage" && p["message"].as_str().unwrap().contains("R2")));
 
-    // FM-10: the sub-orchestrator runs ticketing again; each refusal counts.
     w.commit().unwrap();
     assert_eq!(w.idea().phase_attempts, 2);
     assert_eq!(w.idea().state, "ticketing");
 
-    // A plan.yaml that fails SR-6 (mode 0644) is refused, not read.
     std::fs::set_permissions(
         w.folder().join(PLAN_YAML),
         std::fs::Permissions::from_mode(0o644),
@@ -531,7 +486,6 @@ fn refused_plan_writes_the_verdict_and_stays_in_ticketing() {
     );
     assert_eq!(w.idea().phase_attempts, 3);
 
-    // A plan of another idea is refused.
     w.write(PLAN_YAML, &PLAN.replace("idea: I-0007", "idea: I-0008"));
     let Verdict::Refused { problems } = w.commit().unwrap() else {
         panic!("a plan of another idea is refused");
@@ -555,10 +509,8 @@ fn committed_task_holds_the_ticket_snapshot() {
         w.folder().join("tickets/01-a.md"),
         "the task file is the ticket in the idea folder"
     );
-    // A later change of the ticket file does not change the task.
     w.write("tickets/01-a.md", "# changed\n");
     assert_eq!(w.task("a").snapshot.as_deref(), Some(TICKET_A));
-    // A task with no ticket has no snapshot.
     let b = w.task("b");
     assert_eq!((b.snapshot, b.sha), (None, None));
 }
@@ -572,10 +524,6 @@ fn plan_sha256_is_on_the_idea() {
     assert_eq!(w.verdict().unwrap()["plan_sha256"], want.as_str());
 }
 
-/// Each committed task has its Own rows in `task_files`: the `outputs` of
-/// plan.yaml and the `**Own:**` paths of its ticket. The structural check
-/// of a judgment kind reads them, so it finds the output of `doc` and of
-/// `doc-judge` (fault 2 of fleetd-build ticket 56).
 #[test]
 fn committed_task_has_its_own_rows() {
     let mut w = world(PLAN);

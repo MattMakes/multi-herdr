@@ -1,28 +1,3 @@
-//! The SR-8 gate test of Phase 5 (`docs/specs/fleetd/design.md`, Migration
-//! plan item 7; ticket 43 of fleetd-p5): a worker cannot send an operator
-//! request in any way, and neither can a test of the project that runs in
-//! a gate (SR-4, SR-5, SR-8, FM-32, Q2 and Q21 of
-//! `docs/tickets/fleetd-p5/MAP.md`).
-//!
-//! Each test starts 1 real `horch fleetd` on its own temporary
-//! `HORCH_DATA_DIR`, `HORCH_STATE_DIR`, `HORCH_LEDGER_DB` and `FLEET_ROOT`,
-//! with 1 pass each second, and waits for an event (a row, a file, an
-//! exit), never for a time. Each `horch` command of a test runs with
-//! `HORCH_TEST_ASSERT_READ_ONLY=1`; fleetd and its job processes do not,
-//! because `horch job run` still writes the rows of its job (T-883).
-//!
-//! The live attempt of a test is a stand-in wrapper: a `sleep` process that
-//! leads its own process group, which the test records as the wrapper of a
-//! live attempt, as the launcher does. Each attacker joins that group, or is
-//! a child of the wrapper, so the peer process check of fleetd finds it in
-//! the attempt. The attacker is this test binary, started again with the
-//! act in its environment ([`attack_child`]). The worker sandbox is the
-//! platform sandbox of ticket 06 with the 3 operator denials, so an attack
-//! from inside it meets the OS first and fleetd second.
-//!
-//! Unix only: the channel is a Unix socket, and on Windows the platform
-//! sandbox is `NotSupported`.
-
 #![cfg(unix)]
 
 use std::collections::BTreeSet;
@@ -63,35 +38,15 @@ use horch_platform::sandbox::{sandboxed, Denials};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde_json::{json, Value};
 
-// ─── the attacker ───────────────────────────────────────────────────────
-
-/// The act of the attacker: `read`, `connect` or `file`.
 const ACT_ENV: &str = "HORCH_P5_ACT";
-/// The path of the act: the token file, the channel, or the request file.
 const PATH_ENV: &str = "HORCH_P5_PATH";
-/// The request line of a `connect` or a `file` act, with no `\n`.
 const LINE_ENV: &str = "HORCH_P5_LINE";
-/// With `1`, the attacker leaves the process group of its parent first
-/// (`setsid`), so only its parent chain holds it in the attempt.
 const NEW_SESSION_ENV: &str = "HORCH_P5_NEW_SESSION";
 
-/// The start of the line of the attacker that says what it got. libtest
-/// prints its own text on the same stream.
 const RESULT: &str = "p5-attack: ";
 
-/// The name of the test that is the attacker, for `--exact`.
 const ATTACK_CHILD: &str = "attack_child";
 
-/// The attacker: with no act in its environment it does nothing, so a
-/// normal run of this file passes it. A test starts this binary again with
-/// an act. It exits 0 when the act succeeds and prints what it got, else it
-/// prints the error and exits 1.
-///
-/// - `read`: read the token file. An empty read is a refusal: the Linux
-///   sandbox puts an empty file over the token.
-/// - `connect`: connect to the channel, send the line, read the reply.
-/// - `file`: write the line as `<path>.tmp` with mode 0600, then rename it
-///   to `<path>`, as the client of the channel writes a request file.
 #[test]
 fn attack_child() {
     let Ok(act) = std::env::var(ACT_ENV) else {
@@ -155,9 +110,6 @@ fn write_request_file(path: &Path, line: &str) -> Result<String, String> {
     Ok(format!("wrote {}", path.display()))
 }
 
-/// The command that starts this binary as the attacker of `act` on `path`
-/// with `line`. It inherits no variable of the operator but `PATH`: the
-/// Linux sandbox finds `bwrap` there.
 fn attacker(act: &str, path: &Path, line: &str) -> Command {
     let mut cmd = Command::new(std::env::current_exe().unwrap());
     cmd.args([
@@ -175,11 +127,9 @@ fn attacker(act: &str, path: &Path, line: &str) -> Command {
     cmd
 }
 
-/// What 1 attack did.
 #[derive(Debug)]
 struct Attack {
     succeeded: bool,
-    /// The last line that the attacker printed: what it got, or the error.
     text: String,
 }
 
@@ -200,10 +150,6 @@ fn attack_of(out: &Output) -> Attack {
     }
 }
 
-// ─── requests ───────────────────────────────────────────────────────────
-
-/// Each `operator` kind of the catalog (the table "Request kinds" of the
-/// MAP, after the kinds that Phase 6 retired).
 fn operator_kinds() -> Vec<Kind> {
     Kind::ALL
         .into_iter()
@@ -211,13 +157,10 @@ fn operator_kinds() -> Vec<Kind> {
         .collect()
 }
 
-/// A request id of `[A-Za-z0-9-]` from `parts`.
 fn request_id(parts: &[&str]) -> RequestId {
     RequestId::parse(&parts.join("-").replace('_', "-")).unwrap()
 }
 
-/// The request line of `kind` with `payload`, and `token` if any, with no
-/// `\n`.
 fn line(id: &RequestId, kind: Kind, payload: Value, token: Option<&str>) -> String {
     let Value::Object(payload) = payload else {
         panic!("a payload is an object");
@@ -233,7 +176,6 @@ fn line(id: &RequestId, kind: Kind, payload: Value, token: Option<&str>) -> Stri
     .to_string()
 }
 
-/// 1 row of the `requests` table.
 #[derive(Debug, Clone, PartialEq)]
 struct RequestRow {
     id: String,
@@ -244,8 +186,6 @@ struct RequestRow {
     reason: Option<String>,
 }
 
-/// SR-8: the row of a refused operator request records the refusal with its
-/// reason and a null `auth`.
 fn assert_refused(row: &RequestRow, reason_has: &str) {
     assert_eq!(row.state, "refused", "{row:?}");
     assert_eq!(row.class, "operator", "{row:?}");
@@ -257,27 +197,17 @@ fn assert_refused(row: &RequestRow, reason_has: &str) {
     );
 }
 
-// ─── the world of a test ────────────────────────────────────────────────
-
-/// The feature of each test, and its branch.
 const FEATURE: &str = "F-0001";
 const FEATURE_BRANCH: &str = "fleet/F-0001";
 
-/// The persona of the old orchestrator seat, which Phase 6 removed (ticket
-/// 44 of fleetd-p6).
 const SEAT: &str = "orchestrator";
 
-/// The persona of the worker of a test.
 const WORKER: &str = "opus-hardening";
 
-/// The `fleet.toml` of a test: 1 pass each second and the longest
-/// heartbeat age.
 fn fleet_toml() -> String {
     "pass_period_s = 1\nheartbeat_max_age_s = 300\n".to_string()
 }
 
-/// 1 live attempt of a test: its id and its stand-in wrapper, which leads
-/// its own process group.
 struct Attempt {
     id: String,
     worker: String,
@@ -285,11 +215,7 @@ struct Attempt {
     wrapper: u32,
 }
 
-/// A harness with a git repository, a real fleetd, the run `p5` and the
-/// stand-in wrappers of the live attempts.
 struct World {
-    /// Dropped before `h`: the teardown of the harness fails a test whose
-    /// processes still run.
     fleetds: Fleetds,
     h: Harness,
     run: Run,
@@ -310,8 +236,6 @@ impl World {
         World::with_gate_sandbox(name, false)
     }
 
-    /// The world. With `gate`, the fleetd of the test can find `bwrap` on
-    /// Linux, the gate sandbox of this host.
     fn with_gate_sandbox(name: &str, gate: bool) -> World {
         let mut h = Harness::new(name).with_git();
         let db = h.root.join("ledger.sqlite3");
@@ -361,7 +285,6 @@ impl World {
         OperatorPaths::of(&self.fleet_root())
     }
 
-    /// The operator token, as the test gives it to an attack.
     fn token(&self) -> String {
         token_file::read(&self.fleet_root())
             .unwrap()
@@ -369,13 +292,10 @@ impl World {
             .to_string()
     }
 
-    /// A connection of the test to the ledger, for its fixtures and reads.
     fn conn(&self) -> Connection {
         open(&self.db())
     }
 
-    /// The evidence of a wait that failed: the output of fleetd and each
-    /// job with its result.
     fn fleetd_output(&self) -> String {
         let conn = self.conn();
         let mut stmt = conn
@@ -396,9 +316,6 @@ impl World {
         )
     }
 
-    /// A new live attempt of `persona` with the task `task`, or with no
-    /// task when `task` is `None`. Its stand-in wrapper is a `sleep` that
-    /// leads a new process group.
     fn live_attempt(&mut self, persona: &str, kind: WorkerKind, task: bool) -> Attempt {
         let wrapper = Command::new("/bin/sleep")
             .arg("3600")
@@ -414,8 +331,6 @@ impl World {
         self.record_attempt(persona, kind, task, pid, start)
     }
 
-    /// Record the live attempt whose wrapper is `pid` with the start time
-    /// `start`, as fleetd records a launch.
     fn record_attempt(
         &self,
         persona: &str,
@@ -471,25 +386,18 @@ impl World {
         }
     }
 
-    /// A `horch` command of the test, with the seam of RR-5: it panics when
-    /// it opens the ledger for a write (ticket 42). fleetd and its job
-    /// processes run with no seam: `horch job run` still writes the rows of
-    /// its job until T-883.
     fn horch(&self, args: &[&str]) -> Command {
         let mut cmd = self.h.horch(args);
         cmd.env(ASSERT_READ_ONLY_ENV, "1");
         cmd
     }
 
-    /// The folder that the worker sandbox lets an attacker write.
     fn work_area(&self) -> PathBuf {
         let dir = self.h.root.join("work-area");
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
 
-    /// The worker sandbox of ticket 06: write only the work area, and the
-    /// 3 operator denials (the token, the channel, each write in `run/`).
     fn worker_sandbox(&self, cmd: Command) -> Command {
         let paths = self.paths();
         let denied = Denials {
@@ -503,8 +411,6 @@ impl World {
         }
     }
 
-    /// The attacker of `act` on `path` with `line`, in the worker sandbox
-    /// when `sandbox`, in the process group of the attempt `a`.
     fn attack(&self, a: &Attempt, sandbox: bool, act: &str, path: &Path, line: &str) -> Attack {
         let cmd = attacker(act, path, line);
         let cmd = if sandbox {
@@ -515,7 +421,6 @@ impl World {
         attack_of(&World::in_attempt(cmd, a))
     }
 
-    /// Run `cmd` in the process group of the attempt `a`.
     fn in_attempt(mut cmd: Command, a: &Attempt) -> Output {
         cmd.process_group(i32::try_from(a.wrapper).unwrap())
             .stdin(Stdio::null())
@@ -523,7 +428,6 @@ impl World {
             .unwrap()
     }
 
-    /// The row of the request `id`.
     fn request(&self, id: &str) -> Option<RequestRow> {
         self.conn()
             .query_row(
@@ -536,7 +440,6 @@ impl World {
             .unwrap()
     }
 
-    /// Each row of the `requests` table, in the order of its insert.
     fn requests(&self) -> Vec<RequestRow> {
         let conn = self.conn();
         let mut stmt = conn
@@ -548,7 +451,6 @@ impl World {
         rows.collect::<rusqlite::Result<_>>().unwrap()
     }
 
-    /// Wait until the request `id` is decided, and give its row.
     fn decided(&self, id: &str) -> RequestRow {
         wait_for_or(
             &format!("fleetd to decide the request {id}"),
@@ -557,7 +459,6 @@ impl World {
         )
     }
 
-    /// The names of the files in the request folder, `archive/` left out.
     fn request_files(&self) -> BTreeSet<String> {
         std::fs::read_dir(requests_dir(&self.fleet_root()))
             .unwrap()
@@ -567,8 +468,6 @@ impl World {
             .collect()
     }
 
-    /// The state of the ledger that an operator request changes: each task,
-    /// worker, attempt, job, feature and branch with its state.
     fn state(&self) -> Vec<String> {
         let conn = self.conn();
         let mut out = Vec::new();
@@ -586,10 +485,50 @@ impl World {
         }
         out
     }
+
+    fn feature_state(&self) -> Vec<String> {
+        let conn = self.conn();
+        let run = self.run.run_id.as_str();
+        let mut out = Vec::new();
+        let mut rows = |sql: &str, params: &[&str]| {
+            let mut stmt = conn.prepare(sql).unwrap();
+            let found = stmt
+                .query_map(rusqlite::params_from_iter(params), |r| {
+                    r.get::<_, String>(0)
+                })
+                .unwrap();
+            out.extend(found.map(Result::unwrap));
+        };
+        rows(
+            "SELECT 'task ' || task_id || ' ' || status FROM tasks WHERE run_id = ?1 ORDER BY task_id",
+            &[run],
+        );
+        rows(
+            "SELECT 'worker ' || worker_id || ' ' || status FROM workers WHERE run_id = ?1 ORDER BY worker_id",
+            &[run],
+        );
+        rows(
+            "SELECT 'attempt ' || a.id || ' ' || a.state FROM attempts a
+              JOIN workers w ON w.worker_id = a.worker_id WHERE w.run_id = ?1 ORDER BY a.id",
+            &[run],
+        );
+        rows(
+            "SELECT 'feature ' || id || ' ' || state FROM features WHERE id = ?1",
+            &[FEATURE],
+        );
+        rows(
+            "SELECT 'branch ' || name || ' ' || COALESCE(landing_state, '-') FROM branches
+              WHERE name = ?1 OR name LIKE ?1 || '/%' ORDER BY name",
+            &[FEATURE_BRANCH],
+        );
+        rows(
+            "SELECT 'run ' || run_id || ' ' || status FROM runs WHERE run_id = ?1",
+            &[run],
+        );
+        out
+    }
 }
 
-/// The feature [`FEATURE`] of the project `project` and its internal run,
-/// with 1 idea in flight: a task needs one (FR-12).
 fn new_feature_run(conn: &Connection, project: &Path) -> Run {
     let tx = rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate).unwrap();
     let feature = runs::create_feature_run(&tx, project, "main").unwrap();
@@ -616,8 +555,6 @@ fn new_feature_run(conn: &Connection, project: &Path) -> Run {
     run
 }
 
-/// A connection of the test to the ledger `db`. It waits for the writes of
-/// fleetd.
 fn open(db: &Path) -> Connection {
     let conn = Connection::open(db).unwrap();
     conn.busy_timeout(Duration::from_secs(30)).unwrap();
@@ -635,9 +572,6 @@ fn request_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<RequestRow> {
     })
 }
 
-/// Link `bwrap` of this host into the `bin/` of `h`, so that fleetd and its
-/// jobs find the Linux sandbox on their sealed `PATH`. macOS needs no link:
-/// its sandbox is `/usr/bin/sandbox-exec`.
 fn link_bwrap(h: &Harness) {
     let found = std::env::var_os("PATH").and_then(|path| {
         std::env::split_paths(&path)
@@ -649,27 +583,12 @@ fn link_bwrap(h: &Harness) {
     }
 }
 
-/// The reason of a refusal on the channel from a peer in a worker attempt.
 fn peer_reason(a: &Attempt) -> String {
-    format!("the peer process is in live attempt {}", a.id)
+    format!("the peer process is a fleet process of attempt {}", a.id)
 }
 
-/// The reason of a refusal of an operator request with no valid token.
 const NO_TOKEN: &str = "an operator kind needs the valid operator token";
 
-// ─── SR-8 from a worker sandbox ─────────────────────────────────────────
-
-/// For each `operator` kind, 4 attacks from a live worker attempt:
-/// 1. inside the worker sandbox, a raw request line on the channel;
-/// 2. inside the worker sandbox, a request file with the right mode;
-/// 3. with the sandbox off, a raw request line with a copy of a valid
-///    token, which the peer process check refuses;
-/// 4. with the sandbox off, a request file with no token.
-///
-/// 1 and 2 fail at the OS, and no row or file is left. 3 and 4 reach fleetd,
-/// and the `requests` row records the refusal with its reason and a null
-/// `auth`. No request of the attacks is applied, and the state of the
-/// ledger does not change.
 #[test]
 fn operator_request_from_a_worker_sandbox_is_refused_for_each_operator_kind() {
     let mut w = World::new("p5-sr8-kinds");
@@ -757,6 +676,22 @@ fn operator_request_from_a_worker_sandbox_is_refused_for_each_operator_kind() {
         !read.text.contains(&token),
         "the attacker never prints the token"
     );
+    wait_for_or(
+        "fleetd to end its conformance and docs sync jobs",
+        || {
+            w.conn()
+                .query_row(
+                    "SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM jobs
+                      WHERE kind IN ('conformance', 'docs_sync')
+                        AND state IN ('queued', 'running'))",
+                    [],
+                    |_| Ok(()),
+                )
+                .optional()
+                .unwrap()
+        },
+        || w.fleetd_output(),
+    );
     assert_eq!(
         w.state(),
         before,
@@ -764,12 +699,6 @@ fn operator_request_from_a_worker_sandbox_is_refused_for_each_operator_kind() {
     );
 }
 
-// ─── SR-8 from a process of a live attempt ──────────────────────────────
-
-/// A process of a live attempt that left the process group of its wrapper
-/// (`setsid`) is still in the attempt by its parent chain. Its raw request
-/// with a copy of a valid token is refused, and the row records the refusal
-/// with a null `auth`.
 #[test]
 fn operator_request_from_a_process_of_a_live_attempt_is_refused() {
     let w = World::new("p5-sr8-chain");
@@ -783,8 +712,6 @@ fn operator_request_from_a_process_of_a_live_attempt_is_refused() {
     );
     let mut attack = attacker("connect", &paths.channel, &text);
     attack.env(NEW_SESSION_ENV, "1");
-    // The stand-in wrapper waits for 1 line on its stdin, then starts the
-    // attacker as its child.
     let mut wrapper = Command::new("/bin/sh");
     wrapper
         .args(["-c", "read go; \"$@\"", "wrapper"])
@@ -812,62 +739,30 @@ fn operator_request_from_a_process_of_a_live_attempt_is_refused() {
     assert_refused(&w.decided(id.as_str()), &peer_reason(&a));
 }
 
-// ─── REQUIRED item 3: the operator-only commands ────────────────────────
+const INSIDE_ATTEMPT: &str = "refused inside a fleet attempt";
 
-/// Where an operator-only command run from a worker attempt is refused.
-enum RefusedBy {
-    /// fleetd: the command sends its request, and the peer process check
-    /// refuses it.
-    Fleetd,
-    /// The command itself, before it sends a request, with this line. fleetd
-    /// refuses its kind too: attack 3 of
-    /// [`operator_request_from_a_worker_sandbox_is_refused_for_each_operator_kind`].
-    Client(&'static str),
-}
-
-/// The task branch of the worker of a test, in the ledger and in git, so
-/// that `horch branch abandon` finds it.
 const TASK_BRANCH: &str = "fleet/F-0001/attack";
 
-/// Each operator-only command, run from a live worker attempt with
-/// `HORCH_ROLE=orchestrator` and with no `HORCH_ROLE`, is refused: its
-/// `requests` rows are refused by fleetd with a null `auth`, and the state
-/// of the ledger does not change. The attacker keeps `HORCH_WORKER_ID` only
-/// for `horch ledger worktree drop`, which needs it. `horch rescue drop`
-/// needs a rescue ref in git: its own test is
-/// [`operator_only_rescue_drop_from_a_worker_is_refused_by_fleetd`].
 #[test]
 fn operator_only_command_with_horch_role_set_or_removed_is_refused_for_each_command() {
     let mut w = World::new("p5-sr8-commands");
     let a = w.live_attempt(WORKER, WorkerKind::Worker, true);
     let task = a.task.clone().unwrap();
     w.task_branch(&a);
-    let commands: Vec<(Vec<&str>, RefusedBy)> = vec![
-        (vec!["job", "requeue", "1"], RefusedBy::Fleetd),
-        (
-            vec!["ledger", "requeue", &task, "attack"],
-            RefusedBy::Fleetd,
-        ),
-        (vec!["ledger", "cancel", &task, "attack"], RefusedBy::Fleetd),
-        (
-            vec!["ledger", "waive", &task, "F1", "attack"],
-            RefusedBy::Fleetd,
-        ),
-        (vec!["task", "requeue", &task, "attack"], RefusedBy::Fleetd),
-        (vec!["task", "cancel", &task, "attack"], RefusedBy::Fleetd),
-        (vec!["worktree", "restore", TASK_BRANCH], RefusedBy::Fleetd),
-        (
-            vec!["ledger", "worktree", "drop", "attack", "--reason", "attack"],
-            RefusedBy::Fleetd,
-        ),
-        (
-            vec!["feature", "abandon", FEATURE],
-            RefusedBy::Client("refused inside a fleet attempt"),
-        ),
-        (vec!["branch", "abandon", TASK_BRANCH], RefusedBy::Fleetd),
+    let commands: Vec<Vec<&str>> = vec![
+        vec!["job", "requeue", "1"],
+        vec!["ledger", "requeue", &task, "attack"],
+        vec!["ledger", "cancel", &task, "attack"],
+        vec!["ledger", "waive", &task, "F1", "attack"],
+        vec!["task", "requeue", &task, "attack"],
+        vec!["task", "cancel", &task, "attack"],
+        vec!["worktree", "restore", TASK_BRANCH],
+        vec!["ledger", "worktree", "drop", "attack", "--reason", "attack"],
+        vec!["feature", "abandon", FEATURE],
+        vec!["branch", "abandon", TASK_BRANCH],
     ];
     let before = w.state();
-    for (args, refused_by) in &commands {
+    for args in &commands {
         for role in [Some("orchestrator"), None] {
             let shown = format!("horch {} with HORCH_ROLE {role:?}", args.join(" "));
             let seen = w.requests().len();
@@ -875,19 +770,8 @@ fn operator_only_command_with_horch_role_set_or_removed_is_refused_for_each_comm
             let rows = w.requests().split_off(seen);
             let stderr = String::from_utf8_lossy(&out.stderr);
             assert!(!out.status.success(), "{shown} is refused: {stderr}");
-            match refused_by {
-                RefusedBy::Fleetd => {
-                    assert!(!rows.is_empty(), "{shown} reaches fleetd: {stderr}");
-                    for row in &rows {
-                        assert_refused(row, &peer_reason(&a));
-                    }
-                    assert!(stderr.contains(&peer_reason(&a)), "{shown}: {stderr}");
-                }
-                RefusedBy::Client(line) => {
-                    assert!(rows.is_empty(), "{shown} sends no request: {rows:#?}");
-                    assert!(stderr.contains(line), "{shown}: {stderr}");
-                }
-            }
+            assert!(rows.is_empty(), "{shown} sends no request: {rows:#?}");
+            assert!(stderr.contains(INSIDE_ATTEMPT), "{shown}: {stderr}");
         }
     }
     assert_eq!(
@@ -897,14 +781,10 @@ fn operator_only_command_with_horch_role_set_or_removed_is_refused_for_each_comm
     );
 }
 
-/// The rescue ref that the attacker tries to drop.
 const RESCUE_REF: &str = "refs/horch/rescue/attack/1";
 
-/// REQUIRED item 3 for `horch rescue drop`: from a live worker attempt,
-/// with `HORCH_ROLE` set or removed, fleetd refuses its `rescue_drop`
-/// request, and the rescue ref stays.
 #[test]
-fn operator_only_rescue_drop_from_a_worker_is_refused_by_fleetd() {
+fn operator_only_rescue_drop_from_a_worker_is_refused() {
     let mut w = World::new("p5-sr8-rescue");
     let a = w.live_attempt(WORKER, WorkerKind::Worker, true);
     let tip = w.h.head_sha().unwrap();
@@ -926,9 +806,15 @@ fn operator_only_rescue_drop_from_a_worker_is_refused_by_fleetd() {
             "horch rescue drop is refused: {stderr}"
         );
         let rows = w.requests().split_off(seen);
-        assert_eq!(rows.len(), 1, "horch rescue drop reaches fleetd: {stderr}");
-        assert_eq!(rows[0].kind, "rescue_drop");
-        assert_refused(&rows[0], &peer_reason(&a));
+        assert!(
+            rows.is_empty(),
+            "horch rescue drop sends no request: {rows:#?}"
+        );
+        assert!(stderr.contains(INSIDE_ATTEMPT), "{stderr}");
+        assert!(
+            stderr.contains(&a.id),
+            "the refusal names the attempt: {stderr}"
+        );
         let kept =
             w.h.git_cmd(&["rev-parse", "--verify", RESCUE_REF])
                 .output()
@@ -938,8 +824,6 @@ fn operator_only_rescue_drop_from_a_worker_is_refused_by_fleetd() {
 }
 
 impl World {
-    /// Run `horch args` in the process group of the attempt `a`, with
-    /// `HORCH_ROLE` set to `role` or removed.
     fn command_in_attempt(&self, a: &Attempt, args: &[&str], role: Option<&str>) -> Output {
         let mut cmd = self.horch(args);
         match role {
@@ -952,8 +836,6 @@ impl World {
         World::in_attempt(cmd, a)
     }
 
-    /// The task branch [`TASK_BRANCH`] of the task of `a`: a git branch of
-    /// the project with its row, and its worktree `attack` with its row.
     fn task_branch(&self, a: &Attempt) {
         let task = a.task.as_deref().unwrap();
         let tree = self.h.project.join(".worktrees").join("attack");
@@ -1002,12 +884,7 @@ impl World {
     }
 }
 
-// ─── Q2: the orchestrator seat ──────────────────────────────────────────
-
 impl World {
-    /// The raw request `ledger_gc` with a copy of the valid token, on the
-    /// channel, from the attacker in the attempt `a` with the extra
-    /// environment `env`. Gives the decided row.
     fn gc_from(&self, a: &Attempt, name: &str, env: &[(&str, &str)]) -> RequestRow {
         let id = request_id(&["gc", name]);
         let text = line(
@@ -1024,12 +901,6 @@ impl World {
     }
 }
 
-/// A worker cannot make itself an orchestrator seat. Each of these is
-/// refused:
-/// - a worker attempt whose environment names the orchestrator persona,
-///   its role and the worker of a real seat;
-/// - an attempt whose worker has the persona of a seat but a task;
-/// - an attempt with a null task of another persona.
 #[test]
 fn forged_orchestrator_seat_is_refused() {
     let mut w = World::new("p5-sr8-forged");
@@ -1052,9 +923,6 @@ fn forged_orchestrator_seat_is_refused() {
     assert_refused(&row, &peer_reason(&no_task_not_a_seat));
 }
 
-/// The control case: you, outside each live attempt, run an operator-only
-/// command, send a raw request with the token and write a request file with
-/// the token, while a worker attempt is live. fleetd authorizes each one.
 #[test]
 fn operator_on_the_command_line_is_authorized() {
     let mut w = World::new("p5-sr8-operator");
@@ -1095,18 +963,9 @@ fn operator_on_the_command_line_is_authorized() {
     assert_eq!(row.auth.as_deref(), Some("token; request file"));
 }
 
-// ─── SR-4, Q21: a test of the project in a gate ─────────────────────────
-
-/// The file of the gate tree in which the test of the project writes the
-/// result of each act.
 const GATE_REPORT: &str = "p5-gate-attack.txt";
 
-/// The test of the project that the fast gate runs: it tries each operator
-/// act with the attacker `exe` and writes 1 line for each act in
-/// [`GATE_REPORT`]: `<act> <kind> <exit code> <what the attacker got>`.
-/// It exits 0, so the gate passes when each act is refused.
 fn gate_test_script(exe: &Path, paths: &OperatorPaths) -> String {
-    // The gate runs with the sealed PATH of the harness.
     let mut script = String::from("set -u\nPATH=/usr/bin:/bin\n");
     let mut act = |act: &str, kind: &str, path: &Path, line: &str| {
         script.push_str(&format!(
@@ -1124,7 +983,6 @@ fn gate_test_script(exe: &Path, paths: &OperatorPaths) -> String {
     for kind in operator_kinds() {
         let name = kind.as_str();
         let id = request_id(&["gate", name]);
-        // The test of the project has no token: it sends a raw line.
         act(
             "connect",
             name,
@@ -1139,13 +997,11 @@ fn gate_test_script(exe: &Path, paths: &OperatorPaths) -> String {
     script
 }
 
-/// `text` in single quotes for `sh`.
 fn quoted(text: &str) -> String {
     format!("'{}'", text.replace('\'', r"'\''"))
 }
 
 impl World {
-    /// A commit on `branch` from `main` with `files`. Gives its tip.
     fn commit(&self, branch: &str, files: &[(&str, &str)]) -> String {
         let git = |args: &[&str]| {
             let out = self.h.git_cmd(args).output().unwrap();
@@ -1167,8 +1023,6 @@ impl World {
         tip
     }
 
-    /// The gate tree of [`FEATURE`] at `main`: the test reserves it, and
-    /// fleetd runs its `worktree_add` job and observes it.
     fn gate_tree(&self, repo: &Path, main: &str) -> PathBuf {
         std::fs::create_dir_all(repo.join(".worktrees")).unwrap();
         let req = GateTreeRequest {
@@ -1195,8 +1049,6 @@ impl World {
         )
     }
 
-    /// A bundle of 1 task branch of [`FEATURE`] on `base_tip`. Its task is
-    /// done, so fleetd dispatches nothing.
     fn bundle(&self, base_tip: &str) -> i64 {
         let mut conn = self.conn();
         let tx = conn
@@ -1235,8 +1087,6 @@ impl World {
         id
     }
 
-    /// Run `f` in 1 immediate transaction of the test, with the job context
-    /// of a test (no generation).
     fn jobs_tx<T>(&self, f: impl FnOnce(&JobCtx<'_>, &Connection) -> anyhow::Result<T>) -> T {
         let mut conn = self.conn();
         let tx = conn
@@ -1254,13 +1104,6 @@ impl World {
     }
 }
 
-/// The test project declares a fast gate whose command is a test of the
-/// project. The test tries each operator act: it reads the token, sends a
-/// raw request line of each `operator` kind on the channel, and writes a
-/// request file of each `operator` kind. fleetd runs the `fast_gate` job in
-/// the gate sandbox with the 3 operator denials (SR-4, Q21), so the OS
-/// refuses each act. The `gate_runs` row records the result, no `requests`
-/// row exists, and the state of the ledger does not change.
 #[test]
 fn operator_request_from_a_test_in_a_gate_is_refused_for_each_act() {
     let w = World::with_gate_sandbox("p5-sr8-gate", true);
@@ -1278,7 +1121,23 @@ fn operator_request_from_a_test_in_a_gate_is_refused_for_each_act() {
         ],
     );
     let bundle = w.bundle(&main).to_string();
-    let before = w.state();
+    wait_for_or(
+        "fleetd to move the bundled branch to ready and to drop its bundle",
+        || {
+            w.conn()
+                .query_row(
+                    "SELECT 1 FROM branches b, bundles u
+                      WHERE b.name = 'fleet/F-0001/gated' AND b.landing_state = 'ready'
+                        AND u.id = ?1 AND u.state = 'dropped'",
+                    [&bundle],
+                    |_| Ok(()),
+                )
+                .optional()
+                .unwrap()
+        },
+        || w.fleetd_output(),
+    );
+    let before = w.feature_state();
     let req = GateRequest {
         kind: JobKind::FastGate,
         subject: &bundle,
@@ -1337,10 +1196,288 @@ fn operator_request_from_a_test_in_a_gate_is_refused_for_each_act() {
         Vec::new(),
         "no request of the gate reaches fleetd"
     );
+    wait_for_or(
+        "fleetd to end its conformance and docs sync jobs",
+        || {
+            w.conn()
+                .query_row(
+                    "SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM jobs
+                      WHERE kind IN ('conformance', 'docs_sync')
+                        AND state IN ('queued', 'running'))",
+                    [],
+                    |_| Ok(()),
+                )
+                .optional()
+                .unwrap()
+        },
+        || w.fleetd_output(),
+    );
     assert_eq!(
         w.request_files(),
         BTreeSet::new(),
         "no request file is left"
     );
-    assert_eq!(w.state(), before, "the gate changes no state of the ledger");
+    assert_eq!(
+        w.feature_state(),
+        before,
+        "the gate changes no state of the ledger"
+    );
+}
+
+const PANE_COMMAND_ENV: &str = "P5_T899_PANE_COMMAND";
+
+fn sandboxed_herdr(fake: &Path, fleet: &Path, writable: &Path) -> String {
+    let run = fleet.join("run");
+    let denied = Denials {
+        read: vec![token_file::path(fleet)],
+        connect: vec![run.join("fleetd.sock")],
+        write: vec![run],
+    };
+    let mut inner = Command::new("/bin/sh");
+    inner.args(["-c", &format!("eval \"${PANE_COMMAND_ENV}\"")]);
+    let cmd = match sandboxed(inner, &[writable.to_path_buf()], &denied) {
+        Ok(cmd) => cmd,
+        Err(gap) => panic!("this host has no worker sandbox: {gap}"),
+    };
+    let mut line = vec![quoted(&cmd.get_program().to_string_lossy())];
+    line.extend(cmd.get_args().map(|a| quoted(&a.to_string_lossy())));
+    format!(
+        "#!/bin/sh\n[ \"$1\" = warm ] && exit 0\n\
+         if [ \"$1\" = pane ] && [ \"$2\" = run ]; then\n\
+         {PANE_COMMAND_ENV}=\"$4\"; export {PANE_COMMAND_ENV}\n\
+         exec {fake} pane run \"$3\" {sandboxed}\n\
+         fi\n\
+         exec {fake} \"$@\"\n",
+        fake = quoted(&fake.to_string_lossy()),
+        sandboxed = quoted(&line.join(" ")),
+    )
+}
+
+fn push_fleet(name: &str, scenario: &str) -> Harness {
+    let mut h = Harness::new(name).with_git();
+    h.set(
+        "HORCH_LEDGER_DB",
+        h.root.join("ledger.sqlite3").to_string_lossy(),
+    );
+    h.set("HORCH_NO_WAKE", "1");
+    h.set("HORCH_NO_WATCHDOG", "1");
+    let quota = horch_e2e::harness::fixtures().join("quota/all-ok.json");
+    h.set("HORCH_QUOTA_FILE", quota.to_string_lossy());
+    h.set("HORCH_FAKE_SCENARIO", scenario);
+    let root = h.fleet_root();
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(
+        root.join("fleet.toml"),
+        "health_max_load_per_cpu = 1000000.0\npass_period_s = 1\n",
+    )
+    .unwrap();
+    std::fs::write(
+        h.project.join("fleet.toml"),
+        "[gates]\nfast = \"true\"\nfull = \"true\"\n",
+    )
+    .unwrap();
+    for args in [
+        &["add", "fleet.toml"][..],
+        &["commit", "--quiet", "--no-gpg-sign", "-m", "gates"],
+    ] {
+        let o = h.git_cmd(args).output().unwrap();
+        assert!(o.status.success(), "git {args:?}: {o:?}");
+    }
+    std::os::unix::fs::symlink(Harness::horch_bin(), h.bin.join("horch")).unwrap();
+    let fake = Harness::horch_bin().with_file_name("fake-herdr");
+    let top = h.root.canonicalize().unwrap();
+    let hook = sandboxed_herdr(&fake, &root.canonicalize().unwrap(), &top);
+    let herdr = h.write_warmed("herdr-sandboxed", hook.as_bytes());
+    let workspace = h.fleet_workspace();
+    h.set("HORCH_WORKSPACE_ID", workspace);
+    h.set("HORCH_HERDR_BIN", herdr.to_string_lossy());
+    let dir = h.project.join("tickets");
+    std::fs::create_dir_all(&dir).unwrap();
+    let ticket = dir.join("t0.md");
+    std::fs::write(&ticket, "# T0\n").unwrap();
+    let run = horch_e2e::ledger_seed::seed_run(&h, "token-lock", Some(1), "w1:p1");
+    horch_e2e::ledger_seed::seed_task(&h, &run, &ticket, "opus");
+    h.serve_fleetd();
+    h
+}
+
+fn task_attempt(h: &Harness) -> Option<(String, String, Option<String>, String)> {
+    let store = horch_core::taskledger::Store::open_read_only(&h.ledger_db()).ok()?;
+    store
+        .conn()
+        .query_row(
+            "SELECT a.id, a.state, a.outcome, w.status
+             FROM attempts a JOIN workers w ON w.worker_id = a.worker_id
+             WHERE a.task_id IS NOT NULL ORDER BY a.rowid LIMIT 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()
+        .ok()
+        .flatten()
+}
+
+fn pane_output(h: &Harness) -> String {
+    let name = h.log.file_name().unwrap().to_string_lossy().into_owned();
+    let mut out = String::new();
+    for e in std::fs::read_dir(h.log.parent().unwrap())
+        .unwrap()
+        .flatten()
+    {
+        let file = e.file_name().to_string_lossy().into_owned();
+        if file.starts_with(&format!("{name}.pane-")) && file.ends_with(".out") {
+            out.push_str(&std::fs::read_to_string(e.path()).unwrap_or_default());
+        }
+    }
+    out
+}
+
+fn request_rows(h: &Harness) -> Vec<(String, String, Option<String>)> {
+    let store = horch_core::taskledger::Store::open_read_only(&h.ledger_db()).unwrap();
+    let mut stmt = store
+        .conn()
+        .prepare("SELECT kind, state, reason FROM requests ORDER BY rowid")
+        .unwrap();
+    let rows = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap();
+    rows.collect::<rusqlite::Result<_>>().unwrap()
+}
+
+fn agent_result(h: &Harness) -> Option<Value> {
+    let tasks = h.fleet_root().join("tasks");
+    let tasks = tasks.to_string_lossy();
+    h.calls_of("claude")
+        .into_iter()
+        .rev()
+        .filter(|c| c["argv"].to_string().contains(tasks.as_ref()))
+        .find_map(|c| c.get("result").cloned())
+}
+
+#[test]
+fn wrapper_runs_a_full_attempt_with_a_token_that_it_cannot_read() {
+    let h = push_fleet("p5-t899-token", "exec,commit,result");
+    let context = |h: &Harness| {
+        format!(
+            "attempt: {:?}\nrequests: {:?}\nresult: {:?}\npanes:\n{}",
+            task_attempt(h),
+            request_rows(h),
+            agent_result(h),
+            pane_output(h)
+        )
+    };
+    let (id, _, outcome, worker) = wait_for_or(
+        "the verifier to end the attempt",
+        || {
+            std::thread::sleep(Duration::from_secs(1));
+            task_attempt(&h).filter(|a| a.1 == "ended")
+        },
+        || context(&h),
+    );
+    let shown = context(&h);
+    assert!(
+        agent_result(&h).is_some_and(|r| r["exit"] == 0),
+        "the agent sent its result: {shown}"
+    );
+    assert!(
+        matches!(outcome.as_deref(), Some("verified" | "rejected")),
+        "the attempt ends by its result: {shown}"
+    );
+    assert_ne!(worker, "launch_failed", "{shown}");
+    let panes = pane_output(&h);
+    assert!(!panes.is_empty(), "the pane shows the wrapper: {shown}");
+    for word in [
+        "operator token",
+        "operator.token",
+        "refused",
+        "not recorded",
+    ] {
+        assert!(
+            !panes.contains(word),
+            "the wrapper output has {word:?}: {shown}"
+        );
+    }
+    for (kind, state, reason) in request_rows(&h) {
+        let reason = reason.unwrap_or_default();
+        assert!(
+            !reason.contains(&id),
+            "a request names the attempt: {kind} {state} {reason}\n{shown}"
+        );
+    }
+}
+
+fn sealed_env_of(h: &Harness, canary_ledger: &Path, canary_fleet: &Path) -> Vec<(String, String)> {
+    let mut cmd = Command::new("/usr/bin/env");
+    cmd.env("HORCH_LEDGER_DB", canary_ledger)
+        .env("FLEET_ROOT", canary_fleet);
+    h.seal(&mut cmd);
+    let out = cmd.output().expect("running env");
+    assert!(out.status.success(), "env failed: {out:?}");
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| l.split_once('='))
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect()
+}
+
+#[test]
+fn sealed_harness_strips_inherited_live_horch_ledger_db_and_fleet_root() {
+    let outer = tempfile::tempdir().unwrap();
+    let canary_ledger = outer.path().join("canary_ledger.sqlite3");
+    let canary_fleet = outer.path().join("canary_fleet");
+    let canary_text = outer.path().to_string_lossy().into_owned();
+
+    let named = Harness::new("p5-rr5-named");
+    let env = sealed_env_of(&named, &canary_ledger, &canary_fleet);
+    let get = |env: &[(String, String)], key: &str| {
+        env.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone())
+    };
+    assert_eq!(
+        get(&env, "HORCH_LEDGER_DB").map(PathBuf::from),
+        Some(named.ledger_db()),
+        "a harness that names its ledger gives that ledger, not the canary"
+    );
+    assert_eq!(get(&env, "FLEET_ROOT"), None, "{env:?}");
+    for (k, v) in &env {
+        assert!(!v.contains(&canary_text), "{k}={v} names the canary");
+    }
+
+    let mut bare = Harness::new("p5-rr5-bare");
+    bare.unset("HORCH_LEDGER_DB");
+    let env = sealed_env_of(&bare, &canary_ledger, &canary_fleet);
+    assert_eq!(get(&env, "HORCH_LEDGER_DB"), None, "{env:?}");
+    assert_eq!(get(&env, "FLEET_ROOT"), None, "{env:?}");
+    for (k, v) in &env {
+        assert!(!v.contains(&canary_text), "{k}={v} names the canary");
+    }
+    let mut map = horch_core::runtime::MapEnv::new(&bare.project);
+    for (k, v) in &env {
+        map = map.with(k, v);
+    }
+    let ctx = horch_core::runtime::RuntimeContext::from_env(&map).unwrap();
+    assert_eq!(ctx.paths.ledger_db, bare.home.join(".horch/ledger.sqlite3"));
+    assert_eq!(ctx.paths.ledger_db, bare.ledger_db());
+    assert_eq!(ctx.paths.fleet_root, bare.home.join(".horch/fleet"));
+    assert_eq!(ctx.paths.fleet_root, bare.fleet_root());
+    assert_eq!(ctx.paths.ledger_override, None);
+
+    let mut cmd = Command::new(Harness::horch_bin());
+    cmd.env("HORCH_LEDGER_DB", &canary_ledger)
+        .env("FLEET_ROOT", &canary_fleet)
+        .args(["ledger", "status"]);
+    bare.seal(&mut cmd);
+    let out = cmd.output().unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(&bare.ledger_db().to_string_lossy().into_owned()),
+        "horch ledger status looks for the ledger of the harness: {stderr}"
+    );
+    assert!(!stderr.contains(&canary_text), "{stderr}");
+    assert!(!canary_ledger.exists(), "the canary ledger was created");
+    assert!(!canary_fleet.exists(), "the canary fleet root was created");
+    assert_eq!(
+        std::fs::read_dir(outer.path()).unwrap().count(),
+        0,
+        "nothing was written beside the canary"
+    );
 }

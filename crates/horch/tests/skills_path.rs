@@ -1,5 +1,3 @@
-//! `horch skills path`: stable paths for bundled and installed skill files.
-
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -11,7 +9,7 @@ struct World {
 impl World {
     fn new() -> Self {
         let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().canonicalize().unwrap();
+        let root = horch_platform::path::canonicalize(tmp.path()).unwrap();
         Self { _tmp: tmp, root }
     }
 

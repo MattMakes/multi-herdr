@@ -1,10 +1,3 @@
-//! The SQLite store of the leases: the `leases` table and
-//! `attempts.active_at`. Each time in them is on the fleet clock, except
-//! `renewed_at`, which is calendar time for the reader.
-//!
-//! The primary key of `leases` is `task_id`, so a task has at most 1 lease
-//! row (FM-14).
-
 use anyhow::Result;
 use rusqlite::{params, Connection, OptionalExtension};
 
@@ -12,7 +5,6 @@ use crate::fleetd::task_execution::domain::lease::Holder;
 use crate::fleetd::task_execution::domain::task::AttemptState;
 use crate::taskledger::model::WorkerStatus;
 
-/// 1 row of `leases`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LeaseRow {
     pub task_id: String,
@@ -21,33 +13,25 @@ pub struct LeaseRow {
     pub renew_basis: String,
 }
 
-/// 1 lease with the state of its task and of its attempt: what a pass
-/// judges.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HeldLease {
     pub task_id: String,
     pub task_status: String,
     pub attempt_id: String,
-    /// The attempt is not ended.
     pub attempt_live: bool,
     pub worker_id: String,
     pub expires_at: i64,
-    /// The fleet clock of the last activity of the attempt.
     pub active_at: Option<i64>,
 }
 
-/// 1 attempt that is not ended.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LiveAttempt {
     pub id: String,
     pub task_id: String,
     pub worker_id: String,
-    /// The worker row has a live status. A handoff or a reap ends the
-    /// worker row before the pass ends the attempt.
     pub worker_live: bool,
 }
 
-/// The `IN (...)` list of the task words that hold a lease.
 fn held_words() -> String {
     Holder::ALL
         .iter()
@@ -56,9 +40,6 @@ fn held_words() -> String {
         .join(", ")
 }
 
-/// The SQL test that the task `t` is `done` with an attempt that is not
-/// ended: a resolver or fix attempt of its branch (ticket 33). The caller
-/// decides whether its branch holds the lease.
 fn done_with_open_attempt() -> String {
     format!(
         "(t.status = '{done}' AND EXISTS (SELECT 1 FROM attempts o
@@ -68,7 +49,6 @@ fn done_with_open_attempt() -> String {
     )
 }
 
-/// The lease of task `task_id`.
 pub fn get(conn: &Connection, task_id: &str) -> Result<Option<LeaseRow>> {
     Ok(conn
         .query_row(
@@ -86,8 +66,6 @@ pub fn get(conn: &Connection, task_id: &str) -> Result<Option<LeaseRow>> {
         .optional()?)
 }
 
-/// Write the lease of `l.task_id`, renewed at `now`. It replaces the row
-/// of the task, when it has one.
 pub fn put(conn: &Connection, l: &LeaseRow, now: &str) -> Result<()> {
     conn.execute(
         "INSERT OR REPLACE INTO leases (task_id, attempt_id, expires_at, renewed_at, renew_basis)
@@ -97,8 +75,6 @@ pub fn put(conn: &Connection, l: &LeaseRow, now: &str) -> Result<()> {
     Ok(())
 }
 
-/// Move the deadline of the lease of `task_id` to `expires_at`, renewed at
-/// `now` on `basis`.
 pub fn renew(
     conn: &Connection,
     task_id: &str,
@@ -113,12 +89,10 @@ pub fn renew(
     Ok(())
 }
 
-/// Delete the lease of `task_id`. `false` when it had none.
 pub fn delete(conn: &Connection, task_id: &str) -> Result<bool> {
     Ok(conn.execute("DELETE FROM leases WHERE task_id = ?1", [task_id])? > 0)
 }
 
-/// Set the last activity of attempt `attempt_id` to fleet clock `clock`.
 pub fn set_active_at(conn: &Connection, attempt_id: &str, clock: i64) -> Result<()> {
     conn.execute(
         "UPDATE attempts SET active_at = ?2 WHERE id = ?1",
@@ -127,7 +101,6 @@ pub fn set_active_at(conn: &Connection, attempt_id: &str, clock: i64) -> Result<
     Ok(())
 }
 
-/// Whether attempt `attempt_id` exists and is not ended.
 pub fn attempt_live(conn: &Connection, attempt_id: &str) -> Result<bool> {
     let state: Option<String> = conn
         .query_row(
@@ -139,7 +112,6 @@ pub fn attempt_live(conn: &Connection, attempt_id: &str) -> Result<bool> {
     Ok(state.is_some_and(|s| s != AttemptState::Ended.as_str()))
 }
 
-/// Each lease, with its task and its attempt, in task order.
 pub fn held(conn: &Connection) -> Result<Vec<HeldLease>> {
     let mut stmt = conn.prepare(
         "SELECT l.task_id, t.status, l.attempt_id, a.state, a.worker_id, l.expires_at, a.active_at
@@ -162,19 +134,13 @@ pub fn held(conn: &Connection) -> Result<Vec<HeldLease>> {
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// 1 task that holds a lease or has a lease row.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LeasedTask {
     pub task_id: String,
-    /// The `tasks.status` word.
     pub status: String,
-    /// The attempt of its lease row, when it has one.
     pub lease_attempt: Option<String>,
 }
 
-/// The lease facts of I1: each task that holds a lease, has a lease row, or
-/// is `done` with an attempt that is not ended, in task order, and the attempts of those tasks that are not ended,
-/// oldest first.
 pub fn i1_rows(conn: &Connection) -> Result<(Vec<LeasedTask>, Vec<LiveAttempt>)> {
     let tasks = format!(
         "SELECT t.task_id, t.status, l.attempt_id FROM tasks t

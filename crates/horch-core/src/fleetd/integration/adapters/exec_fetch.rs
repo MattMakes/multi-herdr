@@ -1,21 +1,3 @@
-//! The executor of the `fetch` job (ticket 37).
-//!
-//! The subject of a run is the repository, and its input key names the
-//! remote (`application::remote::fetch_key`). The job process reads the
-//! ledger only (RR-5): [`run`] gives the facts of the run in its result
-//! file, and [`record`] in fleetd writes them in the transaction of the end
-//! of the run:
-//!
-//! 1. `git fetch` of each branch of the remote through
-//!    [`crate::vcs::network::output`] (F11): its bound is 3 min,
-//!    `GIT_TERMINAL_PROMPT=0`, no hooks, and it never retries. A failed
-//!    fetch sets `stale_since`, and the run ends `failed`.
-//! 2. The fetched tip of the primary branch and of the branch of each
-//!    feature of the repository.
-//! 3. With `pr = gh`, `gh pr view --json state` of each feature with a
-//!    pull request, through the launcher. A missing `gh` or a failed read
-//!    is named in the result of the run, and the tips are still recorded.
-
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -40,18 +22,14 @@ use crate::runtime::process;
 use crate::taskledger::runs;
 use crate::vcs::network;
 
-/// The programs of a run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tools {
     pub git: PathBuf,
-    /// `gh` on PATH, or `None` when PATH has none.
     pub gh: Option<PathBuf>,
-    /// The folder of the output file of each `gh` call.
     pub temp: PathBuf,
 }
 
 impl Tools {
-    /// The programs that `env` names.
     pub fn from_env(env: &dyn EnvSource) -> Tools {
         let path = env.var_os("PATH");
         let pathext = env.var("PATHEXT");
@@ -63,13 +41,10 @@ impl Tools {
     }
 }
 
-/// Runs the job `row` with the programs of this process.
 pub fn run(conn: &Connection, row: &JobRow) -> Result<Ran> {
     run_with(conn, row, &Tools::from_env(&ProcessEnv), &Launcher)
 }
 
-/// [`run`] with the programs `tools` and the launcher `host`. It writes no
-/// row: the fetched tips and pull request states are in its result.
 pub fn run_with(
     conn: &Connection,
     row: &JobRow,
@@ -118,23 +93,14 @@ pub fn run_with(
     })
 }
 
-/// The facts of a fetch run in its result file.
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct FetchFacts {
-    /// `git fetch` failed: the tips of the repository are stale.
     failed: bool,
-    /// Each fetched branch and its tip.
     tips: Vec<(String, String)>,
-    /// Each feature with a pull request, and its `gh` state word.
     prs: Vec<(String, String)>,
 }
 
-/// Record the result `ran` of the fetch run `row`, in `tx` of fleetd: the
-/// stale mark of a failed fetch, or each fetched tip and pull request
-/// state. The repository comes from the row, and each branch and feature
-/// must be of an `open` or `ready` feature of that repository, so a file
-/// changes only the rows of its own job.
 pub fn record(ctx: &JobCtx<'_>, tx: &Connection, row: &JobRow, ran: &Ran) -> Result<()> {
     let facts: FetchFacts =
         facts_of(ran.data.as_ref())?.context("the result file of a fetch has no facts")?;
@@ -174,7 +140,6 @@ pub fn record(ctx: &JobCtx<'_>, tx: &Connection, row: &JobRow, ran: &Ran) -> Res
     remote::record_passed(tx, ctx.guard, ctx.needs_you, repo, &fetched)
 }
 
-/// The `state` word of `gh` for `read`, as [`PrRead::parse`] reads it.
 fn gh_word(read: PrRead) -> &'static str {
     match read {
         PrRead::Open => "OPEN",
@@ -183,14 +148,10 @@ fn gh_word(read: PrRead) -> &'static str {
     }
 }
 
-/// Whether `text` is a git object id: 40 (SHA-1) or 64 (SHA-256) lower
-/// case hex digits.
 fn is_object_id(text: &str) -> bool {
     matches!(text.len(), 40 | 64) && text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
-/// Fetch each branch of `remote` into `refs/remotes/<remote>/`. The cause
-/// of a failure, or `None`.
 fn fetch(tools: &Tools, repo: &Path, remote: &str) -> Option<String> {
     let refspec = format!("+refs/heads/*:refs/remotes/{remote}/*");
     let args = [
@@ -208,7 +169,6 @@ fn fetch(tools: &Tools, repo: &Path, remote: &str) -> Option<String> {
     }
 }
 
-/// 1 `open` or `ready` feature of the repository.
 struct Feature {
     id: String,
     branch: Option<String>,
@@ -216,9 +176,6 @@ struct Feature {
     pr: Option<String>,
 }
 
-/// The `open` and `ready` features of the repository `repo`. The branch
-/// of the feature of a run is the run branch (MAP.md of fleetd-p4, Q5), and
-/// the root of the project of the run is the repository.
 fn features_of(conn: &Connection, repo: &str) -> Result<Vec<Feature>> {
     let runs = runs::of_project(conn, Path::new(repo))?;
     let branches: BTreeSet<&str> = runs
@@ -244,8 +201,6 @@ fn features_of(conn: &Connection, repo: &str) -> Result<Vec<Feature>> {
         .collect())
 }
 
-/// The fetched tip of the primary branch and of the branch of each feature.
-/// A branch that the remote does not have gets no tip.
 fn fetched_tips(
     tools: &Tools,
     repo: &Path,
@@ -272,8 +227,6 @@ fn fetched_tips(
         .collect())
 }
 
-/// The pull request state of each feature with a pull request and
-/// `pr = gh`, and a note for each read that failed.
 fn read_prs(
     tools: &Tools,
     host: &dyn ProcessHost,
@@ -303,8 +256,6 @@ fn read_prs(
     (prs, notes)
 }
 
-/// Whether the project sets `pr = gh`, in the project file at the tip of
-/// the local feature branch, else of the local primary branch.
 fn uses_gh(tools: &Tools, repo: &Path, f: &Feature) -> Result<bool> {
     let branch = f.branch.as_deref().unwrap_or(&f.primary);
     let reader = BlobReader { tools, repo };
@@ -312,8 +263,6 @@ fn uses_gh(tools: &Tools, repo: &Path, f: &Feature) -> Result<bool> {
     Ok(settings.pr == Pr::Gh)
 }
 
-/// The project file at a commit, read with `git cat-file`, which starts no
-/// program of the project.
 struct BlobReader<'a> {
     tools: &'a Tools,
     repo: &'a Path,
@@ -339,8 +288,6 @@ impl ProjectFileReader for BlobReader<'_> {
     }
 }
 
-/// `gh pr view <pr> --json state` through the launcher, bound by the
-/// bound of a git network call (F11).
 fn pr_state(
     tools: &Tools,
     host: &dyn ProcessHost,
@@ -381,15 +328,12 @@ fn pr_state(
     if !status.success() {
         return Err(anyhow!("gh pr view failed ({status}): {}", text.trim()));
     }
-    // The file has stdout and stderr: take the line with the JSON.
     text.lines()
         .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
         .find_map(|v| v.get("state")?.as_str().and_then(PrRead::parse))
         .ok_or_else(|| anyhow!("gh gave no pull request state: {}", text.trim()))
 }
 
-/// Run a local git command that reads, and give its output. A non-zero
-/// exit is an error.
 fn local_git(tools: &Tools, repo: &Path, args: &[&str]) -> Result<String> {
     let out = GitRunner::new(&tools.git)
         .output(repo, args)

@@ -1,7 +1,4 @@
 #!/usr/bin/env bash
-# hark launcher: run the hark engine beside this script with the hark venv python.
-# HARK_PYTHON names another python. When the venv is absent, offer to create it
-# (TTY: ask y/N; not a TTY: print the command and exit 3).
 set -euo pipefail
 
 resolve_self() {
@@ -38,6 +35,5 @@ if [ ! -x "$PY" ]; then
 fi
 
 export PYTHONPATH="$ENGINE${PYTHONPATH:+:$PYTHONPATH}"
-# The engine beside this script wins: python -m must not put the current folder first (Python 3.11+).
 export PYTHONSAFEPATH=1
 exec "$PY" -m hark "$@"

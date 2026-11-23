@@ -1,19 +1,3 @@
-//! The pass of Phase 6, part 2: the trial merges, the stacks and their
-//! edges, a merge with ideas in flight and the feature ready rule in the
-//! integration part of the reconcile pass
-//! (docs/tickets/fleetd-p6/52-pass-integration.md).
-//!
-//! `docs/specs/fleetd/design.md`, "Between features", "Features" (A merge
-//! with ideas in flight), "The reconcile pass", "Long work is a job. A pass
-//! never waits for it", RR-4, RR-7 and PL-5.
-//!
-//! Each test makes its own temporary git repository, ledger and fleet root,
-//! and runs the passes as library calls with no herdr snapshot. No test
-//! starts a `horch` binary: a job process is a script that sleeps, and the
-//! test runs the executor of the job in its own process with the pid of the
-//! row, as `horch job run <id>` runs it. No test reads the load, the limits
-//! or the clock of this machine: there is no health hold, and the numbers
-//! come from a test `FleetConfig`.
 #![cfg(unix)]
 
 #[path = "common/test_jobs.rs"]
@@ -54,14 +38,8 @@ use horch_core::taskledger::tasks::{self, NewTask};
 use horch_core::taskledger::{schema, util};
 use rusqlite::{params, Connection};
 
-/// The folder of the world of a child process of a crash test.
 const CHILD: &str = "HORCH_P6B_CHILD";
 
-// ─── the world ──────────────────────────────────────────────────────────
-
-/// A temp git repository `project` on `main` with a `fleet.toml` of no
-/// remote, a ledger at generation 1 and a fleet root. Each feature is 1
-/// run with its idea in flight, as the release backfill writes it.
 struct World {
     _temp: Option<tempfile::TempDir>,
     dir: PathBuf,
@@ -71,7 +49,6 @@ struct World {
     sandboxes: WorkerSandboxes,
 }
 
-/// 1 feature of the world: its run, its id and its branch.
 struct Feature {
     run: Run,
     id: String,
@@ -121,7 +98,7 @@ fn cause(text: &str) -> Cause<'_> {
 
 fn world() -> World {
     let temp = tempfile::tempdir().unwrap();
-    let dir = temp.path().canonicalize().unwrap();
+    let dir = horch_platform::path::canonicalize(temp.path()).unwrap();
     let mut conn = open(&dir.join("ledger.sqlite3"));
     schema::migrate_to(&mut conn, schema::VERSION).unwrap();
     conn.execute(
@@ -145,7 +122,6 @@ fn world() -> World {
 }
 
 impl World {
-    /// The world of the folder `dir` that [`world`] made.
     fn reopen(dir: &Path) -> World {
         let conn = open(&dir.join("ledger.sqlite3"));
         let tools = Tools {
@@ -160,7 +136,11 @@ impl World {
             codex: CodexSandbox::default(),
             jobs: None,
         };
-        let mut sandboxes = WorkerSandboxes::new(CodexSandbox::default(), dir.join("fleet"));
+        let mut sandboxes = WorkerSandboxes::on_path(
+            CodexSandbox::default(),
+            dir.join("fleet"),
+            std::env::var_os("PATH"),
+        );
         sandboxes.gap = None;
         World {
             _temp: None,
@@ -201,8 +181,6 @@ impl World {
         }
     }
 
-    /// The program of each job process: it sleeps and writes no result
-    /// file. The test runs the executor.
     fn job_program(&self) -> PathBuf {
         let path = self.dir.join("job.sh");
         if !path.exists() {
@@ -212,8 +190,6 @@ impl World {
         path
     }
 
-    /// The feature of the new run `slug`: its branch `fleet/<slug>` from
-    /// `main`, its idea in flight, and the row of its branch at its tip.
     fn feature(&self, slug: &str) -> Feature {
         let branch = format!("fleet/{slug}");
         git(&self.repo(), &["branch", &branch, "main"]);
@@ -225,7 +201,6 @@ impl World {
             ..Default::default()
         };
         let run = runs::create(&self.conn, &self.repo(), &new_run).unwrap();
-        // A task needs an idea in flight of the feature of its run (FR-12).
         schema::run_idea(&self.conn, &run.run_id, &util::now(), true)
             .unwrap()
             .expect("the idea of the run");
@@ -241,7 +216,6 @@ impl World {
         Feature { run, id, branch }
     }
 
-    /// The row of the branch `branch` holds its tip in git.
     fn seen(&self, branch: &str) {
         let tip = self.tip(branch).unwrap();
         let tx = self.conn.unchecked_transaction().unwrap();
@@ -250,8 +224,6 @@ impl World {
         tx.commit().unwrap();
     }
 
-    /// Commit `file` on the git branch `branch`, made from `from` when it
-    /// is new. Gives the new tip.
     fn commit_on(&self, branch: &str, from: &str, file: &str, text: &str) -> String {
         let repo = self.repo();
         if self.tip(branch).is_some() {
@@ -266,9 +238,6 @@ impl World {
         self.tip(branch).unwrap()
     }
 
-    /// A task of the feature `f` in `status`, its git branch `branch` from
-    /// the feature branch with 1 commit of `file`, and the row of its task
-    /// branch in `landing`. Gives the task id.
     fn task_branch(
         &self,
         f: &Feature,
@@ -298,8 +267,6 @@ impl World {
         task
     }
 
-    /// A task of the feature `f` in `status`, of the persona `dev`, with
-    /// no branch. Gives the task id.
     fn task(&self, f: &Feature, status: &str) -> String {
         let n = self.count("SELECT count(*) FROM tasks") + 1;
         let new = NewTask::work(&format!("t{n}"), &format!("t{n}.md"), "dev");
@@ -342,7 +309,6 @@ impl World {
         self.text("SELECT stacked_on FROM features WHERE id = ?1", id)
     }
 
-    /// The runs of `kind`, by id.
     fn jobs_of(&self, kind: Kind) -> Vec<JobRow> {
         let mut stmt = self
             .conn
@@ -358,8 +324,6 @@ impl World {
             .collect()
     }
 
-    /// The executor of each running run of `kind` runs in this process, as
-    /// `horch job run` runs it, and ends the run.
     fn run_executors(&self, kind: Kind) -> usize {
         let ctx = JobCtx {
             guard: None,
@@ -384,8 +348,6 @@ impl World {
         ran
     }
 
-    /// The id of the first event after `after` of the entity `id` whose
-    /// `to_state` is `to`, or whose kind is `note` when `to` is `None`.
     fn first_event(&self, after: i64, id: &str, to: Option<&str>) -> Option<i64> {
         let sql = "SELECT min(event_id) FROM events WHERE event_id > ?1 AND entity_id = ?2
                    AND ((?3 IS NULL AND kind = 'note') OR to_state = ?3)";
@@ -398,7 +360,6 @@ impl World {
         self.count("SELECT coalesce(max(event_id), 0) FROM events")
     }
 
-    /// Each rescue ref, as (ref, tip).
     fn rescue_refs(&self) -> Vec<(String, String)> {
         let out = git(
             &self.repo(),
@@ -416,8 +377,6 @@ impl World {
             .collect()
     }
 
-    /// You merge the feature branch `branch` into `main` with a squash
-    /// merge.
     fn squash_merge(&self, branch: &str) {
         let repo = self.repo();
         git(&repo, &["merge", "-q", "--squash", branch]);
@@ -425,7 +384,6 @@ impl World {
     }
 }
 
-/// The outside of the tests: no herdr snapshot and no health hold.
 struct Fake;
 
 impl Outside for Fake {
@@ -446,7 +404,6 @@ impl Outside for Fake {
     }
 }
 
-/// The spawn of a push attempt: `true`.
 struct Spawns;
 
 impl Launches for Spawns {
@@ -462,7 +419,6 @@ impl Launches for Spawns {
     }
 }
 
-/// 1 fleetd of the world `w`: a new pass object, as after a restart.
 fn fleetd<'a>(w: &'a World, faults: Faults) -> Pass<'a> {
     let ports = Ports {
         outside: &Fake,
@@ -484,10 +440,6 @@ fn run(p: &mut Pass<'_>, conn: &mut Connection) -> PassReport {
     report
 }
 
-/// The feature `r1` with 1 landed task branch, whose commit is on the
-/// feature branch, and 1 task branch in `building` of the same idea in
-/// flight, whose task waits for you (`escalated`), so no pass dispatches
-/// it. Gives the feature and the branch in `building`.
 fn feature_with_idea_in_flight(w: &World) -> (Feature, String) {
     let f = w.feature("r1");
     let landed = "fleet/r1-T1";
@@ -499,14 +451,6 @@ fn feature_with_idea_in_flight(w: &World) -> (Feature, String) {
     (f, building)
 }
 
-// ─── the tests ──────────────────────────────────────────────────────────
-
-/// 1 pass runs the integration duties of Phase 6 in the order of ticket
-/// 52: a merge with ideas in flight, then the trial merges to queue, then
-/// the stacks, then the stack edges. The edge of a feature on a feature
-/// that this pass records as merged ends in the same pass, and a trial
-/// merge verdict that this pass records stacks its younger feature in the
-/// same pass.
 #[test]
 fn pass_runs_the_integration_duties_of_phase_6_in_order() {
     let w = world();
@@ -525,13 +469,9 @@ fn pass_runs_the_integration_duties_of_phase_6_in_order() {
     let four = w.feature("r4");
     w.commit_on(&four.branch, "main", "c.txt", "four\n");
     w.seen(&four.branch);
-    // The resolver task of a stack, or of a stack edge, takes the persona
-    // of a task of the upper feature.
     w.task(&two, "done");
     w.task(&four, "done");
 
-    // Pass 1 queues the trial merges and starts them. It never waits for
-    // them.
     let mut p = fleetd(&w, Faults::default());
     run(&mut p, &mut conn);
     let first = w.jobs_of(Kind::TrialMerge);
@@ -550,7 +490,6 @@ fn pass_runs_the_integration_duties_of_phase_6_in_order() {
     assert_eq!(w.stacked_on(&four.id), None);
     assert!(w.run_executors(Kind::TrialMerge) > 0);
 
-    // You merge r1. The upper feature r2 is on the merged primary tip.
     w.squash_merge(&one.branch);
     git(&w.repo(), &["branch", "-f", &two.branch, "main"]);
     w.seen(&two.branch);
@@ -584,11 +523,6 @@ fn pass_runs_the_integration_duties_of_phase_6_in_order() {
     );
 }
 
-/// A feature whose pull request you merged while 1 of its ideas is in
-/// flight: the pass moves the idea to a new feature before the feature
-/// ready rule records the feature as merged, so no idea is left without a
-/// feature, and the task branch of the idea moves to the new feature with
-/// its rescue ref and 1 rebase job.
 #[test]
 fn merge_with_ideas_in_flight_is_handled_before_ready() {
     let w = world();
@@ -623,10 +557,6 @@ fn merge_with_ideas_in_flight_is_handled_before_ready() {
     );
 }
 
-// ─── crash points ───────────────────────────────────────────────────────
-
-/// Not a test of its own: 1 pass of a child process of a crash test, with
-/// the fault of `HORCH_FAULT`. It runs only with [`CHILD`].
 #[test]
 fn child_pass() {
     let Some(dir) = std::env::var_os(CHILD) else {
@@ -650,10 +580,6 @@ fn crash(w: &World, fault: &str) {
     assert_eq!(status.code(), Some(ABORT_EXIT_CODE), "the fault {fault}");
 }
 
-/// A crash after the commit of the pass that records a merge with ideas
-/// in flight, before its ref effects: the next fleetd writes the branch
-/// ref of the new feature, the rescue ref of the moved task branch and its
-/// rebase job, each 1 time, and no tip is lost.
 #[test]
 fn crash_after_a_commit_completes_each_ref_effect_once() {
     let w = world();

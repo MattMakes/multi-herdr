@@ -1,10 +1,3 @@
-//! The git client (`vcs::git`), on temp repos with real git.
-//!
-//! Real git touches only temp dirs (NFR-07). Every git process gets an empty
-//! `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_NOSYSTEM=1` and pinned identities and
-//! dates, so hashes are the same on every machine. Without git on `PATH` the
-//! git tests are skipped, unless `HORCH_REQUIRE_GIT=1`.
-
 mod common;
 
 use std::path::{Path, PathBuf};
@@ -13,7 +6,6 @@ use horch_core::vcs::git::{GitCli, GitClient};
 use horch_marketplace::git::GitRunner;
 use tempfile::TempDir;
 
-/// The fixture's commit date, as in the e2e harness.
 const GIT_DATE: &str = "2026-09-28T12:00:00+00:00";
 
 fn find_git() -> Option<PathBuf> {
@@ -31,11 +23,9 @@ fn find_git() -> Option<PathBuf> {
     found
 }
 
-/// A temp repo on `main` with one commit: `a.txt` (3 lines) and `b.txt`.
 struct Fixture {
     _tmp: TempDir,
     repo: PathBuf,
-    /// For fixture setup; pinned like `git`.
     runner: GitRunner,
     git: GitCli,
 }
@@ -44,7 +34,7 @@ impl Fixture {
     fn new() -> Option<Self> {
         let bin = find_git()?;
         let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().canonicalize().unwrap();
+        let root = horch_platform::path::canonicalize(tmp.path()).unwrap();
         let temp_root = std::env::temp_dir().canonicalize().unwrap();
         assert!(root.starts_with(&temp_root), "real git only on temp repos");
         let config = root.join("gitconfig");
@@ -101,13 +91,10 @@ fn git_rev_parse_and_toplevel() {
         Some(head.as_str())
     );
     assert_eq!(f.git.rev_parse(&f.repo, "refs/heads/ghost").unwrap(), None);
-    // An option-shaped revision never reaches git.
     assert!(f.git.rev_parse(&f.repo, "--all").is_err());
     assert_eq!(f.git.toplevel(&f.repo).unwrap(), f.repo);
 }
 
-/// D20 item 5: the fixture with `GIT_DIR` and `GIT_WORK_TREE` aimed at a
-/// decoy repository leaves the decoy unchanged.
 #[test]
 fn git_env_cannot_reach_another_repository() {
     let Some(bin) = find_git() else { return };

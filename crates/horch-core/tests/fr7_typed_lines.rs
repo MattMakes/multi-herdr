@@ -1,7 +1,3 @@
-//! FR-7: the only bytes that horch types into a pane are fixed lines from 1
-//! list, `delivery::TYPED_LINES`. The text of a message stays in its mail
-//! file (Q9 of `docs/tickets/fleetd-p5/MAP.md`).
-
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -33,11 +29,6 @@ fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// The code of `path` outside tests, with comments and the contents of
-/// string and char literals blanked ([`blank_literals`]). A file named
-/// `tests.rs` is a test module. A `#[cfg(test)]` item is skipped: a 1-line
-/// item to its `;`, a block item to its closing brace. The scan goes on
-/// after it.
 fn production_code(path: &Path) -> String {
     if path.file_name().is_some_and(|n| n == "tests.rs") {
         return String::new();
@@ -56,9 +47,6 @@ fn production_code(path: &Path) -> String {
     code
 }
 
-/// `text` with each comment and each string, raw string and char literal
-/// replaced by spaces. Line breaks stay, so a brace or a parenthesis that is
-/// counted is always code.
 fn blank_literals(text: &str) -> String {
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::with_capacity(text.len());
@@ -83,8 +71,6 @@ fn blank_literals(text: &str) -> String {
     out
 }
 
-/// The end (exclusive) of the comment or literal that starts at `i`, or
-/// `None` when code starts at `i`.
 fn literal_end(chars: &[char], i: usize) -> Option<usize> {
     match (chars[i], chars.get(i + 1)) {
         ('/', Some('/')) => Some(i + chars[i..].iter().take_while(|&&c| c != '\n').count()),
@@ -99,7 +85,6 @@ fn literal_end(chars: &[char], i: usize) -> Option<usize> {
     }
 }
 
-/// The end of the nested block comment that starts at `i`.
 fn block_comment_end(chars: &[char], mut i: usize) -> usize {
     let mut depth = 0;
     while i < chars.len() {
@@ -119,7 +104,6 @@ fn block_comment_end(chars: &[char], mut i: usize) -> usize {
     i
 }
 
-/// The end of a string whose content starts at `i`, after its open quote.
 fn string_end(chars: &[char], mut i: usize) -> usize {
     while i < chars.len() && chars[i] != '"' {
         i += if chars[i] == '\\' { 2 } else { 1 };
@@ -127,8 +111,6 @@ fn string_end(chars: &[char], mut i: usize) -> usize {
     i + 1
 }
 
-/// The end of a raw string whose `#` marks or open quote start at `i`, or
-/// `None` when no raw string starts there.
 fn raw_string_end(chars: &[char], i: usize) -> Option<usize> {
     let hashes = chars[i..].iter().take_while(|&&h| h == '#').count();
     if chars.get(i + hashes) != Some(&'"') {
@@ -145,9 +127,6 @@ fn raw_string_end(chars: &[char], i: usize) -> Option<usize> {
     )
 }
 
-/// The end of the char literal at `i`. An escape (`'\''`, `'\u{2500}'`)
-/// ends at the first quote after its escaped char. A plain char literal is
-/// 3 chars long.
 fn char_literal_end(chars: &[char], i: usize) -> usize {
     if chars[i + 1] == '\\' {
         (i + 3..chars.len())
@@ -158,13 +137,10 @@ fn char_literal_end(chars: &[char], i: usize) -> usize {
     }
 }
 
-/// Whether the char before `i` ends an identifier, as the `r` in `for`.
 fn ident_before(chars: &[char], i: usize) -> bool {
     i > 0 && (chars[i - 1].is_alphanumeric() || chars[i - 1] == '_')
 }
 
-/// Whether the `'` at `i` opens a char literal, not a lifetime: `'x'` or an
-/// escape such as `'\n'` or `'\u{2500}'`.
 fn is_char_literal(chars: &[char], i: usize) -> bool {
     match chars.get(i + 1) {
         Some('\\') => true,
@@ -173,7 +149,6 @@ fn is_char_literal(chars: &[char], i: usize) -> bool {
     }
 }
 
-/// Skip the item that follows a `#[cfg(test)]` line.
 fn skip_item<'a>(lines: &mut impl Iterator<Item = &'a str>) {
     let mut depth = 0i32;
     let mut opened = false;
@@ -212,7 +187,6 @@ fn blank_literals_hides_braces_in_comments_and_literals() {
     );
 }
 
-/// The argument text of each call `<call>(...)` in `code`.
 fn call_arguments(code: &str, call: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut rest = code;
@@ -241,7 +215,6 @@ fn call_arguments(code: &str, call: &str) -> Vec<String> {
     out
 }
 
-/// The 2 calls that type text into a pane, as a method and as a path call.
 const TYPING_CALLS: [&str; 4] = [
     ".pane_send_text(",
     ".agent_prompt(",
@@ -249,8 +222,6 @@ const TYPING_CALLS: [&str; 4] = [
     "::agent_prompt(",
 ];
 
-/// The herdr adapter implements the typing calls of the trait. Each other
-/// file reaches them only through `delivery`.
 fn is_adapter(relative: &str) -> bool {
     relative.starts_with("crates/horch-core/src/workspace/")
 }
@@ -276,7 +247,6 @@ fn only_the_fixed_doorbell_line_is_typed() {
         if is_adapter(&relative) {
             continue;
         }
-        // `prompts::agent_prompt` builds a briefing; it types nothing.
         let code = production_code(path).replace("prompts::agent_prompt(", "prompts::briefing(");
         for call in TYPING_CALLS {
             for args in call_arguments(&code, call) {
@@ -351,7 +321,6 @@ fn message_to_the_orchestrator_types_the_mail_line_and_keeps_the_text_in_mail() 
     assert_eq!(pending[0].text, text, "the mail keeps the text");
 }
 
-/// The == Compact instructions == section of a rendered brief.
 fn compact_section(brief: &str) -> String {
     let start = brief
         .find("== Compact instructions ==")
@@ -361,12 +330,8 @@ fn compact_section(brief: &str) -> String {
     rest[..end].split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// A brief to check: (teammate, role, template key, facts).
 type Case<'a> = (&'a str, &'a str, &'a str, &'a [(&'a str, &'a str)]);
 
-/// `/compact` takes no argument (FR-7), so each fact of the 2 templates
-/// `instructions` and `instructions-orchestrator` must be in the brief.
-/// Each pair is (the words of the template, the words of the brief).
 #[test]
 fn the_briefs_hold_each_fact_of_the_compact_templates() {
     let roster = Roster::builtin().unwrap();

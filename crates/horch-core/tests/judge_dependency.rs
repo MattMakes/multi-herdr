@@ -1,21 +1,3 @@
-//! The dependency of a judge task (docs/specs/fleetd/design.md, "Ledger"
-//! I2; "Architecture and roles", The judge pair, steps 1 and 2;
-//! docs/tickets/fleetd-p6/40-judge-dep.md).
-//!
-//! I2 knows 2 kinds of dependency. An `after:` dependency is met when its
-//! task is `done` and its task branch is `landed`. The `judges:`
-//! dependency of a judge task is met when the judged task is `verifying`
-//! and its structural check passed. The worktree of a judge task starts
-//! from the tip of the judged task branch, so the judge reads the result
-//! before it lands.
-//!
-//! A judge task is a task of kind `work` whose `parent_task_id` names the
-//! task it judges. A review task of today has kind `review`, and the review
-//! code never reads a judge task.
-//!
-//! Each test makes its own temporary git repository and ledger. No test
-//! starts a `horch` binary, and no test reads the clock of this machine.
-
 #![cfg(unix)]
 
 #[path = "common/test_jobs.rs"]
@@ -47,8 +29,6 @@ use test_jobs::TestJobs;
 
 const RUN_BRANCH: &str = "fleet/r1";
 
-// ─── I2 ─────────────────────────────────────────────────────────────────
-
 fn statuses(rows: &[(&str, &str)]) -> BTreeMap<String, String> {
     rows.iter()
         .map(|(id, s)| (id.to_string(), s.to_string()))
@@ -67,8 +47,6 @@ fn passed(ids: &[&str]) -> BTreeSet<String> {
     ids.iter().map(|s| s.to_string()).collect()
 }
 
-/// The judge task `J` judges `W`. `W` has a task branch row that is not
-/// landed: the judge reads the result before it lands.
 fn judge_ready(w_status: &str, structural_passed: &[&str]) -> Vec<String> {
     let s = statuses(&[("W", w_status), ("J", "pending")]);
     let deps = [dep("J", "W", DepKind::Judges)];
@@ -78,31 +56,21 @@ fn judge_ready(w_status: &str, structural_passed: &[&str]) -> Vec<String> {
 
 #[test]
 fn judge_task_waits_until_its_judged_task_passed_its_structural_check() {
-    // The judged task is at work: the judge waits.
     for status in ["pending", "ready", "leased", "running", "stalled"] {
         assert!(
             !judge_ready(status, &[]).contains(&"J".to_string()),
             "judged task {status}: the judge task stays pending"
         );
     }
-    // The judged task wrote its result, but its structural check has not
-    // passed: the judge waits.
     assert!(judge_ready("verifying", &[]).is_empty());
-    // The structural check passed and the judged task waits in
-    // verifying: the judge task is ready, with the judged branch not
-    // landed.
     assert_eq!(judge_ready("verifying", &["W"]), vec!["J"]);
-    // A passed check of another task does not count.
     assert!(judge_ready("verifying", &["X"]).is_empty());
-    // A judged task that is not in verifying does not meet the judge
-    // dependency, even with a passed check on record.
     for status in ["ready", "running", "failed", "escalated", "cancelled"] {
         assert!(
             judge_ready(status, &["W"]).is_empty(),
             "judged task {status}: the judge task stays pending"
         );
     }
-    // A judged task with no task row is not met.
     let s = statuses(&[("J", "pending")]);
     let deps = [dep("J", "W", DepKind::Judges)];
     assert!(promotable_deps(&s, &deps, &BTreeMap::new(), &passed(&["W"])).is_empty());
@@ -117,16 +85,11 @@ fn after_dependency_still_needs_done_and_landed() {
             landed.map(|l| ("A".to_string(), l)).into_iter().collect();
         promotable_deps(&s, &deps, &landed, &passed(checked))
     };
-    // done and landed: met.
     assert_eq!(ready("done", Some(true), &[]), vec!["B"]);
-    // done, its branch not landed: not met.
     assert!(ready("done", Some(false), &[]).is_empty());
-    // done with no branch row keeps the rule done.
     assert_eq!(ready("done", None, &[]), vec!["B"]);
-    // The rule of a judge dependency never meets an after: dependency.
     assert!(ready("verifying", Some(false), &["A"]).is_empty());
     assert!(ready("verifying", None, &["A"]).is_empty());
-    // A judge task with an after: dependency too needs both.
     let s = statuses(&[("A", "done"), ("W", "verifying"), ("J", "pending")]);
     let both = [
         dep("J", "A", DepKind::After),
@@ -148,8 +111,6 @@ fn a_judge_task_is_a_work_task_with_a_parent() {
     assert_eq!(judged_task("review", Some("T-1")), None);
 }
 
-// ─── the world of a ledger test ─────────────────────────────────────────
-
 struct World {
     _tmp: tempfile::TempDir,
     root: PathBuf,
@@ -160,8 +121,6 @@ struct World {
     config: FleetConfig,
 }
 
-/// Run git in `dir` with no hook and no config of the user, and give its
-/// trimmed output.
 fn git(dir: &Path, args: &[&str]) -> String {
     let o = Command::new("git")
         .arg("-C")
@@ -198,11 +157,9 @@ fn task(title: &str) -> NewTask {
 }
 
 impl World {
-    /// A repository with 1 commit on `main` and the run branch, a ledger
-    /// and a run of the repository with no task.
     fn new() -> World {
         let tmp = tempfile::tempdir().unwrap();
-        let top = tmp.path().canonicalize().unwrap();
+        let top = horch_platform::path::canonicalize(tmp.path()).unwrap();
         let root = top.join("repo");
         std::fs::create_dir_all(&root).unwrap();
         git(&root, &["init", "--quiet", "-b", "main"]);
@@ -225,7 +182,6 @@ impl World {
                         ..Default::default()
                     },
                 )?;
-                // FR-12: a task needs an idea in flight of the feature of its run.
                 horch_core::taskledger::schema::run_idea(
                     tx,
                     &run.run_id,
@@ -267,8 +223,6 @@ impl World {
             .immediate(|tx| bind(tx, &ctx, task_id, "opus", &NewWorker::default()))
     }
 
-    /// Run the `worktree_add` job of the `reserved` tree `id`, as the pass
-    /// does.
     fn add_tree(&self, id: &str) {
         let mut conn = Connection::open(&self.ledger).unwrap();
         let ctx = JobCtx {
@@ -297,7 +251,6 @@ fn judge_worktree_starts_from_the_judged_branch_tip() {
     let bound = w.bind(&judged).unwrap();
     let tree = bound.worktree.unwrap();
     w.add_tree(&tree.worktree_id);
-    // The judged task commits its result on its task branch.
     let path = Path::new(&tree.path);
     std::fs::write(path.join("retry.md"), "# Retry\n").unwrap();
     git(path, &["add", "retry.md"]);
@@ -379,7 +332,6 @@ fn review_code_does_not_read_a_judge_task() {
         "",
         "a judge task is not a review of its judged task"
     );
-    // A review task of the same parent is read.
     let mut review = task("review");
     review.kind = TaskKind::Review;
     review.parent_task_id = Some(judged.clone());

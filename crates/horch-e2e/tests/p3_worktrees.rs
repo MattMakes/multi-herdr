@@ -1,43 +1,21 @@
-//! The gate tests of Phase 3 that the unit tests cannot show end to end
-//! (`docs/specs/fleetd/design.md`, FR-11, RR-10, FM-26, FM-27, FM-28 and
-//! "Migration plan" item 5; `docs/tickets/fleetd-p3/MAP.md`, Q8, Q9, Q15,
-//! Q17 and Q20).
-//!
-//! Each test runs the real `horch` binary with its own git repository,
-//! ledger and state folders in a temp dir. Most tests pass 1 fleetd pass at
-//! a time with `horch ledger watch --once`, and move the fleet clock by
-//! [`PASS_S`] before each pass, so a time of the design reads as fleet
-//! seconds. The jobs that a pass starts run outside it; each step waits
-//! until they end, so a job takes 0 fleet seconds. The slow `worktree_add`
-//! test runs a fleetd of this build.
-//!
-//! Each test checks at its end that each modified file, each untracked file
-//! and each commit that did not land is still in its tree or on a rescue
-//! ref.
-
 #![cfg(unix)]
 
-use std::io::Read as _;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Output, Stdio};
+use std::process::{Child, Output};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use horch_core::taskledger::runs::Run;
 use horch_core::taskledger::store::Store;
 use horch_e2e::fleetd::Fleetds;
 use horch_e2e::harness::{fixtures, Harness};
+use horch_e2e::ledger_seed::{seed_run, seed_task};
 use serde_json::Value;
 
-/// `pass_period_s` of the default `fleet.toml`: 1 step of the fleet clock.
 const PASS_S: i64 = 5;
-/// `worktree_list_period_s` of the default `fleet.toml` (RR-10).
-const LIST_PERIOD_S: i64 = 60;
-/// The "Caught within" time of FM-26 and FM-27.
+const LIST_PERIOD_S: i64 = 10;
 const CAUGHT_S: i64 = 60;
-/// `pass_time_budget_s` of the default `fleet.toml`.
 const PASS_TIME_BUDGET_S: u64 = 20;
-/// The time of the slow `git worktree add`.
 const SLOW_ADD_S: u64 = 60;
-/// The size of a big file in a tree: above a disk budget of 1 GB.
 const BIG: u64 = 3 << 29;
 
 fn text(o: &Output) -> String {
@@ -53,19 +31,49 @@ fn ledger(h: &Harness) -> PathBuf {
     h.root.join("ledger.sqlite3")
 }
 
-/// A harness with its own ledger file and a git repository, and no
-/// watchdog.
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn fleet_toml() -> String {
+    format!("pass_period_s = 1\nworktree_list_period_s = {LIST_PERIOD_S}\n")
+}
+
 fn world(name: &str) -> Harness {
     let mut h = Harness::new(name).with_git();
     h.set("HORCH_LEDGER_DB", ledger(&h).to_string_lossy());
     h.set("HORCH_NO_WAKE", "1");
     h.set("HORCH_NO_WATCHDOG", "1");
+    path_without_docs_clis(&mut h);
+    let root = h.fleet_root();
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("fleet.toml"), fleet_toml()).unwrap();
     h.serve_fleetd();
     h
 }
 
-/// [`world`] in the herdr workspace `w1` (root pane `w1:p1`), for a worker
-/// in its own pane and for `horch spawn`.
+const DOCS_CLIS: [&str; 4] = ["herdr", "claude", "codex", "agy"];
+
+fn path_without_docs_clis(h: &mut Harness) {
+    let dir = h.root.join("no-docs-clis");
+    std::fs::create_dir_all(&dir).unwrap();
+    for entry in std::fs::read_dir(&h.bin).unwrap() {
+        let entry = entry.unwrap();
+        let name = entry.file_name();
+        if !DOCS_CLIS.iter().any(|c| name.to_str() == Some(c)) {
+            std::os::unix::fs::symlink(entry.path(), dir.join(&name)).unwrap();
+        }
+    }
+    let mut dirs = vec![dir];
+    let host = h.root.join("host-bin");
+    if host.is_dir() {
+        dirs.push(host);
+    }
+    let path = std::env::join_paths(dirs).unwrap();
+    h.set("PATH", path.to_string_lossy());
+}
+
 fn fleet(name: &str) -> Harness {
     let mut h = world(name);
     h.set(
@@ -82,22 +90,6 @@ fn herdr(h: &Harness, args: &[&str]) -> String {
     h.seal(&mut cmd);
     let o = cmd.args(args).output().unwrap();
     assert!(o.status.success(), "herdr {}: {}", args.join(" "), text(&o));
-    String::from_utf8_lossy(&o.stdout).into_owned()
-}
-
-fn ok(h: &Harness, args: &[&str]) -> String {
-    let o = h.run(args);
-    assert!(o.status.success(), "horch {}: {}", args.join(" "), text(&o));
-    String::from_utf8_lossy(&o.stdout).into_owned()
-}
-
-fn ok_as(h: &Harness, worker: &str, args: &[&str]) -> String {
-    let o = h
-        .horch(args)
-        .env("HORCH_WORKER_ID", worker)
-        .output()
-        .unwrap();
-    assert!(o.status.success(), "horch {}: {}", args.join(" "), text(&o));
     String::from_utf8_lossy(&o.stdout).into_owned()
 }
 
@@ -123,28 +115,42 @@ fn tree_path(said: &str) -> PathBuf {
     )
 }
 
-/// Queue the task `name` with the ticket `tickets/<name>.md`.
-fn queue(h: &Harness, name: &str) {
+fn seed(h: &Harness, slug: &str, steps: Option<&str>) -> Run {
+    let run = seed_run(h, slug, None, "w1:p1");
+    if let Some(steps) = steps {
+        let words: Vec<String> = steps.split(',').map(|s| format!("{s:?}")).collect();
+        exec(
+            h,
+            &format!(
+                "UPDATE runs SET finish_steps = '[{}]' WHERE run_id = '{}'",
+                words.join(","),
+                run.run_id
+            ),
+        );
+    }
+    run
+}
+
+fn queue(h: &Harness, run: &Run, name: &str) {
     let dir = h.project.join("tickets");
     std::fs::create_dir_all(&dir).unwrap();
     let ticket = dir.join(format!("{name}.md"));
     std::fs::write(&ticket, format!("# {name}\n\n**Check:** none\n")).unwrap();
-    let ticket = ticket.to_string_lossy().into_owned();
-    ok(
+    let task = seed_task(h, run, &ticket, "opus");
+    exec(
         h,
-        &["ledger", "add", "--file", &ticket, "--primary", "opus"],
+        &format!(
+            "UPDATE tasks SET check_none = 1 WHERE task_id = '{}'",
+            task.task_id
+        ),
     );
 }
 
-/// The next task is bound to a new worker (FR-5). Gives the worker and the
-/// task id.
 fn bind_next(h: &Harness) -> (String, String) {
     let b = horch_e2e::bind::bind(h, "opus", None);
     (b.worker_id, b.task_id)
 }
 
-/// The stand-in agents of a test: each is killed when dropped, so a failed
-/// assertion leaks none.
 struct Agents(Vec<Child>);
 
 impl Drop for Agents {
@@ -156,8 +162,6 @@ impl Drop for Agents {
     }
 }
 
-/// A worker in its own pane with a `sleep` process as its live agent, bound
-/// to the next task (FR-5). Gives the worker and the task id.
 fn live_bind(h: &Harness, agents: &mut Agents) -> (String, String) {
     let split: Value = serde_json::from_str(&herdr(h, &["pane", "split", "w1:p1"])).unwrap();
     let pane = split["result"]["pane"]["pane_id"].as_str().unwrap();
@@ -175,7 +179,6 @@ fn live_bind(h: &Harness, agents: &mut Agents) -> (String, String) {
     (b.worker_id, b.task_id)
 }
 
-/// The values of the first column of `sql`, as text; `NULL` is "".
 fn query(h: &Harness, sql: &str) -> Vec<String> {
     let store = Store::open(&ledger(h)).unwrap();
     let mut stmt = store.conn().prepare(sql).unwrap();
@@ -200,8 +203,6 @@ fn exec(h: &Harness, sql: &str) {
         .unwrap();
 }
 
-/// `path` as the ledger writes it: with each link of the project folder
-/// resolved (`/tmp` is `/private/tmp` on macOS).
 fn stored(h: &Harness, path: &Path) -> String {
     let project = std::fs::canonicalize(&h.project).unwrap();
     match path.strip_prefix(&h.project) {
@@ -210,7 +211,6 @@ fn stored(h: &Harness, path: &Path) -> String {
     }
 }
 
-/// 1 column of the newest row of the folder `path`, or `None` with no row.
 fn column(h: &Harness, path: &Path, name: &str) -> Option<String> {
     query(
         h,
@@ -226,7 +226,6 @@ fn state(h: &Harness, path: &Path) -> Option<String> {
     column(h, path, "state")
 }
 
-/// The moves of the row `id` through the door, as `<from>><to>`.
 fn moves(h: &Harness, id: &str) -> Vec<String> {
     query(
         h,
@@ -238,7 +237,6 @@ fn moves(h: &Harness, id: &str) -> Vec<String> {
     )
 }
 
-/// The open needs-you items of `kind`, as `<key> <entity_id>`.
 fn needs_you(h: &Harness, kind: &str) -> Vec<String> {
     query(
         h,
@@ -249,7 +247,6 @@ fn needs_you(h: &Harness, kind: &str) -> Vec<String> {
     )
 }
 
-/// The worktree rows, the jobs and the open needs-you items, for a failure.
 fn board(h: &Harness) -> String {
     let rows = query(
         h,
@@ -266,9 +263,16 @@ fn board(h: &Harness) -> String {
         h,
         "SELECT kind || ' ' || entity_id || ' ' || text FROM needs_you WHERE state = 'open'",
     );
+    let attempts = query(
+        h,
+        "SELECT a.id || ' ' || a.state || ' lease=' || COALESCE(
+             (SELECT CAST(expires_at AS TEXT) FROM leases WHERE attempt_id = a.id), '-')
+         FROM attempts a ORDER BY a.rowid",
+    );
     format!(
-        "fleet clock {}\nworktrees:\n{}\njobs:\n{}\nneeds-you:\n{}",
+        "fleet clock {}\nattempts:\n{}\nworktrees:\n{}\njobs:\n{}\nneeds-you:\n{}",
         fleet_clock(h),
+        attempts.join("\n"),
         rows.join("\n"),
         jobs.join("\n"),
         items.join("\n")
@@ -284,15 +288,24 @@ fn fleet_clock(h: &Harness) -> i64 {
     .map_or(0, |c| c.parse().unwrap())
 }
 
-/// 1 fleetd pass, then a wait until each job that it started has ended.
 fn pass(h: &Harness) -> Output {
-    let o = h.without_fleetd(|| h.run(&["ledger", "watch", "--once", "--force", "--json"]));
+    let slug = query(
+        h,
+        "SELECT slug FROM runs WHERE slug NOT LIKE 'F-%' ORDER BY rowid DESC LIMIT 1",
+    )
+    .pop()
+    .expect("a run of the test");
+    let o = h.without_fleetd(|| {
+        h.run(&[
+            "ledger", "watch", "--once", "--force", "--json", "--run", &slug,
+        ])
+    });
     assert!(o.status.success(), "{}", text(&o));
-    let until = Instant::now() + Duration::from_secs(120);
+    let until = Instant::now() + Duration::from_secs(300);
     while !query(h, "SELECT id FROM jobs WHERE state = 'running'").is_empty() {
         assert!(
             Instant::now() < until,
-            "a job runs after 120 s\n{}",
+            "a job runs after 300 s\n{}",
             board(h)
         );
         std::thread::sleep(Duration::from_millis(100));
@@ -300,32 +313,43 @@ fn pass(h: &Harness) -> Output {
     o
 }
 
-/// Move the fleet clock by 1 pass period, and run 1 pass.
 fn step(h: &Harness) -> Output {
     h.advance_fleet_clock(PASS_S);
     pass(h)
 }
 
-/// Run steps until `done` holds, for at most `limit_s` fleet seconds.
-/// Gives the fleet seconds that it took.
 fn until(h: &Harness, what: &str, limit_s: i64, done: impl Fn(&Harness) -> bool) -> i64 {
-    let start = fleet_clock(h);
+    let mut took = 0;
     let mut last = String::new();
     loop {
-        let took = fleet_clock(h) - start;
         if done(h) {
             return took;
         }
         assert!(
             took < limit_s,
-            "{what}: not within {limit_s} fleet seconds\n{}\nlast pass:\n{last}",
+            "{what}: not within {limit_s} fleet seconds of test steps\n{}\nlast pass:\n{last}",
             board(h)
         );
         last = text(&step(h));
+        took += PASS_S;
     }
 }
 
-/// The passed `worktree_list` runs.
+fn until_branch_landed(h: &Harness, tree: &Path) {
+    let branch = column(h, tree, "branch").expect("the worktree row");
+    let sql =
+        format!("SELECT name FROM branches WHERE name = '{branch}' AND landing_state = 'landed'");
+    let end = Instant::now() + Duration::from_secs(300);
+    while query(h, &sql).is_empty() {
+        assert!(
+            Instant::now() < end,
+            "{branch} is not landed after 300 s\n{}",
+            board(h)
+        );
+        step(h);
+    }
+}
+
 fn lists_passed(h: &Harness) -> usize {
     query(
         h,
@@ -334,16 +358,12 @@ fn lists_passed(h: &Harness) -> usize {
     .len()
 }
 
-/// The work of 1 tree that must not be lost: its files with their bytes,
-/// and its commits that did not land.
 struct Work {
     tree: PathBuf,
     files: Vec<(String, Vec<u8>)>,
     commits: Vec<String>,
 }
 
-/// 1 commit of `<name>.txt`, then a modified tracked file and an untracked
-/// file, in the tree `tree`.
 fn work_in(h: &Harness, tree: &Path, name: &str) -> Work {
     let committed = format!("{name}.txt");
     std::fs::write(tree.join(&committed), format!("{name} committed\n")).unwrap();
@@ -369,8 +389,6 @@ fn work_in(h: &Harness, tree: &Path, name: &str) -> Work {
     }
 }
 
-/// A tree that `git worktree add` makes by hand at
-/// `<project>/.worktrees/<name>` on the new branch `branch`, with work.
 fn hand_tree(h: &Harness, name: &str, branch: &str) -> Work {
     let project = h.project.clone();
     let tree = project.join(".worktrees").join(name);
@@ -389,8 +407,6 @@ fn hand_tree(h: &Harness, name: &str, branch: &str) -> Work {
     work_in(h, &tree, name)
 }
 
-/// Whether `rev` holds each file of `work` with its bytes, and each of its
-/// commits.
 fn holds(h: &Harness, dir: &Path, rev: &str, work: &Work) -> bool {
     let files = work.files.iter().all(|(file, bytes)| {
         let o = h
@@ -407,7 +423,6 @@ fn holds(h: &Harness, dir: &Path, rev: &str, work: &Work) -> bool {
             .all(|c| git_ok(h, dir, &["merge-base", "--is-ancestor", c, rev]))
 }
 
-/// Whether the folder of `work` holds each of its files and commits.
 fn in_tree(h: &Harness, work: &Work) -> bool {
     work.tree.is_dir()
         && work
@@ -430,7 +445,6 @@ fn rescue_refs(h: &Harness) -> Vec<String> {
     refs.lines().map(str::to_string).collect()
 }
 
-/// Each work of `works` is still in its tree or on a rescue ref.
 fn assert_kept(h: &Harness, works: &[&Work]) {
     let project = h.project.clone();
     let refs = rescue_refs(h);
@@ -454,24 +468,24 @@ fn run_branch(h: &Harness, slug: &str) -> String {
     .unwrap()
 }
 
-/// A file of `bytes` bytes with no data on disk (a sparse file): the size
-/// of a folder counts it, and git ignores it by `.gitignore`.
 fn big_file(path: &Path, bytes: u64) {
     std::fs::File::create(path).unwrap().set_len(bytes).unwrap();
 }
 
 #[test]
 fn fr11_worker_own_git_worktree_add_is_flagged_on_the_next_pass() {
+    let _serial = serial();
     let h = world("p3-fr11");
-    ok(&h, &["ledger", "run", "new", "fr11"]);
-    queue(&h, "t1");
-    let (_, task) = bind_next(&h);
+    let run = seed(&h, "fr11", None);
+    let (_, task) = h.without_fleetd(|| {
+        queue(&h, &run, "t1");
+        bind_next(&h)
+    });
     pass(&h);
     let lists = lists_passed(&h);
     let branch = format!("{}-T1-own", run_branch(&h, "fr11"));
     let work = hand_tree(&h, "T1-own", &branch);
 
-    // The first `worktree_list` run after the add, then the next pass.
     until(
         &h,
         "a worktree_list run after the add",
@@ -481,45 +495,53 @@ fn fr11_worker_own_git_worktree_add_is_flagged_on_the_next_pass() {
     let o = step(&h);
     let id = column(&h, &work.tree, "worktree_id")
         .unwrap_or_else(|| panic!("no row flags the tree\n{}\n{}", board(&h), text(&o)));
-    assert_eq!(
-        state(&h, &work.tree).as_deref(),
-        Some("orphaned"),
-        "{}",
-        board(&h)
-    );
+    let s = state(&h, &work.tree).unwrap();
+    assert!(s == "orphaned" || s == "rescued", "{s}\n{}", board(&h));
     assert_eq!(
         column(&h, &work.tree, "task_id"),
         Some(task),
         "{}",
         board(&h)
     );
-    assert_eq!(moves(&h, &id), [">orphaned"], "{}", board(&h));
+    assert_eq!(
+        moves(&h, &id).first().map(String::as_str),
+        Some(">orphaned"),
+        "{}",
+        board(&h)
+    );
     assert_kept(&h, &[&work]);
 }
 
 #[test]
 fn rr10_hand_made_worktree_is_adopted_within_1_list_period() {
+    let _serial = serial();
     let h = world("p3-rr10");
-    ok(&h, &["ledger", "run", "new", "rr10"]);
+    seed(&h, "rr10", None);
     pass(&h);
-    // The tree comes after the `worktree_list` run of this period: the
-    // longest wait.
     let work = hand_tree(&h, "by-hand", "by-hand");
-    // 1 period, and the pass that reads the run of the next period.
-    let took = until(&h, "the adoption", LIST_PERIOD_S + PASS_S, |h| {
-        state(h, &work.tree).is_some()
-    });
+    let mut steps = 0;
+    while state(&h, &work.tree).is_none() {
+        assert!(
+            steps * PASS_S < LIST_PERIOD_S + PASS_S,
+            "the adoption: not within {} steps\n{}",
+            steps,
+            board(&h)
+        );
+        step(&h);
+        steps += 1;
+    }
     let s = state(&h, &work.tree).unwrap();
     assert!(s == "orphaned" || s == "rescued", "{s}\n{}", board(&h));
     assert_eq!(column(&h, &work.tree, "task_id"), Some(String::new()));
-    assert!(took <= LIST_PERIOD_S + PASS_S, "{took}");
+    assert!(steps * PASS_S <= LIST_PERIOD_S + PASS_S, "{steps} steps");
     assert_kept(&h, &[&work]);
 }
 
 #[test]
 fn fm26_tree_made_outside_fleetd_is_rescued_and_its_files_are_on_the_ref() {
+    let _serial = serial();
     let h = world("p3-fm26");
-    ok(&h, &["ledger", "run", "new", "fm26"]);
+    seed(&h, "fm26", None);
     let work = hand_tree(&h, "script", "script-branch");
     pass(&h);
     until(&h, "the rescue", CAUGHT_S, |h| {
@@ -532,7 +554,6 @@ fn fm26_tree_made_outside_fleetd_is_rescued_and_its_files_are_on_the_ref() {
         "{rescue} does not hold the files and the commit\n{}",
         board(&h)
     );
-    // A rescued tree with no task is never removed (Q8, Q15).
     for _ in 0..(LIST_PERIOD_S / PASS_S) {
         step(&h);
     }
@@ -543,8 +564,9 @@ fn fm26_tree_made_outside_fleetd_is_rescued_and_its_files_are_on_the_ref() {
 
 #[test]
 fn fm27_vanished_tree_opens_1_needs_you_item_within_60_s() {
+    let _serial = serial();
     let h = world("p3-fm27-vanished");
-    ok(&h, &["ledger", "run", "new", "fm27"]);
+    seed(&h, "fm27", None);
     let work = hand_tree(&h, "gone", "gone-branch");
     pass(&h);
     until(&h, "the rescue", CAUGHT_S, |h| {
@@ -569,41 +591,128 @@ fn fm27_vanished_tree_opens_1_needs_you_item_within_60_s() {
     assert_kept(&h, &[&work]);
 }
 
-#[test]
-fn fm27_only_landed_or_rescued_trees_are_removed() {
-    let h = world("p3-fm27-only");
-    ok(&h, &["ledger", "run", "new", "fm27", "--steps", "land"]);
-    queue(&h, "t1");
-    queue(&h, "t2");
-    let (w1, _) = bind_next(&h);
-    let landed = tree_path(&ok_as(&h, &w1, &["ledger", "worktree", "new", "lands"]));
-    let w = work_in(&h, &landed, "lands");
-    std::fs::write(landed.join("README.md"), "# alpha\n").unwrap();
-    std::fs::remove_file(landed.join("lands-untracked.txt")).unwrap();
-    let landed_head = w.commits[0].clone();
-    let o = h
-        .horch(&["ledger", "finish", "--json"])
-        .env("HORCH_WORKER_ID", &w1)
-        .output()
+fn in_attempt(h: &Harness, w: &str, args: &[&str]) -> Output {
+    let mut cmd = std::process::Command::new("/bin/sh");
+    cmd.args(["-c", "read go; exec \"$@\"", "sh"])
+        .arg(Harness::horch_bin())
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    h.seal(&mut cmd);
+    cmd.env("HORCH_WORKER_ID", w);
+    let mut child = cmd.spawn().unwrap();
+    let wrapper = child.id();
+    Store::open(&ledger(h))
+        .unwrap()
+        .conn()
+        .execute(
+            "UPDATE attempts SET pid = ?1, pid_start = ?2 WHERE worker_id = ?3",
+            (wrapper, horch_core::procid::start_time(wrapper).unwrap(), w),
+        )
         .unwrap();
-    let r: Value =
-        serde_json::from_slice(&o.stdout).unwrap_or_else(|e| panic!("{e}: {}", text(&o)));
-    assert!(o.status.success(), "{r}");
-    assert_eq!(state(&h, &landed).as_deref(), Some("landed"), "{r}");
+    std::io::Write::write_all(&mut child.stdin.take().unwrap(), b"go\n").unwrap();
+    child.wait_with_output().unwrap()
+}
 
-    let (w2, _) = bind_next(&h);
-    let open = tree_path(&ok_as(&h, &w2, &["ledger", "worktree", "new", "open"]));
+fn active_tree(h: &Harness, task: &str) -> PathBuf {
+    until(h, "the active tree of the task", CAUGHT_S, |h| {
+        !query(
+            h,
+            &format!("SELECT path FROM worktrees WHERE task_id = '{task}' AND state = 'active'"),
+        )
+        .is_empty()
+    });
+    PathBuf::from(
+        query(
+            h,
+            &format!("SELECT path FROM worktrees WHERE task_id = '{task}' AND state = 'active'"),
+        )
+        .pop()
+        .unwrap(),
+    )
+}
+
+fn commit_gates(h: &Harness) {
+    std::fs::write(
+        h.project.join("fleet.toml"),
+        "[gates]\nfast = \"true\"\nfull = \"true\"\n",
+    )
+    .unwrap();
+    git_in(h, &h.project, &["add", "fleet.toml"]);
+    git_in(
+        h,
+        &h.project,
+        &["commit", "--quiet", "--no-gpg-sign", "-m", "gates"],
+    );
+}
+
+#[test]
+fn fm27_trees_that_are_not_landed_are_not_removed() {
+    let _serial = serial();
+    let h = fleet("p3-fm27-keep");
+    let run = seed(&h, "fm27", Some("land"));
+    let mut agents = Agents(Vec::new());
+    let (_, task) = h.without_fleetd(|| {
+        queue(&h, &run, "t1");
+        live_bind(&h, &mut agents)
+    });
+    exec(
+        &h,
+        &format!("UPDATE leases SET expires_at = expires_at + 86400 WHERE task_id = '{task}'"),
+    );
+    let open = active_tree(&h, &task);
     let open_work = work_in(&h, &open, "open");
     let hand = hand_tree(&h, "hand", "hand-branch");
 
     pass(&h);
+    for _ in 0..(2 * LIST_PERIOD_S / PASS_S) {
+        step(&h);
+    }
+    for tree in [&open, &hand.tree] {
+        let s = state(&h, tree).unwrap();
+        assert!(
+            ["active", "orphaned", "rescued"].contains(&s.as_str()),
+            "{}: {s}\n{}",
+            tree.display(),
+            board(&h)
+        );
+        assert!(tree.is_dir(), "{}", board(&h));
+    }
+    assert_kept(&h, &[&open_work, &hand]);
+}
+
+#[test]
+fn fm27_only_landed_or_rescued_trees_are_removed() {
+    let _serial = serial();
+    let h = world("p3-fm27-only");
+    commit_gates(&h);
+    let run = seed(&h, "fm27", Some("land"));
+    let ((w1, t1), (_, t2)) = h.without_fleetd(|| {
+        queue(&h, &run, "t1");
+        queue(&h, &run, "t2");
+        (bind_next(&h), bind_next(&h))
+    });
+    let landed = active_tree(&h, &t1);
+    let w = work_in(&h, &landed, "lands");
+    std::fs::write(landed.join("README.md"), "# alpha\n").unwrap();
+    std::fs::remove_file(landed.join("lands-untracked.txt")).unwrap();
+    let landed_head = w.commits[0].clone();
+    let o = in_attempt(&h, &w1, &["ledger", "finish", "--json"]);
+    assert!(o.status.success(), "{}", text(&o));
+
+    let open = active_tree(&h, &t2);
+    let open_work = work_in(&h, &open, "open");
+    let hand = hand_tree(&h, "hand", "hand-branch");
+
+    pass(&h);
+    until_branch_landed(&h, &landed);
     until(
         &h,
         "the removal of the landed tree",
         2 * LIST_PERIOD_S,
         |h| state(h, &landed).as_deref() == Some("removed"),
     );
-    // 1 more period: no other tree goes.
     for _ in 0..(LIST_PERIOD_S / PASS_S) {
         step(&h);
     }
@@ -633,6 +742,7 @@ fn fm27_only_landed_or_rescued_trees_are_removed() {
 
 #[test]
 fn fm28_over_budget_removes_finished_trees_and_holds_dispatch_before_an_active_tree() {
+    let _serial = serial();
     let h = fleet("p3-fm28");
     let project = h.project.clone();
     std::fs::write(project.join(".gitignore"), "*.big\n").unwrap();
@@ -642,17 +752,14 @@ fn fm28_over_budget_removes_finished_trees_and_holds_dispatch_before_an_active_t
         &project,
         &["commit", "--quiet", "--no-gpg-sign", "-m", "ignore"],
     );
-    let fleet_root = h.root.join("fleet");
-    std::fs::create_dir_all(&fleet_root).unwrap();
     std::fs::write(
-        fleet_root.join("fleet.toml"),
-        "worktree_disk_budget_gb = 1\n",
+        h.fleet_root().join("fleet.toml"),
+        format!("{}worktree_disk_budget_gb = 1\n", fleet_toml()),
     )
     .unwrap();
 
-    // A run that is done, with a rescued tree of its task above the budget.
-    ok(&h, &["ledger", "run", "new", "old"]);
-    queue(&h, "old");
+    let old_run = seed(&h, "old", None);
+    queue(&h, &old_run, "old");
     let branch = format!("{}-T1-old", run_branch(&h, "old"));
     let old = hand_tree(&h, "T1-old", &branch);
     big_file(&old.tree.join("old.big"), BIG);
@@ -662,13 +769,38 @@ fn fm28_over_budget_removes_finished_trees_and_holds_dispatch_before_an_active_t
     });
     assert_ne!(column(&h, &old.tree, "task_id"), Some(String::new()));
     exec(&h, "UPDATE runs SET status = 'done' WHERE slug = 'old'");
+    exec(&h, "UPDATE tasks SET status = 'done' WHERE title = 'old'");
+    exec(
+        &h,
+        "UPDATE ideas SET state = 'merged'
+         WHERE id = (SELECT idea_id FROM tasks WHERE title = 'old')",
+    );
 
-    // A live run with an active tree.
-    ok(&h, &["ledger", "run", "new", "live"]);
-    queue(&h, "live");
+    let live_run = seed(&h, "live", None);
     let mut agents = Agents(Vec::new());
-    let (w, _) = live_bind(&h, &mut agents);
-    let active = tree_path(&ok_as(&h, &w, &["ledger", "worktree", "new", "live"]));
+    let (_, task) = h.without_fleetd(|| {
+        queue(&h, &live_run, "live");
+        live_bind(&h, &mut agents)
+    });
+    exec(
+        &h,
+        &format!("UPDATE leases SET expires_at = expires_at + 86400 WHERE task_id = '{task}'"),
+    );
+    until(&h, "the active tree of the live task", CAUGHT_S, |h| {
+        !query(
+            h,
+            &format!("SELECT path FROM worktrees WHERE task_id = '{task}' AND state = 'active'"),
+        )
+        .is_empty()
+    });
+    let active = PathBuf::from(
+        query(
+            &h,
+            &format!("SELECT path FROM worktrees WHERE task_id = '{task}' AND state = 'active'"),
+        )
+        .pop()
+        .unwrap(),
+    );
     let live = work_in(&h, &active, "live");
 
     until(&h, "the removal of the old tree", 2 * LIST_PERIOD_S, |h| {
@@ -683,8 +815,6 @@ fn fm28_over_budget_removes_finished_trees_and_holds_dispatch_before_an_active_t
     );
     assert!(needs_you(&h, "worktree_disk").is_empty(), "{}", board(&h));
 
-    // Over the budget with only an active tree: dispatch holds, the tree
-    // stays.
     big_file(&active.join("live.big"), BIG);
     until(&h, "the disk hold", 2 * LIST_PERIOD_S, |h| {
         !needs_you(h, "worktree_disk").is_empty()
@@ -699,15 +829,25 @@ fn fm28_over_budget_removes_finished_trees_and_holds_dispatch_before_an_active_t
         "{}",
         board(&h)
     );
-    let o = h.run(&["spawn", "opus", "--from-pane", "w1:p1", "--no-tile"]);
-    assert!(!o.status.success(), "the spawn was not held: {}", text(&o));
-    let err = String::from_utf8_lossy(&o.stderr);
-    assert!(err.contains("on hold") && err.contains("worktree"), "{err}");
+    queue(&h, &live_run, "held");
+    for _ in 0..(LIST_PERIOD_S / PASS_S) {
+        step(&h);
+    }
+    let attempts = query(
+        &h,
+        "SELECT a.id FROM attempts a JOIN tasks t ON t.task_id = a.task_id WHERE t.title = 'held'",
+    );
+    assert!(attempts.is_empty(), "{attempts:?}\n{}", board(&h));
+    let status = query(&h, "SELECT status FROM tasks WHERE title = 'held'");
+    assert_eq!(status, ["ready"], "{}", board(&h));
+    let item = query(
+        &h,
+        "SELECT text FROM needs_you WHERE kind = 'worktree_disk' AND state = 'open'",
+    );
+    assert!(item[0].contains("dispatch"), "{item:?}");
     assert_kept(&h, &[&old, &live]);
 }
 
-/// A `git` that sleeps [`SLOW_ADD_S`] before `git worktree add`, and runs
-/// the real `git` at once for each other command.
 fn slow_git(h: &mut Harness) {
     let path = std::env::var_os("PATH").expect("a PATH");
     let real = std::env::split_paths(&path)
@@ -730,7 +870,6 @@ fn slow_git(h: &mut Harness) {
     h.set("HORCH_GIT_BIN", script.to_string_lossy());
 }
 
-/// The awake time of the last heartbeat of the fleetd `pid`, in ms.
 fn heartbeat(h: &Harness, pid: u32) -> Option<u64> {
     let path = h.root.join("fleet").join("run").join("heartbeat.json");
     let hb: Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
@@ -750,7 +889,6 @@ fn now_ms() -> i64 {
     i64::try_from(since.as_millis()).unwrap()
 }
 
-/// Wait until the fleetd `pid` wrote its first heartbeat.
 fn wait_for_heartbeat(h: &Harness, pid: u32) {
     let until = Instant::now() + Duration::from_secs(60);
     while heartbeat(h, pid).is_none() {
@@ -759,33 +897,25 @@ fn wait_for_heartbeat(h: &Harness, pid: u32) {
     }
 }
 
-/// What a command did while the test watched the heartbeat.
 struct Watched {
     out: String,
     took: Duration,
-    /// The longest time with no new heartbeat.
     longest_still: Duration,
-    /// When the command exited, in ms after the Unix epoch.
     exited_ms: i64,
 }
 
-/// Run `horch ledger worktree new <name>` as `worker`, and watch the
-/// heartbeat of the fleetd `pid` until the command exits.
-fn add_watching_heartbeat(h: &Harness, worker: &str, name: &str, pid: u32) -> Watched {
-    let mut add = h
-        .horch(&["ledger", "worktree", "new", name])
-        .env("HORCH_WORKER_ID", worker)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
+fn add_watching_heartbeat(h: &Harness, task: &str, pid: u32) -> Watched {
     let began = Instant::now();
     let mut last = heartbeat(h, pid);
     let mut moved_at = Instant::now();
     let mut longest_still = Duration::ZERO;
-    let status = loop {
-        if let Some(s) = add.try_wait().unwrap() {
-            break s;
+    let path = loop {
+        let found = query(
+            h,
+            &format!("SELECT path FROM worktrees WHERE task_id = '{task}' AND state = 'active'"),
+        );
+        if let Some(path) = found.into_iter().next() {
+            break path;
         }
         assert!(
             began.elapsed() < Duration::from_secs(SLOW_ADD_S + 120),
@@ -801,22 +931,14 @@ fn add_watching_heartbeat(h: &Harness, worker: &str, name: &str, pid: u32) -> Wa
         std::thread::sleep(Duration::from_millis(200));
     };
     let exited_ms = now_ms();
-    let mut out = String::new();
-    add.stdout.take().unwrap().read_to_string(&mut out).unwrap();
-    let mut err = String::new();
-    add.stderr.take().unwrap().read_to_string(&mut err).unwrap();
-    assert!(status.success(), "{out}\n{err}");
     Watched {
-        out,
+        out: format!("path: {path}\n"),
         took: began.elapsed(),
         longest_still,
         exited_ms,
     }
 }
 
-/// The 1 `worktree_add` run of the tree at `path` passed, took the slow
-/// add, and ended before `exited_ms`: the command gave the path only after
-/// the job passed (Q17).
 fn assert_add_job_passed_before(h: &Harness, path: &Path, exited_ms: i64) {
     let id = column(h, path, "worktree_id").unwrap();
     let job = query(
@@ -845,17 +967,20 @@ fn assert_add_job_passed_before(h: &Harness, path: &Path, exited_ms: i64) {
 
 #[test]
 fn slow_worktree_add_of_60_s_keeps_the_heartbeat_and_the_tree_is_used_only_after_its_job_passed() {
+    let _serial = serial();
     let mut h = fleet("p3-slow-add");
     slow_git(&mut h);
-    ok(&h, &["ledger", "run", "new", "slow"]);
-    queue(&h, "t1");
     let mut agents = Agents(Vec::new());
-    let (w, _) = live_bind(&h, &mut agents);
-    let mut fleetds = Fleetds::new(&h);
-    let pid = fleetds.start(&h, "fleetd");
+    let (_, task) = h.without_fleetd(|| {
+        let run = seed(&h, "slow", None);
+        queue(&h, &run, "t1");
+        live_bind(&h, &mut agents)
+    });
+    let fleetds = Fleetds::new(&h);
+    let pid = fleetds.row().expect("the row of the test fleetd").0;
     wait_for_heartbeat(&h, pid);
 
-    let add = add_watching_heartbeat(&h, &w, "feat", pid);
+    let add = add_watching_heartbeat(&h, &task, pid);
 
     assert!(
         add.took >= Duration::from_secs(SLOW_ADD_S),

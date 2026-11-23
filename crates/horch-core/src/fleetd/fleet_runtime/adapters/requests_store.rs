@@ -1,12 +1,3 @@
-//! The `requests` rows in SQLite: insert a pending row, record its decision
-//! and its result, and read the stored result of a seen `request_id`.
-//!
-//! Requirements: RR-8, SR-8, FM-15. Ticket 12 of fleetd-p5 fills it.
-//!
-//! Each function writes in the transaction of its caller. The `requests`
-//! row is not an entity of `transition()`: the design lists no state table
-//! for it. A row leaves `pending` only once, to `applied` or `refused`.
-
 use anyhow::{bail, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
@@ -14,30 +5,21 @@ use serde_json::Value;
 use crate::fleetd::fleet_runtime::adapters::request_wire::Request;
 use crate::taskledger::util;
 
-/// The text of the `caller` column when the fact of the caller is unknown.
-/// A user name never has parentheses.
 pub const UNKNOWN_CALLER: &str = "(unknown)";
 
-/// The state of a `requests` row and what it stores.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Stored {
-    /// Received, not yet applied or refused.
     Pending,
-    /// Applied, with its result.
     Applied(Value),
-    /// Refused, with its reason.
     Refused(String),
 }
 
-/// The `requests` row of 1 `request_id`: the hash of its payload and its
-/// state.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Row {
     pub payload_sha256: String,
     pub stored: Stored,
 }
 
-/// The row of `request_id`, or `None` when fleetd never read it.
 pub fn get(conn: &Connection, request_id: &str) -> Result<Option<Row>> {
     let found = conn
         .query_row(
@@ -73,8 +55,6 @@ pub fn get(conn: &Connection, request_id: &str) -> Result<Option<Row>> {
     }))
 }
 
-/// Insert the `pending` row of `request`, from `caller`: the peer user, the
-/// owner of the request file, or [`UNKNOWN_CALLER`].
 pub fn insert_pending(conn: &Connection, request: &Request, caller: &str) -> Result<()> {
     let id = request.request_id.as_str();
     conn.execute(
@@ -95,8 +75,6 @@ pub fn insert_pending(conn: &Connection, request: &Request, caller: &str) -> Res
     Ok(())
 }
 
-/// Move the pending row of `request_id` to `applied`, with `auth` and
-/// `result`.
 pub fn set_applied(conn: &Connection, request_id: &str, auth: &str, result: &Value) -> Result<()> {
     decide(
         conn,
@@ -107,8 +85,6 @@ pub fn set_applied(conn: &Connection, request_id: &str, auth: &str, result: &Val
     )
 }
 
-/// Move the pending row of `request_id` to `refused`, with `reason` and no
-/// `auth`.
 pub fn set_refused(conn: &Connection, request_id: &str, reason: &str) -> Result<()> {
     decide(
         conn,
@@ -119,8 +95,6 @@ pub fn set_refused(conn: &Connection, request_id: &str, reason: &str) -> Result<
     )
 }
 
-/// Run the update `sql` of the decision of `request_id`. It fails when no
-/// pending row has the id, so a decided row never changes.
 fn decide(
     conn: &Connection,
     request_id: &str,

@@ -1,16 +1,7 @@
-//! The idea folder: idea.md, the amendments, interview.md, assumptions.md,
-//! spec.md and requirements.yaml, and the checks of their content.
-//!
-//! Requirements: FR-1 (the immutable idea file), FM-30 (an `[open]` item
-//! refuses `assumptions.md`; each requirement cites an assumption or an
-//! answer). The file checks of SR-6 are in the adapter `idea_folder_files`.
-
 use super::plan_validator::Requirement;
 
-/// The size limit of each file of an idea folder, in bytes.
 pub const FILE_LIMIT: u64 = 64 * 1024;
 
-/// The file names of an idea folder.
 pub const IDEA_MD: &str = "idea.md";
 pub const AMENDMENTS: &str = "amendments";
 pub const INTERVIEW_MD: &str = "interview.md";
@@ -18,10 +9,8 @@ pub const ASSUMPTIONS_MD: &str = "assumptions.md";
 pub const SPEC_MD: &str = "spec.md";
 pub const REQUIREMENTS_YAML: &str = "requirements.yaml";
 
-/// The line that opens and closes the front matter of idea.md.
 const FENCE: &str = "---";
 
-/// The content of a file fails a rule. `reason` is what the user reads.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Invalid {
     pub reason: String,
@@ -33,23 +22,16 @@ fn invalid(reason: impl Into<String>) -> Invalid {
     }
 }
 
-/// idea.md: its front matter and its text. Written 1 time, never changed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IdeaFile {
-    /// `I-NNNN`.
     pub id: String,
-    /// The time of `horch idea add`, RFC 3339.
     pub created: String,
-    /// What wrote the idea, for example `horch idea add`.
     pub source: String,
     pub priority: i64,
-    /// The ids of the ideas that this idea depends on.
     pub depends_on: Vec<String>,
-    /// The text of the idea, after the front matter.
     pub text: String,
 }
 
-/// Split idea.md into its front matter and its text.
 pub fn split_front_matter(file: &str) -> Result<(&str, &str), Invalid> {
     let no_front = || invalid("idea.md has no front matter between 2 `---` lines");
     file.strip_prefix(&format!("{FENCE}\n"))
@@ -57,19 +39,15 @@ pub fn split_front_matter(file: &str) -> Result<(&str, &str), Invalid> {
         .ok_or_else(no_front)
 }
 
-/// Join the front matter `front` (YAML that ends with a newline) and `text`
-/// into idea.md.
 pub fn join_front_matter(front: &str, text: &str) -> String {
     format!("{FENCE}\n{front}{FENCE}\n{text}")
 }
 
-/// `id` is an idea id: `I-` and digits.
 pub fn is_idea_id(id: &str) -> bool {
     id.strip_prefix("I-")
         .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
 
-/// The id in a file is the id of its folder (Protocol rule 7).
 pub fn check_idea_id(file: &str, found: &str, folder: &str) -> Result<(), Invalid> {
     if found == folder {
         Ok(())
@@ -80,41 +58,31 @@ pub fn check_idea_id(file: &str, found: &str, folder: &str) -> Result<(), Invali
     }
 }
 
-/// The mark of an item of assumptions.md.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mark {
     Confirmed,
     Assumed,
-    /// An assumption that the sub-orchestrator decided for a worker
-    /// question (D13): it needs no new approval, and you can reverse it.
     OwnDecision,
     Open,
 }
 
-/// The mark word of an own decision of the sub-orchestrator (D13).
 pub const OWN_DECISION_MARK: &str = "assumed, own decision";
 
-/// 1 numbered item of assumptions.md.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Assumption {
-    /// The number of the item; its id is `A<number>`.
     pub number: u32,
     pub mark: Mark,
     pub text: String,
-    /// The answer of interview.md that the item cites: `Q<n>`.
     pub question: Option<String>,
 }
 
-/// assumptions.md, validated: no item is `[open]`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Assumptions {
-    /// The name of the feature branch, from the line `feature: <name>`.
     pub feature: Option<String>,
     pub items: Vec<Assumption>,
 }
 
 impl Assumptions {
-    /// The id of each item: `A1`, `A2`, ...
     pub fn ids(&self) -> Vec<String> {
         self.items
             .iter()
@@ -123,10 +91,6 @@ impl Assumptions {
     }
 }
 
-/// Parse and validate assumptions.md: a `# ` heading, an optional
-/// `feature: <kebab-case name>` line, then items `<n>. [<mark>] <text>`
-/// with an optional `(Q<n>)` at the end, numbered from 1. A file with an
-/// `[open]` item does not validate.
 pub fn parse_assumptions(file: &str) -> Result<Assumptions, Invalid> {
     let mut lines = file
         .lines()
@@ -175,7 +139,6 @@ pub fn parse_assumptions(file: &str) -> Result<Assumptions, Invalid> {
     Ok(Assumptions { feature, items })
 }
 
-/// 1 item line, or `None` when the line is not an item.
 fn parse_item(line: &str) -> Option<Assumption> {
     let (number, rest) = line.split_once(". ")?;
     let number = number.parse::<u32>().ok()?;
@@ -208,7 +171,6 @@ fn parse_item(line: &str) -> Option<Assumption> {
     })
 }
 
-/// `name` is lower-case words of letters and digits, joined by `-`.
 fn is_kebab_case(name: &str) -> bool {
     !name.is_empty()
         && name.split('-').all(|word| {
@@ -219,19 +181,16 @@ fn is_kebab_case(name: &str) -> bool {
         })
 }
 
-/// `id` is `<prefix><n>` with `n` a number from 1.
 fn is_numbered_id(id: &str, prefix: char) -> bool {
     id.strip_prefix(prefix)
         .and_then(|n| n.parse::<u32>().ok())
         .is_some_and(|n| n > 0 && !id[1..].starts_with('0'))
 }
 
-/// The heading of a new interview.md.
 pub fn interview_heading(idea: &str) -> String {
     format!("# {idea} interview\n")
 }
 
-/// The entry of answer `Q<n>` in interview.md.
 pub fn interview_entry(n: usize, question: &str, answer: &str) -> String {
     format!(
         "\n## Q{n}\n{}\n\nAnswer: {}\n",
@@ -240,7 +199,6 @@ pub fn interview_entry(n: usize, question: &str, answer: &str) -> String {
     )
 }
 
-/// The id of each answer of interview.md: `Q1`, `Q2`, ...
 pub fn interview_answers(file: &str) -> Vec<String> {
     file.lines()
         .filter_map(|l| l.strip_prefix("## "))
@@ -250,7 +208,6 @@ pub fn interview_answers(file: &str) -> Vec<String> {
         .collect()
 }
 
-/// spec.md validates when it has at least 1 `## ` heading.
 pub fn check_spec(file: &str) -> Result<(), Invalid> {
     if file.lines().any(|l| l.starts_with("## ")) {
         Ok(())
@@ -259,9 +216,6 @@ pub fn check_spec(file: &str) -> Result<(), Invalid> {
     }
 }
 
-/// Validate the requirements of requirements.yaml: at least 1, each id
-/// unique, and each requirement cites at least 1 item, each an id of
-/// `assumptions` (`A<n>`) or of `answers` (`Q<n>`).
 pub fn check_requirements(
     requirements: &[Requirement],
     assumptions: &[String],

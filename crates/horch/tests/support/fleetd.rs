@@ -1,38 +1,31 @@
-//! A test fleetd: the real `horch fleetd` of 1 test, on the temporary
-//! ledger and fleet root of that test.
-//!
-//! The `horch` commands of Phase 5 send their writes to fleetd as requests
-//! (the channel, or a request file when fleetd is down). A CLI test of such
-//! a command starts 1 [`TestFleetd`] for its temporary ledger. fleetd
-//! serves the channel and applies the request files, and a drop stops it,
-//! also when the test fails. 1 fleetd for each ledger: the `fleetd` row
-//! has 1 row only.
-//!
-//! The socket path must be short (`sun_path` holds about 104 bytes on
-//! macOS), so the fleet root of a test is in a short folder under `/tmp`.
-
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-/// The longest wait for fleetd to serve its channel. A slow host only makes
-/// the wait longer: the test waits for the event, not for a time.
 const START_WAIT: Duration = Duration::from_secs(120);
+const HEALTHY_MACHINE: &str = r#"{"os":"linux","arch":"x86_64","cpus":8,"load_average_1m":1.0,"mem_total_bytes":17179869184,"mem_available_bytes":8589934592,"disk_free_bytes":214748364800,"disk_total_bytes":536870912000,"gpu":"none","max_open_files":1048576,"max_processes":100000}"#;
 
-/// 1 `horch fleetd` process of a test.
+pub fn healthy_machine_file(dir: &Path) -> PathBuf {
+    let file = dir.join("healthy-machine.json");
+    std::fs::write(&file, HEALTHY_MACHINE).unwrap();
+    file
+}
+
 pub struct TestFleetd {
     child: Child,
 }
 
 impl TestFleetd {
-    /// Start `horch fleetd` with `cmd`, a command of the test's `horch`
-    /// binary with the environment of the test (`HORCH_LEDGER_DB` or
-    /// `HOME`, `FLEET_ROOT` when set). `fleet_root` is the fleet root that
-    /// this environment gives. The output of fleetd goes to
-    /// `<fleet_root>/fleetd.stdout` and `fleetd.stderr`. Returns when
-    /// fleetd accepts a connection on its channel.
     pub fn start(mut cmd: Command, fleet_root: &Path) -> TestFleetd {
         std::fs::create_dir_all(fleet_root).unwrap();
+        if !cmd.get_envs().any(|(k, _)| k == "HORCH_MACHINE_FILE") {
+            cmd.env("HORCH_MACHINE_FILE", healthy_machine_file(fleet_root));
+        }
+        if !cmd.get_envs().any(|(k, _)| k == "HORCH_GIT_BIN") {
+            if let Some(git) = git_on_real_path() {
+                cmd.env("HORCH_GIT_BIN", git);
+            }
+        }
         let file = |ext: &str| std::fs::File::create(fleet_root.join(format!("fleetd.{ext}")));
         let child = cmd
             .arg("fleetd")
@@ -75,13 +68,16 @@ impl Drop for TestFleetd {
     }
 }
 
-/// The channel of the fleet at `fleet_root`.
+fn git_on_real_path() -> Option<PathBuf> {
+    let path = std::env::var_os("PATH");
+    let pathext = std::env::var("PATHEXT").ok();
+    horch_core::runtime::process::which(path.as_deref(), pathext.as_deref(), "git")
+}
+
 fn socket(fleet_root: &Path) -> PathBuf {
     fleet_root.join("run").join("fleetd.sock")
 }
 
-/// A new short temporary folder under `/tmp` (mode 0700 on unix), for a
-/// ledger and a fleet root whose socket path fits `sun_path`.
 pub fn short_tempdir() -> tempfile::TempDir {
     let mut b = tempfile::Builder::new();
     b.prefix("hf");

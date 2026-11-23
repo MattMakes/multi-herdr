@@ -1,0 +1,1125 @@
+{
+ "all_in_proven_ranges": true,
+ "findings": [],
+ "in_range_rows": [
+  "CG"
+ ],
+ "inputs": {
+  "A": null,
+  "Dg": 2.0,
+  "H": 2.5,
+  "I0": 1.0,
+  "N": 30,
+  "R_content": 0.036775,
+  "R_count": 0.076936,
+  "R_end": 0.892951,
+  "R_max": 2.392951,
+  "R_source": null,
+  "T_X": null,
+  "T_e": 489.422852,
+  "V": 120.0,
+  "X_e": 1.0,
+  "X_p": 10.0,
+  "a1": 10.0,
+  "absence_h": 168.0,
+  "alpha": null,
+  "c": null,
+  "closed_cap_h": null,
+  "econ": "coin",
+  "econ_lines": [
+   {
+    "a1": 10.0,
+    "b": 1.15,
+    "cap": null,
+    "d": 1.0424852529318305,
+    "id": "gen",
+    "r": 0.2977,
+    "steps": true
+   },
+   {
+    "a1": 3692.0,
+    "b": 1.3774536687604373,
+    "cap": null,
+    "d": 1.1,
+    "id": "m1",
+    "r": 0.2976,
+    "steps": false
+   },
+   {
+    "a1": 36920.0,
+    "b": 1.3774536687604373,
+    "cap": null,
+    "d": 1.1,
+    "id": "m2",
+    "r": 0.2976,
+    "steps": false
+   },
+   {
+    "a1": 978.0,
+    "b": 1.21,
+    "cap": 1,
+    "d": 1.1,
+    "id": "element_1",
+    "r": 0.5,
+    "steps": false
+   },
+   {
+    "a1": 228000.0,
+    "b": 1.21,
+    "cap": 1,
+    "d": 1.1,
+    "id": "element_5",
+    "r": 0.5,
+    "steps": false
+   },
+   {
+    "a1": 1360000000.0,
+    "b": 1.21,
+    "cap": 1,
+    "d": 1.1,
+    "id": "element_9",
+    "r": 0.5,
+    "steps": false
+   }
+  ],
+  "f_closed": 0.0,
+  "f_open": 0.8,
+  "g_run": 0.002043,
+  "k": 10,
+  "k_mid": 93,
+  "kappa": null,
+  "kappa_closed": null,
+  "lam": null,
+  "ldot": null,
+  "measured": {
+   "P1h": 64260.671034,
+   "T_sim": null,
+   "early_unlocks": 5,
+   "idle": {
+    "open": {
+     "1": 0.2771,
+     "168": 0.0049,
+     "24": 0.026,
+     "8": 0.0623
+    }
+   },
+   "lambda_sim": null,
+   "largest_gap": 10.766667,
+   "length_hours": 2.4939,
+   "median_gap": 8.566667,
+   "phases": [
+    {
+     "R": 0,
+     "start_minutes": 0.0
+    },
+    {
+     "R": 0.2977,
+     "start_minutes": 0.17
+    },
+    {
+     "R": 0.2977,
+     "start_minutes": 9.52
+    },
+    {
+     "R": 0.5953,
+     "start_minutes": 12.23
+    },
+    {
+     "R": 0.893,
+     "start_minutes": 27.23
+    },
+    {
+     "R": 0.893,
+     "start_minutes": 46.07
+    },
+    {
+     "R": 0.893,
+     "start_minutes": 108.98
+    }
+   ],
+   "policy_gap": 1.0,
+   "runs_early": [],
+   "slowdown": 1.0225,
+   "unlocks_first_hour": 18
+  },
+  "open_cap_h": null,
+  "p": null,
+  "q": null,
+  "s": null,
+  "s_end": null,
+  "sigma": 900.0,
+  "u_model": 7.5,
+  "w": 2.666447
+ },
+ "mode": "model",
+ "ready": false,
+ "result": "simulated",
+ "result_text": "each row passes or is simulated, not proved, and no part is a stub: the design can go to a build, and a play test must confirm the simulated rows",
+ "rows": [
+  {
+   "clauses": [
+    {
+     "ok": true,
+     "text": "g of the 2 halves after hour 1 differ by 12% (limit 20%; simulated, not proved)"
+    }
+   ],
+   "difference": null,
+   "fix": "",
+   "formula": {
+    "num": 1.0066618404443217,
+    "ok": true,
+    "value": "R of the carriers 0.893 + 1 / (k ln b) 0.077 of gen at level 93 (the middle of the length) + the content share 0.037 = 1.007, no reset layer; g of the 2 halves after hour 1: 0.00219 and 0.00193 /s"
+   },
+   "id": "PO1",
+   "kind": "obligation",
+   "law": "L2",
+   "limit": "<= 1 (within 0.05) at the middle of the length",
+   "parts": [],
+   "points": [],
+   "reason": "",
+   "simulation": null,
+   "source": "formula",
+   "statement": "R < 1 in each run phase that has a reset layer. R = 1 only with no uncapped additive line",
+   "status": "pass",
+   "value": "R of the carriers 0.893 + 1 / (k ln b) 0.077 of gen at level 93 (the middle of the length) + the content share 0.037 = 1.007, no reset layer; g of the 2 halves after hour 1: 0.00219 and 0.00193 /s"
+  },
+  {
+   "clauses": [],
+   "difference": null,
+   "fix": "",
+   "formula": {
+    "num": null,
+    "ok": null,
+    "value": "n/a"
+   },
+   "id": "PO2",
+   "kind": "obligation",
+   "law": "L6",
+   "limit": "",
+   "parts": [],
+   "points": [],
+   "reason": "the model has no reset layer",
+   "simulation": null,
+   "source": "formula",
+   "statement": "The reset loop is stable: lambda = p q / (1 - R) <= 1, and lambda = 1 for linear progress",
+   "status": "not applicable",
+   "value": ""
+  },
+  {
+   "clauses": [],
+   "difference": null,
+   "fix": "",
+   "formula": {
+    "num": null,
+    "ok": null,
+    "value": "n/a"
+   },
+   "id": "PO3",
+   "kind": "obligation",
+   "law": "L6",
+   "limit": "",
+   "parts": [],
+   "points": [],
+   "reason": "the model has no reset layer",
+   "simulation": null,
+   "source": "formula",
+   "statement": "A best reset exists: s = p / (1 - R) > 1",
+   "status": "not applicable",
+   "value": ""
+  },
+  {
+   "clauses": [],
+   "difference": null,
+   "fix": "",
+   "formula": {
+    "num": null,
+    "ok": null,
+    "value": "n/a"
+   },
+   "id": "PO4",
+   "kind": "obligation",
+   "law": "L6",
+   "limit": "",
+   "parts": [],
+   "points": [],
+   "reason": "the model has no reset layer",
+   "simulation": null,
+   "source": "formula",
+   "statement": "The gap between the patient and the early reset rule is at most Dg",
+   "status": "not applicable",
+   "value": ""
+  },
+  {
+   "clauses": [],
+   "difference": null,
+   "fix": "",
+   "formula": {
+    "num": null,
+    "ok": null,
+    "value": "n/a"
+   },
+   "id": "PO5",
+   "kind": "obligation",
+   "law": "L6, L8",
+   "limit": "",
+   "parts": [],
+   "points": [],
+   "reason": "the model has no reset layer",
+   "simulation": null,
+   "source": "formula",
+   "statement": "The run length T_X = X^(1/s) (c / A)^(1/alpha) is within 20% of the session sigma",
+   "status": "not applicable",
+   "value": ""
+  },
+  {
+   "clauses": [],
+   "difference": 0.1521,
+   "fix": "",
+   "formula": {
+    "num": 0.00577876937278371,
+    "ok": true,
+    "value": "open 1 h 0.286; open 8 h 0.070; open 24 h 0.029; open 168 h 0.006"
+   },
+   "id": "PO6",
+   "kind": "obligation",
+   "law": "L4",
+   "limit": "other points 0 to 1",
+   "parts": [
+    {
+     "part": "closed game",
+     "reason": "no offline gain by design",
+     "status": "not applicable"
+    }
+   ],
+   "points": [
+    {
+     "band": [
+      0.0,
+      1.0
+     ],
+     "formula": 0.2860830049488047,
+     "hours": 1,
+     "note": "",
+     "simulation": 0.2771,
+     "source": "formula",
+     "state": "open"
+    },
+    {
+     "band": [
+      0.0,
+      1.0
+     ],
+     "formula": 0.06968973323434631,
+     "hours": 8,
+     "note": "",
+     "simulation": 0.0623,
+     "source": "formula",
+     "state": "open"
+    },
+    {
+     "band": [
+      0.0,
+      1.0
+     ],
+     "formula": 0.029429943761940906,
+     "hours": 24,
+     "note": "",
+     "simulation": 0.026,
+     "source": "formula",
+     "state": "open"
+    },
+    {
+     "band": [
+      0.0,
+      1.0
+     ],
+     "formula": 0.00577876937278371,
+     "hours": 168,
+     "note": "",
+     "simulation": 0.0049,
+     "source": "formula",
+     "state": "open"
+    }
+   ],
+   "reason": "",
+   "simulation": {
+    "num": 0.0049,
+    "ok": true,
+    "value": "open 1 h 0.277; open 8 h 0.062; open 24 h 0.026; open 168 h 0.005"
+   },
+   "source": "both",
+   "statement": "The idle value rho(T) of L4b is in its band at 1 h, 8 h, 24 h and 7 d, open and closed",
+   "status": "pass",
+   "value": "open 1 h 0.286; open 8 h 0.070; open 24 h 0.029; open 168 h 0.006 | simulation: open 1 h 0.277; open 8 h 0.062; open 24 h 0.026; open 168 h 0.005; closed game: not applicable (no offline gain by design)"
+  },
+  {
+   "clauses": [],
+   "difference": null,
+   "fix": "",
+   "formula": {
+    "num": null,
+    "ok": true,
+    "value": "L4 property 3: f <= 1 and R > 0"
+   },
+   "id": "PO7",
+   "kind": "obligation",
+   "law": "L4",
+   "limit": "f <= 1 and R > 0",
+   "parts": [
+    {
+     "part": "closed game",
+     "reason": "no offline gain by design",
+     "status": "not applicable"
+    }
+   ],
+   "points": [],
+   "reason": "",
+   "simulation": {
+    "num": 0.2771,
+    "ok": true,
+    "value": "largest idle value 0.277"
+   },
+   "source": "both",
+   "statement": "Idle stays below active for each T: p kappa X^(1/p) < e ln(1 + X)",
+   "status": "pass",
+   "value": "L4 property 3: f <= 1 and R > 0 | simulation: largest idle value 0.277; closed game: not applicable (no offline gain by design)"
+  },
+  {
+   "clauses": [],
+   "difference": null,
+   "fix": "",
+   "formula": {
+    "num": 0.8,
+    "ok": true,
+    "value": "f_open = 0.8, f_closed = 0"
+   },
+   "id": "PO8",
+   "kind": "obligation",
+   "law": "L4",
+   "limit": "<= 1",
+   "parts": [
+    {
+     "part": "closed game",
+     "reason": "no offline gain by design",
+     "status": "not applicable"
+    }
+   ],
+   "points": [],
+   "reason": "",
+   "simulation": null,
+   "source": "formula",
+   "statement": "No idle state pays more than active play: f_open <= 1 and f_closed <= 1",
+   "status": "pass",
+   "value": "f_open = 0.8, f_closed = 0; closed game: not applicable (no offline gain by design)"
+  },
+  {
+   "clauses": [],
+   "difference": null,
+   "fix": "",
+   "formula": {
+    "num": null,
+    "ok": true,
+    "value": "tools: open income share f_open = 0.8 < 1 (scale tool)"
+   },
+   "id": "PO9",
+   "kind": "obligation",
+   "law": "L5",
+   "limit": "no open-idle cap below 168 h",
+   "parts": [
+    {
+     "part": "closed game",
+     "reason": "no offline gain by design",
+     "status": "not applicable"
+    }
+   ],
+   "points": [],
+   "reason": "",
+   "simulation": null,
+   "source": "formula",
+   "statement": "A presence tool limits open idle, and no open-idle cap is below the longest absence that must pay",
+   "status": "pass",
+   "value": "tools: open income share f_open = 0.8 < 1 (scale tool); closed game: not applicable (no offline gain by design)"
+  },
+  {
+   "clauses": [
+    {
+     "ok": true,
+     "text": "largest gap after hour 1 10.8 min (limit 20.0 min)"
+    }
+   ],
+   "difference": 0.0708,
+   "fix": "",
+   "formula": {
+    "num": 8.0,
+    "ok": true,
+    "value": "u = 7.50 unlocks for each hour, 1 / u = 8.0 min"
+   },
+   "id": "PO10",
+   "kind": "obligation",
+   "law": "L3, L8",
+   "limit": "<= 15 min, u in [5, 60]",
+   "parts": [],
+   "points": [],
+   "reason": "",
+   "simulation": {
+    "num": 8.566666666666666,
+    "ok": true,
+    "value": "median gap after hour 1 8.6 min"
+   },
+   "source": "both",
+   "statement": "1 unlock for each session after the first hour: 1 / u <= sigma, with w = e^(alpha ldot / u)",
+   "status": "pass",
+   "value": "u = 7.50 unlocks for each hour, 1 / u = 8.0 min | simulation: median gap after hour 1 8.6 min"
+  },
+  {
+   "clauses": [
+    {
+     "ok": true,
+     "text": "5 unlocks in the first 5 minutes (limit 3 or more)"
+    }
+   ],
+   "difference": null,
+   "fix": "",
+   "formula": {
+    "num": 10.0,
+    "ok": true,
+    "value": "a_1 = 10 (gen), I_0 = 1"
+   },
+   "id": "PO11",
+   "kind": "obligation",
+   "law": "L8",
+   "limit": "<= 15",
+   "parts": [],
+   "points": [],
+   "reason": "",
+   "simulation": null,
+   "source": "formula",
+   "statement": "The first cost a_1 <= 15 I_0, and at least 3 unlocks in the first 5 minutes. An unlock is a new axis step, the first purchase of a line, or a milestone, after t = 0",
+   "status": "pass",
+   "value": "a_1 = 10 (gen), I_0 = 1"
+  },
+  {
+   "clauses": [],
+   "difference": 0.0151,
+   "fix": "",
+   "formula": {
+    "num": 2.532108057340226,
+    "ok": true,
+    "value": "H from N = 30: 2.53 h"
+   },
+   "id": "PO12",
+   "kind": "obligation",
+   "law": "L8",
+   "limit": "2.5 h within 15%",
+   "parts": [],
+   "points": [],
+   "reason": "",
+   "simulation": {
+    "num": 2.4939,
+    "ok": true,
+    "value": "active_greedy finishes at 2.49 h"
+   },
+   "source": "both",
+   "statement": "The axis count N gives the length H within 15%",
+   "status": "pass",
+   "value": "H from N = 30: 2.53 h | simulation: active_greedy finishes at 2.49 h"
+  },
+  {
+   "clauses": [
+    {
+     "ok": true,
+     "text": "simulated slow-down at x10 = 1.02 (limit < 1.1)"
+    }
+   ],
+   "difference": null,
+   "fix": "",
+   "formula": {
+    "num": 489.4228515917894,
+    "ok": true,
+    "value": "T_e = 1 / g = 489 s at x10; largest speed: formula x24, simulation x20"
+   },
+   "id": "PO13",
+   "kind": "obligation",
+   "law": "L9",
+   "limit": ">= 200 s",
+   "parts": [],
+   "points": [],
+   "reason": "",
+   "simulation": {
+    "num": null,
+    "ok": true,
+    "value": "median run n/a s, slow-down at the play-test speed 1.02"
+   },
+   "source": "both",
+   "statement": "The play-test speed k keeps T_X >= 10 k D_h",
+   "status": "pass",
+   "value": "T_e = 1 / g = 489 s at x10; largest speed: formula x24, simulation x20 | simulation: median run n/a s, slow-down at the play-test speed 1.02"
+  },
+  {
+   "clauses": [],
+   "difference": null,
+   "fix": "",
+   "formula": null,
+   "id": "PC1",
+   "kind": "pattern",
+   "law": "S28",
+   "limit": "2 to 3 h",
+   "parts": [],
+   "points": [],
+   "reason": "",
+   "simulation": {
+    "num": 2.493888888888889,
+    "ok": true,
+    "value": "active_greedy reaches axis step 30 at 2.49 h"
+   },
+   "source": "simulation",
+   "statement": "The active player reaches the hard end inside the length target",
+   "status": "pass",
+   "uses": "",
+   "value": "active_greedy reaches axis step 30 at 2.49 h"
+  },
+  {
+   "clauses": [
+    {
+     "ok": true,
+     "text": "first purchase at 0.17 min (limit 2 min)"
+    }
+   ],
+   "difference": null,
+   "fix": "",
+   "formula": null,
+   "id": "PC2",
+   "in_range": [],
+   "kind": "pattern",
+   "law": "CT2, CT3",
+   "limit": "<= about 2 min (range to 2.1 min)",
+   "parts": [],
+   "points": [],
+   "reason": "",
+   "simulation": {
+    "num": 1.4166666666666667,
+    "ok": true,
+    "value": "largest gap 1.42 min; first purchase at 0.17 min"
+   },
+   "source": "simulation",
+   "statement": "The largest gap between 2 purchases of the active player is at most the gap target, and the first purchase comes inside the first-purchase target",
+   "status": "pass",
+   "uses": "",
+   "value": "largest gap 1.42 min; first purchase at 0.17 min",
+   "where": {
+    "end_minutes": 12.23,
+    "start_minutes": 10.82
+   }
+  },
+  {
+   "clauses": [],
+   "difference": null,
+   "fix": "",
+   "formula": null,
+   "id": "PC3",
+   "kind": "pattern",
+   "law": "CT5",
+   "limit": "",
+   "parts": [],
+   "points": [],
+   "reason": "no demo end stated (no demo)",
+   "simulation": {
+    "num": null,
+    "ok": false,
+    "value": "no demo end"
+   },
+   "source": "simulation",
+   "statement": "Each part of the game past the demo end adds new content: a first purchase of a line or a milestone, not only an axis step",
+   "status": "not applicable",
+   "uses": "",
+   "value": "no demo end"
+  },
+  {
+   "clauses": [
+    {
+     "ok": true,
+     "text": "first hour: largest gap 4.33 min (limit 5 min)"
+    }
+   ],
+   "difference": null,
+   "fix": "",
+   "formula": null,
+   "id": "PC4",
+   "in_range": [],
+   "kind": "pattern",
+   "law": "CT6",
+   "limit": "<= about 10 min (range to 12 min); first hour <= about 5 min (range to 6 min)",
+   "needs": [],
+   "parts": [],
+   "points": [],
+   "reason": "",
+   "simulation": {
+    "num": 8.916666666666666,
+    "ok": true,
+    "value": "largest gap 8.92 min; first hour 4.33 min; 44 unlocks"
+   },
+   "source": "simulation",
+   "statement": "The largest gap between 2 unlocks of the active player (an axis step, a first purchase or a milestone) is at most the unlock gap target over the whole length and in the first hour",
+   "status": "pass",
+   "uses": "",
+   "value": "largest gap 8.92 min; first hour 4.33 min; 44 unlocks"
+  },
+  {
+   "clauses": [],
+   "difference": null,
+   "fix": "",
+   "formula": null,
+   "id": "PC5",
+   "kind": "pattern",
+   "law": "reachable",
+   "limit": "each element before the hard end",
+   "parts": [],
+   "points": [],
+   "reason": "",
+   "simulation": {
+    "num": 16,
+    "ok": true,
+    "value": "16 of 16 elements reached"
+   },
+   "source": "simulation",
+   "statement": "The active player buys each purchase line and reaches each milestone before the hard end",
+   "status": "pass",
+   "unreached": [],
+   "uses": "",
+   "value": "16 of 16 elements reached"
+  },
+  {
+   "automation": [],
+   "busiest_minute": 0,
+   "clauses": [],
+   "difference": null,
+   "fix": "",
+   "formula": null,
+   "id": "PC6",
+   "in_range": [],
+   "kind": "pattern",
+   "law": "purchase rate",
+   "limit": "<= about 30 purchases in 1 minute (range to 36 purchases in 1 minute)",
+   "parts": [],
+   "plan": [],
+   "points": [],
+   "reason": "",
+   "simulation": {
+    "num": 5,
+    "ok": true,
+    "value": "busiest minute 5 purchases by hand (5 with the auto-buy purchases); last hour 1.8 for each minute; 0 lines with auto-buy"
+   },
+   "source": "simulation",
+   "statement": "The purchases of the active player in each minute stay at or below the purchase rate target; the automation of the model (S24 auto-buy) takes the rest",
+   "status": "pass",
+   "uses": "",
+   "value": "busiest minute 5 purchases by hand (5 with the auto-buy purchases); last hour 1.8 for each minute; 0 lines with auto-buy"
+  },
+  {
+   "below": [],
+   "clauses": [],
+   "dead": [],
+   "difference": null,
+   "fix": "",
+   "floor": 0.1,
+   "floor_source": "designer target; default 10%: the low end of the proven step d 1.1 to 2 of S02.levelled_factor (assets/systems.json, O:188, D:195)",
+   "formula": null,
+   "id": "PV",
+   "in_range": [],
+   "kind": "purchase",
+   "law": "S02, L1",
+   "limit": ">= about 10% for each level, or for each count block of a line with count steps (range to 8.0%)",
+   "lines": [
+    {
+     "block": 10,
+     "formula_gain": 0.516,
+     "id": "gen",
+     "level_gain": 0.005952,
+     "levels_bought": 170,
+     "raises": [],
+     "simulated_gain": 0.610742,
+     "status": "pass"
+    },
+    {
+     "formula_gain": 0.1,
+     "id": "m1",
+     "levels_bought": 57,
+     "raises": [],
+     "simulated_gain": 0.1,
+     "status": "pass"
+    },
+    {
+     "formula_gain": 0.1,
+     "id": "m2",
+     "levels_bought": 50,
+     "raises": [],
+     "simulated_gain": 0.1,
+     "status": "pass"
+    },
+    {
+     "formula_gain": null,
+     "id": "care",
+     "levels_bought": 0,
+     "raises": [],
+     "simulated_gain": null,
+     "status": "pass"
+    },
+    {
+     "formula_gain": 0.1,
+     "id": "element_1",
+     "levels_bought": 1,
+     "raises": [],
+     "simulated_gain": 0.1,
+     "status": "pass"
+    },
+    {
+     "formula_gain": 0.1,
+     "id": "element_5",
+     "levels_bought": 1,
+     "raises": [],
+     "simulated_gain": 0.1,
+     "status": "pass"
+    },
+    {
+     "formula_gain": 0.1,
+     "id": "element_9",
+     "levels_bought": 1,
+     "raises": [],
+     "simulated_gain": 0.1,
+     "status": "pass"
+    }
+   ],
+   "parts": [],
+   "points": [],
+   "reason": "",
+   "simulation": null,
+   "source": "both",
+   "statement": "At the time when the active player buys it, 1 level of each line raises the income, or the stat that the line affects, by the floor or more",
+   "status": "pass",
+   "uses": "",
+   "value": "smallest gain 10.0% (element_1); 7 lines, 0 below the floor; gen: the tested gain is that of 1 count block of 10 levels with its step; 1 level gains 0.6% or more (reported, not tested)",
+   "windows": [
+    {
+     "gain_max": 0.625,
+     "gain_min": 0.0441,
+     "purchases": 24,
+     "start_minutes": 0,
+     "unlocks": 8
+    },
+    {
+     "gain_max": 0.555,
+     "gain_min": 0.0231,
+     "purchases": 25,
+     "start_minutes": 10,
+     "unlocks": 5
+    },
+    {
+     "gain_max": 0.5436,
+     "gain_min": 0.0178,
+     "purchases": 18,
+     "start_minutes": 20,
+     "unlocks": 5
+    },
+    {
+     "gain_max": 0.5399,
+     "gain_min": 0.0166,
+     "purchases": 14,
+     "start_minutes": 30,
+     "unlocks": 4
+    },
+    {
+     "gain_max": 0.5369,
+     "gain_min": 0.0147,
+     "purchases": 18,
+     "start_minutes": 40,
+     "unlocks": 3
+    },
+    {
+     "gain_max": 0.5346,
+     "gain_min": 0.0125,
+     "purchases": 20,
+     "start_minutes": 50,
+     "unlocks": 3
+    },
+    {
+     "gain_max": 0.5327,
+     "gain_min": 0.011,
+     "purchases": 20,
+     "start_minutes": 60,
+     "unlocks": 1
+    },
+    {
+     "gain_max": 0.5311,
+     "gain_min": 0.0096,
+     "purchases": 21,
+     "start_minutes": 70,
+     "unlocks": 3
+    },
+    {
+     "gain_max": 0.5298,
+     "gain_min": 0.0091,
+     "purchases": 16,
+     "start_minutes": 80,
+     "unlocks": 1
+    },
+    {
+     "gain_max": 0.5287,
+     "gain_min": 0.0082,
+     "purchases": 20,
+     "start_minutes": 90,
+     "unlocks": 3
+    },
+    {
+     "gain_max": 0.5277,
+     "gain_min": 0.0078,
+     "purchases": 16,
+     "start_minutes": 100,
+     "unlocks": 2
+    },
+    {
+     "gain_max": 0.5269,
+     "gain_min": 0.0072,
+     "purchases": 18,
+     "start_minutes": 110,
+     "unlocks": 1
+    },
+    {
+     "gain_max": 0.5262,
+     "gain_min": 0.0068,
+     "purchases": 17,
+     "start_minutes": 120,
+     "unlocks": 2
+    },
+    {
+     "gain_max": 0.5255,
+     "gain_min": 0.0063,
+     "purchases": 17,
+     "start_minutes": 130,
+     "unlocks": 2
+    },
+    {
+     "gain_max": 0.525,
+     "gain_min": 0.006,
+     "purchases": 16,
+     "start_minutes": 140,
+     "unlocks": 1
+    }
+   ]
+  },
+  {
+   "clauses": [],
+   "difference": null,
+   "fix": "",
+   "formula": null,
+   "id": "CL",
+   "kind": "purchase",
+   "law": "designer rule, no source",
+   "limit": "the last purchase of each generator line at 50% of the length or later",
+   "lines": [
+    {
+     "capped": false,
+     "id": "gen",
+     "last_minutes": 149.63,
+     "level": 170,
+     "share": 1.0,
+     "text": "gen: level 170, last purchase at 149.6 min (100% of 149.6 min)"
+    }
+   ],
+   "parts": [],
+   "points": [],
+   "reason": "",
+   "simulation": null,
+   "source": "simulation",
+   "statement": "Each generator line (system S01) lives for the core of the game: the active player buys it, and it is not at its cap, at half of the length to the hard end or later",
+   "status": "pass",
+   "uses": "",
+   "value": "gen: level 170, last purchase at 149.6 min (100% of 149.6 min)"
+  },
+  {
+   "clauses": [],
+   "difference": null,
+   "first_step": 1.4137931034482758,
+   "fix": "",
+   "formula": null,
+   "id": "WS",
+   "kind": "purchase",
+   "largest": 2.4375,
+   "law": "S03.exponential g (assets/systems.json)",
+   "limit": "1.15 <= step <= 2.8 after the first step",
+   "median": 1.7258978933284361,
+   "outside": [],
+   "parts": [],
+   "points": [],
+   "reason": "",
+   "simulation": null,
+   "smallest": 1.4545454545454546,
+   "source": "",
+   "statement": "Each step of the wall table of the axis after the first is a wall: the ratio of each wall to the wall before it is inside the g range of S03.exponential; the first step is the start of the game",
+   "status": "pass",
+   "uses": "",
+   "value": "first step x1.41 (first step, not tested); 16 later steps: smallest x1.45, median x1.73, largest x2.44; each later step inside the range"
+  },
+  {
+   "clauses": [],
+   "difference": null,
+   "fix": "",
+   "formula": null,
+   "id": "CG",
+   "in_range": [
+    "10.07 min from 36.0 to 46.1 min against a target of about 10 min (no source), inside the range to 12 min"
+   ],
+   "kind": "content",
+   "law": "FM-1 band of the fun sheet (a target with no source)",
+   "limit": "<= about 20 min (range to 24 min); first hour <= about 10 min (range to 12 min)",
+   "missing": 0,
+   "needs": [],
+   "parts": [],
+   "points": [],
+   "reason": "",
+   "simulation": null,
+   "source": "simulation",
+   "statement": "The largest gap with no new content element of the active player (a first purchase of a line, a first milestone or the first reset; an axis step is not one) is inside the FM-1 band of the fun sheet, in the first hour and over the whole length",
+   "status": "pass (in range)",
+   "uses": "",
+   "value": "largest gap 18.98 min; first hour 10.07 min; 15 content elements; in range: 10.07 min from 36.0 to 46.1 min against a target of about 10 min (no source), inside the range to 12 min"
+  },
+  {
+   "clauses": [],
+   "difference": null,
+   "fix": "",
+   "formula": null,
+   "id": "PU1",
+   "kind": "upkeep",
+   "law": "BM 3b",
+   "limit": ">= 90%",
+   "mark": "simulated",
+   "parts": [],
+   "points": [],
+   "reason": "",
+   "simulation": null,
+   "source": "",
+   "statement": "The upkeep factor u of the active player stays inside its band for 90% or more of the play time",
+   "status": "simulated, not proved",
+   "uses": "",
+   "value": "u inside 0.69 to 1 for 100% of the time; lowest u 0.783"
+  },
+  {
+   "clauses": [],
+   "difference": null,
+   "fix": "",
+   "formula": null,
+   "id": "PU2",
+   "kind": "upkeep",
+   "law": "BM 3b",
+   "limit": "<= 10 min",
+   "mark": "simulated",
+   "parts": [],
+   "points": [],
+   "reason": "",
+   "simulation": null,
+   "source": "",
+   "statement": "No death spiral: the income of the active player never stops rising for longer than the unlock gap target, and the active player reaches the hard end",
+   "status": "simulated, not proved",
+   "uses": "",
+   "value": "longest stall 1.4 min (limit 10 min); exponent 1"
+  },
+  {
+   "clauses": [],
+   "difference": null,
+   "fix": "",
+   "formula": null,
+   "id": "PU3",
+   "kind": "upkeep",
+   "law": "BM 3b, L1",
+   "limit": ">= 10%",
+   "mark": "proved",
+   "parts": [],
+   "points": [],
+   "reason": "",
+   "simulation": null,
+   "source": "",
+   "statement": "1 care level raises the income by the purchase value floor or more while u < 1",
+   "status": "pass",
+   "uses": "",
+   "value": "formula 20.0%; 25 of 25 care purchases gain the floor or close the shortfall"
+  },
+  {
+   "clauses": [],
+   "difference": null,
+   "fix": "",
+   "formula": null,
+   "id": "PU4",
+   "kind": "upkeep",
+   "law": "BM 3b",
+   "limit": ">= 4",
+   "mark": "simulated",
+   "parts": [],
+   "points": [],
+   "reason": "",
+   "simulation": null,
+   "source": "",
+   "statement": "The decision does not end: the purchases of the active player switch between the producer lines and the care lines the stated count of times or more",
+   "status": "simulated, not proved",
+   "uses": "",
+   "value": "46 switches between producer and care purchases"
+  }
+ ],
+ "schema_version": 1,
+ "source": "model.json",
+ "speed": {
+  "T_X": null,
+  "human_decision_seconds": 2.0,
+  "largest_speed_formula": 24,
+  "largest_speed_simulation": 20,
+  "play_test_speed": 20,
+  "rule": "T_X >= 10 x k x D_h",
+  "simulation_rows": [
+   {
+    "decision_game_seconds": 4.0,
+    "slowdown": 1.0033,
+    "speed": 2
+   },
+   {
+    "decision_game_seconds": 10.0,
+    "slowdown": 1.0091,
+    "speed": 5
+   },
+   {
+    "decision_game_seconds": 20.0,
+    "slowdown": 1.0225,
+    "speed": 10
+   },
+   {
+    "decision_game_seconds": 40.0,
+    "slowdown": 1.0425,
+    "speed": 20
+   },
+   {
+    "decision_game_seconds": 100.0,
+    "slowdown": 1.1138,
+    "speed": 50
+   },
+   {
+    "decision_game_seconds": 200.0,
+    "slowdown": 1.2252,
+    "speed": 100
+   },
+   {
+    "decision_game_seconds": 400.0,
+    "slowdown": 1.3812,
+    "speed": 200
+   },
+   {
+    "decision_game_seconds": 1000.0,
+    "slowdown": 2.0049,
+    "speed": 500
+   },
+   {
+    "decision_game_seconds": 2000.0,
+    "slowdown": 2.896,
+    "speed": 1000
+   }
+  ]
+ },
+ "strict_ranges": true
+}

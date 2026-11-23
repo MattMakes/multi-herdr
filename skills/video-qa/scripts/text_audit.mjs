@@ -1,15 +1,4 @@
 #!/usr/bin/env node
-// Text audit over time for 1 HTML scene. Node built-ins only; Chrome is driven over the
-// Chrome DevTools Protocol. The script steps window.__seekToFrame every --step seconds and
-// reads every visible text item: DOM text nodes (box from a Range, font size from the
-// computed style) and canvas text (a fillText/strokeText wrapper installed before load).
-//
-//   text_audit.mjs --scene <index.html> [--out <report.json>] [--duration <sec>]
-//                  [--fps <n>] [--width <px>] [--height <px>] [--step 0.1] [--min-phone-px 10.5]
-//   text_audit.mjs --self-test
-//
-// Size, fps and duration default to window.__videoMeta, then 1920x1080, 30 fps.
-// Exit codes: 0 no finding, 1 at least 1 finding or a scene failure, 2 usage error or no Chrome.
 
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
@@ -27,13 +16,13 @@ const CHROME_TRIES = 3;
 const SELF = fileURLToPath(import.meta.url);
 const FIXTURES = join(dirname(SELF), "fixtures", "text-audit");
 
-export const PHONE_WIDTH = 360; // px: the width a phone shows the whole video at
+export const PHONE_WIDTH = 360;
 export const RULES = ["too_small", "too_short", "overlap", "off_frame", "safe_zone", "placeholder"];
-const CAPTION_ZONE_Y = 0.82; // same zone as qa_video.py safe_zone_flash
-const APP_ZONE_X = 0.85; // portrait only: the right UI column of short-form apps
+const CAPTION_ZONE_Y = 0.82;
+const APP_ZONE_X = 0.85;
 const EDGE_TOLERANCE_PX = 1;
-const SETTLED_PX = 1; // a box that moved at most this much since the previous sample is settled
-const OVERLAP_MIN = 0.1; // share of the smaller box that must be covered
+const SETTLED_PX = 1;
+const OVERLAP_MIN = 0.1;
 const MIN_OPACITY = 0.05;
 const PLACEHOLDER = /\bNaN\b|\bundefined\b|\[object Object\]/;
 const OWNER = "video-animator";
@@ -45,11 +34,8 @@ const fail = (message, Kind = Error) => {
 const check = (cond, message, Kind) => cond || fail(message, Kind);
 const chromePath = () => process.env.CHROME_PATH || DEFAULT_CHROME;
 
-// ---------------------------------------------------------------- rules (pure)
-
 export const minShowSec = (text) => 0.4 + 0.2 * words(text);
 const words = (text) => text.split(/\s+/).filter(Boolean).length;
-// A counter keeps 1 identity while its digits change: "Users: 1,234" -> "Users: #".
 const normText = (text) => text.replace(/\s+/g, " ").trim().replace(/\d[\d.,]*/g, "#");
 const itemKey = (item) => `${item.key}|${normText(item.text)}`;
 const right = (b) => b[0] + b[2];
@@ -85,8 +71,6 @@ const ZONES = [
 ];
 const safeZone = (box, frame) => ZONES.find(([, hit]) => hit(box, frame))?.[0];
 
-// Each item rule takes (item, opts, still) and returns a partial finding or null.
-// still is true when the box is settled since the previous sample.
 function tooSmall(item, opts) {
   const phonePx = (item.px * PHONE_WIDTH) / opts.width;
   if (phonePx >= opts.minPhonePx) return null;
@@ -115,7 +99,6 @@ const ITEM_RULES = [tooSmall, placeholder, offFrameRule, safeZoneRule];
 
 const overlapFinding = (share) =>
   share < OVERLAP_MIN ? null : { rule: "overlap", detail: `${Math.round(share * 100)} % of the smaller box is covered` };
-// The same words on 2 layers (glow, outline) are not an overlap.
 const overlapRule = (a, b) => (normText(a.text) === normText(b.text) ? null : overlapFinding(overlapShare(a, b)));
 
 const tooShortFinding = (run, shown, need) => ({
@@ -140,17 +123,15 @@ const ruleChecker = (auditor, item, t, still) => (rule) =>
   auditor.report(item.id, item.text, t, rule(item, auditor.opts, still));
 const pairsOf = (auditor, t, keyed) => (a, i) => keyed.slice(i + 1).forEach(auditor.checkPair.bind(auditor, t, a));
 
-// Walks the samples in order. A run is 1 continuous showing of 1 item.
 class TextAudit {
   constructor(opts) {
     this.opts = opts;
     this.findings = [];
     this.seen = new Set();
     this.prevBox = new Map();
-    this.runs = new Map(); // item id -> { text, start, count, last }
+    this.runs = new Map();
   }
 
-  // Reports each rule once per item (or per pair of items).
   report(id, text, t, partial) {
     const key = partial && `${partial.rule}|${id}`;
     const fresh = Boolean(partial) && !this.seen.has(key);
@@ -202,8 +183,6 @@ class TextAudit {
   }
 }
 
-// samples: [{ time_sec, items: [{ key, text, px, box: [x, y, w, h], frags: [[x, y, w, h], ...] }] }]
-// opts: { width, height, step, minPhonePx }. Returns the findings, sorted by time.
 export function audit(samples, opts) {
   const auditor = new TextAudit(opts);
   samples.forEach(auditor.step.bind(auditor));
@@ -214,10 +193,6 @@ const sampleAt = (step) => (_, i) => round(i * step, 6);
 export const sampleTimes = (duration, step) =>
   Array.from({ length: Math.max(1, Math.ceil(duration / step - 1e-9)) }, sampleAt(step));
 
-// ---------------------------------------------------------------- in-page scripts
-
-// Installed before any scene script runs. Each canvas keeps the text drawn on it. A
-// clearRect or fillRect that covers a text box removes that text.
 const CANVAS_HOOK = `(() => {
   const P = CanvasRenderingContext2D.prototype;
   const store = new WeakMap();
@@ -252,7 +227,6 @@ const CANVAS_HOOK = `(() => {
   window.__textAuditCanvas = (c) => store.get(c) || [];
 })();`;
 
-// Returns the visible text items of the current frame, in CSS px of the viewport.
 const SAMPLE_FN = `() => {
   const SKIP = new Set(["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "TITLE"]);
   const W = innerWidth, H = innerHeight;
@@ -343,8 +317,6 @@ const sampleScript = (frame, fps) => `(async () => {
   return (${SAMPLE_FN})();
 })()`;
 
-// ---------------------------------------------------------------- CDP client
-
 const timeoutError = (what, ms, Kind) => new Kind(`${what}: no reply in ${ms / 1000} s`);
 const canceller = (timer) => () => clearTimeout(timer);
 
@@ -420,7 +392,7 @@ const chromeArgs = (userDataDir) => [
   "--disable-background-timer-throttling", "--disable-renderer-backgrounding",
   "--disable-backgrounding-occluded-windows", "--disable-extensions",
   "--no-first-run", "--no-default-browser-check", "--disable-sync",
-  "--disable-component-update", "about:blank",
+  "--disable-component-update", "--disable-features=MacAppCodeSignClone", "about:blank",
 ];
 
 function matchDevtools(log, data, ok) {
@@ -460,8 +432,6 @@ const livePids = (pids) => (pids.length ? psPids(pids) : []);
 const forceKill = (pids) => pids.length && spawnSync("kill", ["-KILL", ...pids]);
 const running = (proc) => proc.exitCode === null && proc.signalCode === null;
 
-// Chrome's helpers (network service, GPU, renderers) outlive the main process for some ms and
-// write into the user-data dir as they exit. Poll up to 5 s for them, then SIGKILL the rest.
 const pollAgain = (pids, tries) => () => helpersGone(pids, tries);
 async function helpersGone(pids, tries = 500) {
   const alive = livePids(pids);
@@ -485,7 +455,6 @@ async function stopChrome(browser) {
 }
 
 const isStartTimeout = (e) => e instanceof ChromeStartTimeout;
-// A start that hangs before the DevTools URL leaves stuck children; kill only those, never by name.
 const killStuck = (browser, e) => isStartTimeout(e) && spawnSync("pkill", ["-KILL", "-P", String(browser.proc.pid)]);
 
 async function abortLaunch(browser, tries, e) {
@@ -521,14 +490,11 @@ async function evaluate(cdp, sessionId, expression) {
   return d ? fail(`page script failed: ${d.exception?.description ?? d.text}`) : res.result.value;
 }
 
-// ---------------------------------------------------------------- scene audit
-
 const sceneUrl = (target) => (/^[a-z][a-z0-9+.-]*:/i.test(target) ? target : pathToFileURL(resolve(target)).href);
 const isSet = (v) => v !== undefined && v !== null;
 const pick = (...values) => values.find(isSet);
 const isPage = (t) => t.type === "page";
 
-// The tab Chrome opened at launch, with the canvas hook installed before any scene script.
 async function attachPage(cdp) {
   const { targetInfos } = await cdp.send("Target.getTargets");
   const target = targetInfos.find(isPage) ?? fail("Chrome opened no page target");
@@ -606,8 +572,6 @@ export async function auditScene(opts) {
   return report(opts, run, audit(run.samples, { width, height, step: opts.step, minPhonePx: opts.minPhonePx }));
 }
 
-// ---------------------------------------------------------------- self-test
-
 const json = (v) => JSON.stringify(v);
 const assertEq = (actual, expected, what) => check(json(actual) === json(expected), `${what}: expected ${json(expected)}, got ${json(actual)}`);
 const ruleOf = (f) => f.rule;
@@ -623,7 +587,6 @@ const slideIn = (i) => [item("a", "Launch", [Math.min(100, -400 + i * 100), 100,
 const UNIT_OPTS = { width: 1920, height: 1080, step: 0.1, minPhonePx: 10.5 };
 const PORTRAIT = { ...UNIT_OPTS, width: 1080, height: 1920 };
 
-// [name, samples, options, expected rules]
 const UNIT_CASES = [
   ["clean title", series(20, always(item("a", "Ship it", [100, 100, 400, 80]))), UNIT_OPTS, []],
   ["caption at 56 px", series(20, always(item("a", "Proof", [100, 100, 400, 80], 56))), UNIT_OPTS, []],
@@ -689,8 +652,6 @@ async function selfTest() {
   console.log([...lines, failed ? `text_audit self-test: ${failed} failed` : "text_audit self-test: all passed"].join("\n"));
   return failed ? 1 : 0;
 }
-
-// ---------------------------------------------------------------- CLI
 
 const HELP = `usage: text_audit.mjs --scene <index.html> [--out <report.json>] [--duration <sec>]
        [--fps <n>] [--width <px>] [--height <px>] [--step 0.1] [--min-phone-px 10.5]

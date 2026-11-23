@@ -1,0 +1,346 @@
+{
+ "schema_version": 1,
+ "game": "Example",
+ "source": "pw_content.py template, then named by hand",
+ "currencies": {
+  "main": "coin",
+  "reset": null,
+  "side": []
+ },
+ "stats": {
+  "coin": "coin"
+ },
+ "elements": [
+  {
+   "id": "gen",
+   "name": "Workshop",
+   "pitch_words": "more workshops",
+   "kind": "line",
+   "system": "S01",
+   "currency": "coin",
+   "cost": {
+    "base": 10,
+    "ratio": 1.15
+   },
+   "levels": null,
+   "effects": [
+    {
+     "stat": "coin",
+     "kind": "add",
+     "value": 0.5,
+     "active_only": false
+    }
+   ],
+   "unlock": {},
+   "role": "generator",
+   "place": "pitch",
+   "opens_min": 0.0
+  },
+  {
+   "id": "m1",
+   "name": "Better tools",
+   "pitch_words": "better tools",
+   "kind": "line",
+   "system": "S02",
+   "currency": "coin",
+   "cost": {
+    "base": 100,
+    "ratio": 1.21
+   },
+   "levels": null,
+   "effects": [
+    {
+     "stat": "coin",
+     "kind": "mult",
+     "value": 1.1
+    }
+   ],
+   "unlock": {},
+   "role": null,
+   "place": "pitch",
+   "opens_min": 0.0
+  },
+  {
+   "id": "m2",
+   "name": "Faster work",
+   "pitch_words": "faster work",
+   "kind": "line",
+   "system": "S02",
+   "currency": "coin",
+   "cost": {
+    "base": 1000,
+    "ratio": 1.21
+   },
+   "levels": null,
+   "effects": [
+    {
+     "stat": "coin",
+     "kind": "mult",
+     "value": 1.1
+    }
+   ],
+   "unlock": {},
+   "role": null,
+   "place": "pitch",
+   "opens_min": 0.0
+  },
+  {
+   "id": "care",
+   "name": "Maintenance",
+   "pitch_words": "maintenance",
+   "kind": "line",
+   "system": "S02",
+   "currency": "coin",
+   "cost": {
+    "base": 50,
+    "ratio": 1.21
+   },
+   "levels": null,
+   "effects": [],
+   "unlock": {},
+   "role": "care",
+   "place": "pitch",
+   "opens_min": 0.0
+  },
+  {
+   "id": "element_1",
+   "name": "Tool rack",
+   "pitch_words": "a new tool",
+   "kind": "line",
+   "system": "S02",
+   "currency": "coin",
+   "cost": {
+    "base": 100,
+    "ratio": 1.21
+   },
+   "levels": 1,
+   "effects": [
+    {
+     "stat": "coin",
+     "kind": "mult",
+     "value": 1.1
+    }
+   ],
+   "unlock": {},
+   "role": null,
+   "place": "pitch",
+   "opens_min": 9.0
+  },
+  {
+   "id": "element_2",
+   "name": "First district",
+   "pitch_words": "a new area",
+   "kind": "reward",
+   "system": "S03",
+   "currency": null,
+   "cost": null,
+   "levels": null,
+   "effects": [
+    {
+     "stat": "coin",
+     "kind": "mult",
+     "value": 1.05
+    }
+   ],
+   "unlock": {},
+   "role": null,
+   "place": "pitch",
+   "opens_min": 18.0
+  },
+  {
+   "id": "element_3",
+   "name": "Better layout",
+   "pitch_words": "a better layout",
+   "kind": "reward",
+   "system": "S03",
+   "currency": null,
+   "cost": null,
+   "levels": null,
+   "effects": [
+    {
+     "stat": "coin",
+     "kind": "mult",
+     "value": 1.05
+    }
+   ],
+   "unlock": {},
+   "role": null,
+   "place": "pitch",
+   "opens_min": 27.0
+  },
+  {
+   "id": "element_4",
+   "name": "Second district",
+   "pitch_words": "a new area",
+   "kind": "reward",
+   "system": "S03",
+   "currency": null,
+   "cost": null,
+   "levels": null,
+   "effects": [
+    {
+     "stat": "coin",
+     "kind": "mult",
+     "value": 1.05
+    }
+   ],
+   "unlock": {},
+   "role": null,
+   "place": "pitch",
+   "opens_min": 36.0
+  },
+  {
+   "id": "element_5",
+   "name": "Training",
+   "pitch_words": "training",
+   "kind": "line",
+   "system": "S02",
+   "currency": "coin",
+   "cost": {
+    "base": 100,
+    "ratio": 1.21
+   },
+   "levels": 1,
+   "effects": [
+    {
+     "stat": "coin",
+     "kind": "mult",
+     "value": 1.1
+    }
+   ],
+   "unlock": {},
+   "role": null,
+   "place": "pitch",
+   "opens_min": 45.0
+  },
+  {
+   "id": "element_6",
+   "name": "Third district",
+   "pitch_words": "a new area",
+   "kind": "reward",
+   "system": "S03",
+   "currency": null,
+   "cost": null,
+   "levels": null,
+   "effects": [
+    {
+     "stat": "coin",
+     "kind": "mult",
+     "value": 1.05
+    }
+   ],
+   "unlock": {},
+   "role": null,
+   "place": "pitch",
+   "opens_min": 54.0
+  },
+  {
+   "id": "element_7",
+   "name": "Night shift",
+   "pitch_words": "a night shift",
+   "kind": "reward",
+   "system": "S03",
+   "currency": null,
+   "cost": null,
+   "levels": null,
+   "effects": [
+    {
+     "stat": "coin",
+     "kind": "mult",
+     "value": 1.05
+    }
+   ],
+   "unlock": {},
+   "role": null,
+   "place": "pitch",
+   "opens_min": 72.0
+  },
+  {
+   "id": "element_8",
+   "name": "Fourth district",
+   "pitch_words": "a new area",
+   "kind": "reward",
+   "system": "S03",
+   "currency": null,
+   "cost": null,
+   "levels": null,
+   "effects": [
+    {
+     "stat": "coin",
+     "kind": "mult",
+     "value": 1.05
+    }
+   ],
+   "unlock": {},
+   "role": null,
+   "place": "pitch",
+   "opens_min": 90.0
+  },
+  {
+   "id": "element_9",
+   "name": "Fine tuning",
+   "pitch_words": "fine tuning",
+   "kind": "line",
+   "system": "S02",
+   "currency": "coin",
+   "cost": {
+    "base": 100,
+    "ratio": 1.21
+   },
+   "levels": 1,
+   "effects": [
+    {
+     "stat": "coin",
+     "kind": "mult",
+     "value": 1.1
+    }
+   ],
+   "unlock": {},
+   "role": null,
+   "place": "pitch",
+   "opens_min": 108.0
+  },
+  {
+   "id": "element_10",
+   "name": "Fifth district",
+   "pitch_words": "a new area",
+   "kind": "reward",
+   "system": "S03",
+   "currency": null,
+   "cost": null,
+   "levels": null,
+   "effects": [
+    {
+     "stat": "coin",
+     "kind": "mult",
+     "value": 1.05
+    }
+   ],
+   "unlock": {},
+   "role": null,
+   "place": "pitch",
+   "opens_min": 126.0
+  },
+  {
+   "id": "element_11",
+   "name": "Last district",
+   "pitch_words": "the last area",
+   "kind": "reward",
+   "system": "S03",
+   "currency": null,
+   "cost": null,
+   "levels": null,
+   "effects": [
+    {
+     "stat": "coin",
+     "kind": "mult",
+     "value": 1.05
+    }
+   ],
+   "unlock": {},
+   "role": null,
+   "place": "pitch",
+   "opens_min": 142.0
+  }
+ ]
+}

@@ -1,10 +1,3 @@
-//! Issue #240: the ledger SQL builds its status words from the enums in
-//! `taskledger/model.rs`, so a word added to an enum reaches every reader.
-//!
-//! The scan reads the source as text. Comment lines and the `#[cfg(test)]`
-//! tail of a file are skipped: a test may seed a row with a literal word,
-//! and the `CHECK` in the schema rejects a bad one.
-
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
@@ -12,7 +5,6 @@ use horch_core::taskledger::model::{
     FindingStatus, RunStatus, StepStatus, TaskStatus, WorkerStatus, WorktreeStatus,
 };
 
-/// Files that define the words: the enums, and the schema's frozen text.
 const DEFINING: &[&str] = &["model.rs", "schema.rs"];
 
 fn status_words() -> BTreeSet<&'static str> {
@@ -41,7 +33,6 @@ fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// The `'word'` tokens in `line` that name a status.
 fn quoted_status_words<'a>(line: &'a str, words: &BTreeSet<&str>) -> Vec<&'a str> {
     line.split('\'')
         .enumerate()

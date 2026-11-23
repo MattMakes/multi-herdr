@@ -1,12 +1,3 @@
-//! The executor of the trial_merge job, and [`CliTrialMergeGit`], the git
-//! reads of the use case.
-//!
-//! The job runs `git merge-tree --write-tree` of its 2 tips through
-//! [`CliGitGateway::build_candidate`] with 1 member: no checkout, no
-//! worktree, no index, and no ref moves. It only reads git, so it runs
-//! beside the other jobs of its repository. git writes only objects in the
-//! git folder of the repository. Clean and conflict are both verdicts.
-
 use std::collections::BTreeSet;
 use std::path::Path;
 
@@ -25,8 +16,6 @@ use crate::fleetd::worktree_custody::adapters::git::{no_sandbox, repo_git_dir, C
 use crate::runtime::bins::{git_bin, BinOverrides};
 use crate::runtime::context::ProcessEnv;
 
-/// Run the trial_merge job `row`: the repository is `row.repo`, and the 2
-/// tips are its input key.
 pub fn run(conn: &Connection, row: &JobRow) -> Result<Ran> {
     let Some((left, right)) = trial_merge::tips(&row.input_key) else {
         return Ok(failed(format!(
@@ -80,7 +69,6 @@ fn data(conflict_files: Vec<String>) -> serde_json::Value {
     serde_json::to_value(TrialMergeData { conflict_files }).expect("a result serializes")
 }
 
-/// A run with no verdict: git did not merge.
 fn failed(text: String) -> Ran {
     Outcome {
         passed: false,
@@ -90,8 +78,6 @@ fn failed(text: String) -> Ran {
     .into()
 }
 
-/// [`TrialMergeGit`] on the git binary, through the fleetd git rule of
-/// [`CliWorktreeGit::checked`].
 #[derive(Debug, Clone)]
 pub struct CliTrialMergeGit {
     git: CliWorktreeGit,

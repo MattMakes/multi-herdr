@@ -1,29 +1,3 @@
-//! The `worktree_remove` executor: the only `git worktree remove` call of
-//! custody.
-//!
-//! `docs/specs/fleetd/design.md`, "Worktrees: leased, reconciled, never
-//! lost" (rows `landed`, `rescued`) and "The kinds of job" (row
-//! `worktree_remove`): the job reads each fact again, asks the guard of
-//! `domain::removal`, and only then runs `git worktree remove`. A refusal
-//! ends the run `failed` with the reason of the guard and changes nothing
-//! (RR-9, RR-13, FM-27).
-//!
-//! A landed tree is removed with no `--force`, so git refuses it too when a
-//! file changed. A rescued tree is removed with 1 `--force` (never 2, so a
-//! locked tree stays): git refuses a tree with a modified or untracked file
-//! without it, and the guard has just shown that the rescue ref holds
-//! exactly those files. Before that removal, 1 rename by fleetd and a
-//! `git worktree repair` put the folder in its quarantine folder beside it, and the checks run
-//! again there with a new snapshot (review F5 of T-287): a process that
-//! writes through the old path cannot change the tree that is removed. A
-//! run that ends between the move and the removal leaves the folder in
-//! quarantine; the next run moves it back first. Ignored files are not on
-//! the rescue ref (design.md, "Rescue before any cleanup"; MAP.md of
-//! fleetd-p3, Q6) and are deleted with the tree; the result counts them.
-//!
-//! Each git call goes through `CliWorktreeGit::checked`, so git starts no
-//! hook and no program of the project (the fleetd git rule).
-
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
@@ -38,14 +12,8 @@ use crate::fleetd::worktree_custody::adapters::sqlite::WorktreeRow;
 use crate::fleetd::worktree_custody::application::ports::WorktreeGitGateway;
 use crate::fleetd::worktree_custody::domain::removal::{self, Basis, Fact, Facts, Record, Saved};
 
-/// The start of the input key of a removal that keeps the branch. A path
-/// is absolute, so it never starts with it.
 const KEEP_BRANCH: &str = "keep-branch:";
 
-/// The input key of a `worktree_remove` job: the path of the tree, after
-/// `keep-branch:` when the job keeps the branch (`horch ledger worktree
-/// drop --keep-branch`). The 1 function that makes the key;
-/// [`read_remove_key`] reads it back.
 pub fn remove_key(path: &str, keep_branch: bool) -> String {
     if keep_branch {
         format!("{KEEP_BRANCH}{path}")
@@ -54,9 +22,6 @@ pub fn remove_key(path: &str, keep_branch: bool) -> String {
     }
 }
 
-/// The path and the `keep_branch` of the input key `key` that
-/// [`remove_key`] made. A key of a run from before `keep_branch` is the
-/// path alone: it does not keep the branch.
 pub fn read_remove_key(key: &str) -> (&str, bool) {
     match key.strip_prefix(KEEP_BRANCH) {
         Some(path) => (path, true),
@@ -64,72 +29,41 @@ pub fn read_remove_key(key: &str) -> (&str, bool) {
     }
 }
 
-/// What a passed removal did: the result data of the run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Removed {
     pub path: String,
     pub branch: String,
-    /// `git worktree remove` got 1 `--force`: the tree was `rescued`.
     pub forced: bool,
-    /// The count of ignored files that were deleted with the tree.
     pub ignored_files: u64,
-    /// The branch was merged into the base of the row and is deleted.
     pub branch_deleted: bool,
-    /// The job kept the branch because its input asked for it.
     #[serde(default)]
     pub keep_branch: bool,
 }
 
-/// The owner attempt of the tree, as the ledger records it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Owner {
-    /// The row names no owner attempt.
     NoAttempt,
-    /// The agent process of the owner attempt: its pid and start time.
+    Ended,
     Process { pid: u32, start: Option<u64> },
-    /// The ledger cannot name the process of the owner attempt.
     Unknown(String),
 }
 
-/// The I/O of a removal. Each call names its folder. A call that cannot
-/// answer is an error, never a default fact. A test uses a fake.
 pub trait RemovalGateway {
-    /// The HEAD of the tree at `tree`.
     fn head(&self, tree: &Path) -> Result<String>;
-    /// Whether `git status` lists a modified or untracked file in `tree`.
     fn dirty(&self, tree: &Path) -> Result<bool>;
-    /// The object that `rev` names in the repository `repo`.
     fn rev(&self, repo: &Path, rev: &str) -> Result<String>;
-    /// The tree of a new private index of the folder of `row` on `head`.
     fn disk_tree(&self, row: &WorktreeRow, head: &str) -> Result<String>;
-    /// The lines of `git stash list` of the repository `repo`.
     fn stashes(&self, repo: &Path) -> Result<Vec<String>>;
-    /// The count of ignored files in `tree`.
     fn ignored_files(&self, tree: &Path) -> Result<u64>;
-    /// Whether the process `pid` with the start time `start` runs, or a
-    /// process of the process group `pid` runs: a child of the owner can
-    /// write into the tree from a folder outside it. A platform that cannot
-    /// list a group answers `true`.
     fn alive(&self, pid: u32, start: Option<u64>) -> bool;
-    /// The processes with their working folder in `tree`.
     fn cwd_pids(&self, tree: &Path) -> Result<Vec<u32>>;
-    /// `git worktree move <from> <to>` in `repo`: 1 rename of the folder,
-    /// then the record of git is changed to the new path.
     fn move_tree(&self, repo: &Path, from: &Path, to: &Path) -> Result<()>;
-    /// `git worktree repair <tree>` in `repo`: the record of git names the
-    /// folder at `tree` again after a rename that git did not record.
     fn repair(&self, repo: &Path, tree: &Path) -> Result<()>;
-    /// `git worktree remove [--force] <tree>` in `repo`.
     fn remove(&self, repo: &Path, tree: &Path, force: bool) -> Result<()>;
-    /// Whether the branch `branch` is merged into `base`.
     fn merged(&self, repo: &Path, branch: &str, base: &str) -> Result<bool>;
-    /// `git branch -d <branch>`, which git checks against the upstream
-    /// `base`.
     fn delete_branch(&self, repo: &Path, branch: &str, base: &str) -> Result<()>;
 }
 
-/// [`RemovalGateway`] on the git binary, the processes of the platform
-/// and the private index files under `<fleet root>/tmp/<worktree id>/`.
 #[derive(Debug, Clone)]
 pub struct CliRemoval {
     git: CliWorktreeGit,
@@ -143,8 +77,6 @@ impl CliRemoval {
 }
 
 impl RemovalGateway for CliRemoval {
-    /// 1 `rev-parse`, with no `git status`, so the last read before the
-    /// removal is short.
     fn head(&self, tree: &Path) -> Result<String> {
         let out = self
             .git
@@ -217,12 +149,6 @@ impl RemovalGateway for CliRemoval {
         }
     }
 
-    /// fleetd renames the folder itself, then `git worktree repair` names
-    /// the new folder in the record of git. So git in the sandbox writes
-    /// only the 2 exact folders, never the folder that holds the trees: on
-    /// Linux a new tree beside them stays out of reach. A refused scan
-    /// renames nothing.
-    /// As `git worktree move`, it refuses a locked tree.
     fn move_tree(&self, repo: &Path, from: &Path, to: &Path) -> Result<()> {
         let real = from
             .canonicalize()
@@ -249,10 +175,6 @@ impl RemovalGateway for CliRemoval {
             .map(drop)
     }
 
-    /// On Linux the sandbox binds the folder of the tree, so git removes
-    /// all in it and its record, and then cannot remove the folder itself
-    /// (`EBUSY`). When git fails, its record of the tree is gone and the
-    /// folder is empty, fleetd removes that empty folder.
     fn remove(&self, repo: &Path, tree: &Path, force: bool) -> Result<()> {
         let path = tree.to_str().context("the path of a tree is not UTF-8")?;
         let mut args = vec!["worktree", "remove"];
@@ -293,8 +215,6 @@ impl RemovalGateway for CliRemoval {
     }
 
     fn delete_branch(&self, repo: &Path, branch: &str, base: &str) -> Result<()> {
-        // `branch -d` checks that the branch is merged into its upstream:
-        // make that the base, so git itself checks it again. Never `-D`.
         self.git
             .git(repo, &["branch", "--set-upstream-to", base, "--", branch])?;
         self.git
@@ -303,14 +223,8 @@ impl RemovalGateway for CliRemoval {
     }
 }
 
-/// Read the row of a worktree id from the ledger again.
 pub type ReadRow<'a> = &'a dyn Fn(&str) -> Result<Option<WorktreeRow>>;
 
-/// The `worktree_remove` job of the tree of `row`, with its landed commit
-/// and its owner attempt from the ledger. `ledger` reads the row again at
-/// the end of the checks. A run passes only when the tree is removed; its
-/// data is the [`Removed`]. Each other end is `failed`, and the tree stays
-/// as it was.
 pub fn remove(
     gw: &dyn RemovalGateway,
     row: &WorktreeRow,
@@ -373,8 +287,6 @@ fn run(
             .map_err(|e| format!("{e:#}"))?;
         facts.ignored_files.unwrap_or(0)
     };
-    // The tree is gone: a branch that cannot be deleted stays, and the run
-    // still passes. A job that keeps the branch never deletes it.
     let branch_deleted = !keep_branch
         && matches!(gw.merged(repo, &row.branch, &row.base), Ok(true))
         && gw.delete_branch(repo, &row.branch, &row.base).is_ok();
@@ -388,13 +300,6 @@ fn run(
     })
 }
 
-/// The removal of a rescued tree whose checks passed. 1 rename moves the
-/// folder to its quarantine folder, so a write through the old path cannot
-/// change it. The checks run again on the quarantine folder, with a new
-/// snapshot. Only when they pass is the folder removed, with 1 `--force`.
-/// Else the folder moves back; when that fails, it stays in quarantine,
-/// and the reason names the folder. Gives the count of ignored files that
-/// were deleted.
 fn quarantine_and_remove(
     gw: &dyn RemovalGateway,
     row: &WorktreeRow,
@@ -434,10 +339,6 @@ fn quarantine_and_remove(
     Ok(facts.ignored_files.unwrap_or(0))
 }
 
-/// Move a tree that an earlier run left in its quarantine folder back to
-/// the path of `row`. A crash between the move and the removal leaves it
-/// there; the rename can be ahead of the record of git, so the record is
-/// repaired first. Nothing to do when no quarantine folder exists.
 fn restore(gw: &dyn RemovalGateway, row: &WorktreeRow) -> Result<(), String> {
     let repo = Path::new(&row.repo_root);
     let tree = Path::new(&row.path);
@@ -470,10 +371,6 @@ fn exists(path: &Path) -> Result<bool, String> {
     }
 }
 
-/// Read each fact of the removal of `row`, in the order of [`Facts`]. The
-/// HEAD and the ledger row come last; for a rescued tree, the snapshot of
-/// the folder is the last fact before them, so the least time passes
-/// between it and the removal.
 fn read_facts(
     gw: &dyn RemovalGateway,
     row: &WorktreeRow,
@@ -505,7 +402,7 @@ fn read_facts(
             let commit_tree = of_commit("^{tree}");
             let commit_parent = of_commit("^");
             let owner_live = match owner {
-                Owner::NoAttempt => Ok(false),
+                Owner::NoAttempt | Owner::Ended => Ok(false),
                 Owner::Process { pid, start } => Ok(gw.alive(*pid, *start)),
                 Owner::Unknown(why) => Err(why.clone()),
             };

@@ -1,8 +1,3 @@
-//! Phase 0 red tests for FM-1 (the orchestrator forgets to create a task)
-//! and FM-8 (2 ideas sent back to back). Both become green in Phase 6:
-//! the plan validator refuses a plan with an uncovered requirement, and
-//! `horch idea add` keeps each idea in its own file and ledger row.
-
 #![cfg(unix)]
 
 use std::path::{Path, PathBuf};
@@ -21,7 +16,6 @@ fn text(o: &Output) -> String {
     )
 }
 
-/// A harness with its own ledger file and a git repository.
 fn world(name: &str) -> Harness {
     let mut h = Harness::new(name).with_git();
     let db = h.root.join("ledger.sqlite3");
@@ -37,8 +31,6 @@ fn json_of(h: &Harness, args: &[&str]) -> Value {
     serde_json::from_slice(&o.stdout).unwrap_or_else(|e| panic!("{e}: {}", text(&o)))
 }
 
-/// The board of ideas, the files of `folder` and the log of the test
-/// fleetd, for the message of a failed wait.
 fn evidence(h: &Harness, folder: &Path) -> String {
     let files: Vec<_> = std::fs::read_dir(folder)
         .map(|d| d.flatten().map(|e| e.file_name()).collect())
@@ -59,7 +51,6 @@ fn ticket(h: &Harness, name: &str, body: &str) -> PathBuf {
     p
 }
 
-/// FM-1: a plan where a requirement of the spec has no task is refused.
 #[test]
 fn fm1_plan_with_an_uncovered_requirement_is_refused() {
     check(
@@ -112,7 +103,6 @@ fn fm1_plan_with_an_uncovered_requirement_is_refused() {
     );
 }
 
-/// FM-8: 2 ideas sent at the same time stay 2 ideas, each in its own folder.
 #[test]
 fn fm8_two_ideas_sent_back_to_back_stay_2_ideas() {
     check(
@@ -134,9 +124,6 @@ fn fm8_two_ideas_sent_back_to_back_stay_2_ideas() {
                         .unwrap()
                 })
                 .collect();
-            // The id of each idea that the operator sent. A drift idea of
-            // the fleet can be on the board too, so the test counts only
-            // these ideas.
             let mut sent = Vec::new();
             for (t, child) in texts.iter().zip(children) {
                 let o = child.wait_with_output().unwrap();
@@ -163,8 +150,6 @@ fn fm8_two_ideas_sent_back_to_back_stay_2_ideas() {
                     ids.contains(&id.as_str()),
                     "the idea {id} of \"{t}\" is lost: {board}"
                 );
-                // The folder of an idea is `<fleet root>/ideas/<id>/`, and
-                // `horch idea show --json` gives its idea.md.
                 let folder = h.fleet_root().join("ideas").join(id);
                 let body = wait_for_or(
                     &format!("idea.md of {id}"),

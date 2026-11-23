@@ -43,8 +43,6 @@ import pathlib
 import subprocess
 import sys
 
-# The self-test imports check_timeline from video-storyboard. A .pyc there
-# would be bundled with that skill and break its size budget.
 sys.dont_write_bytecode = True
 
 BREATH_PAD_SEC = 0.25
@@ -275,8 +273,6 @@ def main(argv=None):
     return self_test() if args.self_test else _run(args)
 
 
-# ---------------------------------------------------------------- self-test
-
 FIXTURE_KEYS = ("id", "kind", "start_sec", "duration_sec", "template", "focal_point", "caption",
                 "narration")
 
@@ -358,7 +354,6 @@ def self_test():
     plan = _music_timeline()
     expect("fixture plan passes check_timeline", rules(plan) == set(), rules(plan))
 
-    # s02-demo has 5.0 s planned; its voice runs 6.75 s, so the scene becomes 7.0 s.
     long_voice = {"s01-hook": 2.0, "s02-demo": 6.75, "s03-how": 3.0, "s04-cta": 1.5}
     old = copy.deepcopy(plan)
     _starts_only(old, long_voice)
@@ -383,7 +378,6 @@ def self_test():
     expect("beat_in and beat_out follow the moved edges", _beats(new)
            == [(0, 5), (5, 19), (19, 28), (28, 34)], _beats(new))
 
-    # s02-demo needs 6.6 + 0.25 = 6.85 s. Its end snaps up to the next beat (0.5 s at bpm 120).
     off_beat = copy.deepcopy(plan)
     reconcile(off_beat, {"s02-demo": 6.6})
     expect("a grown scene ends on the next beat (6.85 s -> 7.0 s)",

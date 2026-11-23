@@ -1,5 +1,4 @@
 #!/bin/zsh
-# Waits up to ~9 min for: a landed task, low disk (<=4 GB), or an open QUESTION/BLOCKED.
 cd /Users/MASCOTT/projects/mh/multi-herdr
 cnt() { horch ledger status --run fleetd-build 2>&1 | grep -oE '8[0-9][0-9] tasks: [0-9]+ done' | head -1 }
 ./ai_docs/plans/fleetd-build/notes.sh; base="$(cnt)"; echo "base=$base"

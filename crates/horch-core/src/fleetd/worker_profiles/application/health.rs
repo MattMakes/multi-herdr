@@ -1,12 +1,3 @@
-//! Mark a worker profile unhealthy or healthy, and read its health
-//! (`docs/specs/fleetd/design.md`, "Worker profiles and adapters" (The
-//! health of a profile); fleetd-p7 MAP.md Q10 and Q15).
-//!
-//! The health of a profile is its last `profile_unhealthy` or
-//! `profile_healthy` event, with the contract of the mark in `data_json`.
-//! No event means healthy. Each mark is 1 event row in the caller's
-//! transaction, and a mark that does not change the health writes none.
-
 use std::collections::BTreeMap;
 
 use anyhow::Result;
@@ -23,18 +14,35 @@ use crate::fleetd::worker_profiles::domain::health::{self, Health, Mark, PROFILE
 use crate::harness::HarnessKind;
 use crate::taskledger::model::{Actor, EventKind};
 
-const KINDS: [EventKind; 2] = [EventKind::ProfileUnhealthy, EventKind::ProfileHealthy];
+const NOT_PROVED: EventKind = EventKind::Note;
 
-/// Each unhealthy profile, with the cause of its mark.
+const KINDS: [EventKind; 3] = [
+    EventKind::ProfileUnhealthy,
+    EventKind::ProfileHealthy,
+    NOT_PROVED,
+];
+
+pub struct ConformanceRun<'a> {
+    pub id: i64,
+    pub subject: &'a str,
+}
+
 pub fn unhealthy_profiles(conn: &Connection) -> Result<BTreeMap<String, String>> {
+    last_of_kind(conn, EventKind::ProfileUnhealthy)
+}
+
+pub fn not_proved_profiles(conn: &Connection) -> Result<BTreeMap<String, String>> {
+    last_of_kind(conn, NOT_PROVED)
+}
+
+fn last_of_kind(conn: &Connection, kind: EventKind) -> Result<BTreeMap<String, String>> {
     Ok(last_named_facts(conn, PROFILE, &KINDS)?
         .into_iter()
-        .filter(|f| f.kind == EventKind::ProfileUnhealthy.as_str())
+        .filter(|f| f.kind == kind.as_str())
         .map(|f| (f.id, f.cause))
         .collect())
 }
 
-/// The health of `profile` now.
 pub fn health(conn: &Connection, profile: &str) -> Result<Health> {
     Ok(match unhealthy_profiles(conn)?.remove(profile) {
         Some(reason) => Health::Unhealthy { reason },
@@ -42,8 +50,6 @@ pub fn health(conn: &Connection, profile: &str) -> Result<Health> {
     })
 }
 
-/// Mark `profile` unhealthy with `reason`, in `tx`. `None` when it is
-/// unhealthy already.
 pub fn mark_unhealthy(
     tx: &Connection,
     guard: Option<Generation>,
@@ -55,8 +61,6 @@ pub fn mark_unhealthy(
     Ok(mark)
 }
 
-/// Mark `profile` healthy, in `tx`, for `cause`. `None` when it is healthy
-/// already.
 pub fn mark_healthy(
     tx: &Connection,
     guard: Option<Generation>,
@@ -68,26 +72,44 @@ pub fn mark_healthy(
     Ok(mark)
 }
 
-/// Mark each profile of `profiles` whose agent is the harness of the CLI of
-/// the conformance run `report` (the docs source `agy` is the harness
-/// `antigravity`), in `tx`: unhealthy after a failed run, with
-/// the failed checks as the cause, and healthy again after a passed run.
 pub fn mark_after_conformance(
     tx: &Connection,
     guard: Option<Generation>,
+    run: &ConformanceRun<'_>,
     report: &ConformanceReport,
     profiles: &[(&str, HarnessKind)],
 ) -> Result<Vec<Mark>> {
-    let unhealthy = unhealthy_profiles(tx)?;
-    let of_cli: Vec<(String, Health)> = profiles
+    let last: BTreeMap<String, (String, String)> = last_named_facts(tx, PROFILE, &KINDS)?
+        .into_iter()
+        .map(|f| (f.id, (f.kind, f.cause)))
+        .collect();
+    let of_cli = profiles
         .iter()
         .filter(|(_, agent)| exec_harness(&report.cli) == Some(*agent))
-        .map(|(name, _)| {
-            let now = match unhealthy.get(*name) {
-                Some(reason) => Health::Unhealthy {
-                    reason: reason.clone(),
-                },
-                None => Health::Healthy,
+        .map(|(name, _)| (*name, last.get(*name)));
+    if let Some(cause) = report.not_proved_cause(run.id, run.subject) {
+        let healthy = of_cli
+            .filter(|(_, l)| l.is_none_or(|(kind, _)| kind == EventKind::ProfileHealthy.as_str()));
+        for (name, _) in healthy {
+            hold(tx, guard, name, &cause)?;
+        }
+        return Ok(Vec::new());
+    }
+    let failed = report.failure().is_some();
+    let of_cli: Vec<(String, Health)> = of_cli
+        .map(|(name, l)| {
+            let now = match l {
+                Some((kind, reason)) if kind == EventKind::ProfileUnhealthy.as_str() => {
+                    Health::Unhealthy {
+                        reason: reason.clone(),
+                    }
+                }
+                Some((kind, reason)) if kind == NOT_PROVED.as_str() && !failed => {
+                    Health::Unhealthy {
+                        reason: reason.clone(),
+                    }
+                }
+                _ => Health::Healthy,
             };
             (name.to_string(), now)
         })
@@ -104,7 +126,39 @@ pub fn mark_after_conformance(
     Ok(marks)
 }
 
-/// The event of `mark`, with `cause`, in `tx`.
+pub fn mark_cli_unhealthy(
+    tx: &Connection,
+    guard: Option<Generation>,
+    cli: &str,
+    reason: &str,
+    profiles: &[(&str, HarnessKind)],
+) -> Result<Vec<Mark>> {
+    let mut marks = Vec::new();
+    for (name, _) in profiles
+        .iter()
+        .filter(|(_, agent)| exec_harness(cli) == Some(*agent))
+    {
+        marks.extend(mark_unhealthy(tx, guard, name, reason)?);
+    }
+    Ok(marks)
+}
+
+fn hold(tx: &Connection, guard: Option<Generation>, profile: &str, cause: &str) -> Result<()> {
+    let data = json!({ "profile_id": profile, "hold": "not proved" }).to_string();
+    append_named_fact(
+        tx,
+        guard,
+        &NamedFact {
+            kind: NOT_PROVED,
+            about: PROFILE,
+            id: profile,
+            cause,
+            actor: Actor::Horch,
+            data_json: &data,
+        },
+    )
+}
+
 fn write(
     tx: &Connection,
     guard: Option<Generation>,

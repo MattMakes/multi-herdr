@@ -1,14 +1,3 @@
-//! A rebase that conflicts opens 1 resolver task in the run of the
-//! feature, with the conflict in `zdiff3` form, the 2 tips and the tests of
-//! both sides. A conflict over `resolver_max_lines` or `resolver_max_files`
-//! is 1 resolver task for each file. The same pair of tips never opens a
-//! second task (docs/specs/fleetd/design.md, "Between features":
-//! Continuous rebase and Starting values;
-//! docs/tickets/fleetd-p4/42-rebase-conflict-resolver-task.md).
-//!
-//! Each test makes its own ledger and git repository in a temporary folder.
-//! The limits come from a test `fleet.toml`. No test reads the clock, the
-//! load or the limits of the machine.
 #![cfg(unix)]
 
 use std::path::{Path, PathBuf};
@@ -40,7 +29,6 @@ const FEATURE: &str = "F-1";
 const FEATURE_BRANCH: &str = "fleet/r1";
 const PROFILE: &str = "opus";
 
-/// The limits of a resolver task, as a test `fleet.toml` gives them.
 const FLEET_TOML: &str = "resolver_max_lines = 100\nresolver_max_files = 2\n";
 
 struct World {
@@ -59,7 +47,6 @@ fn cause(text: &str) -> Cause<'_> {
     }
 }
 
-/// Run git in `dir` for the test itself, with no config of the user.
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
         .arg("-C")
@@ -86,13 +73,9 @@ fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
-/// A ledger of the current schema with the run `r1`, the feature
-/// [`FEATURE`] on [`FEATURE_BRANCH`] and its branch row, and 1 task of the
-/// run with its check. In git, `main` and the feature branch change each
-/// file of `files` in a different way, so a rebase conflicts on each one.
 fn world(files: &[&str]) -> World {
     let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().canonicalize().unwrap();
+    let root = horch_platform::path::canonicalize(dir.path()).unwrap();
     let mut conn = Connection::open(root.join("ledger.sqlite3")).unwrap();
     conn.busy_timeout(Duration::from_secs(10)).unwrap();
     schema::migrate_to(&mut conn, schema::VERSION).unwrap();
@@ -127,7 +110,6 @@ fn world(files: &[&str]) -> World {
         primary_branch: "main",
     };
     rows::insert_feature(&tx, None, &feature, cause("the run starts")).unwrap();
-    // FR-12: a task needs an idea in flight of the feature of its run.
     horch_core::taskledger::schema::run_idea(
         &tx,
         &run.run_id,
@@ -181,8 +163,6 @@ impl World {
             .writing(&[self.repo.join(".git")])
     }
 
-    /// A rebase run of the feature branch onto `main` ended with a conflict
-    /// on `files`, as the rebase job ends it.
     fn conflicted(&self, files: &[&str]) {
         let key = rebase_key(&self.tip(FEATURE_BRANCH), &self.tip("main"));
         let ctx = JobCtx {
@@ -218,7 +198,6 @@ impl World {
         tx.commit().unwrap();
     }
 
-    /// 1 pass of the resolver rule, committed.
     fn pass(&mut self) -> Vec<Opened> {
         let gateway = CliGitGateway::new(self.fleet_git());
         let stack_git = CliStackGit::new(self.fleet_git());
@@ -239,7 +218,6 @@ impl World {
         opened
     }
 
-    /// The resolver tasks of the run: each task but the feature work.
     fn resolvers(&self) -> Vec<Task> {
         tasks::of_run(&self.conn, &self.run.run_id)
             .unwrap()
@@ -318,13 +296,10 @@ fn same_conflict_twice_adds_no_second_task() {
     assert!(w.pass().is_empty(), "a second pass opens nothing");
     assert_eq!(w.resolvers().len(), 1);
 
-    // A cancelled resolver task is a decision of the operator: the same
-    // pair of tips does not open it again.
     let task = w.resolvers().remove(0);
     tasks::cancel(&w.conn, &task, "the operator resolves it").unwrap();
     assert!(w.pass().is_empty(), "a cancelled task is not replaced");
 
-    // Another rebase run of the same 2 tips ends with the same conflict.
     w.conflicted(&["f.txt"]);
     assert!(w.pass().is_empty(), "the same tips open no second task");
     assert_eq!(w.resolvers().len(), 1);

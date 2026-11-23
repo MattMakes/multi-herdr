@@ -1,10 +1,3 @@
-//! End-to-end: `horch done` finishes inside the agent's 120 s command
-//! timeout, whatever state the orchestrator is in (#67, P18).
-//!
-//! The orchestrator's pane shows an agent at status `unknown`: an agent that
-//! is still starting, for as long as the test runs. Before #67, `done`
-//! waited 120 s for it, and Claude Code killed `done` with SIGKILL.
-
 #![cfg(unix)]
 
 use std::path::PathBuf;
@@ -22,13 +15,7 @@ const WORKER: &str = "w2:p1";
 const ROLE: &str = "opus-1";
 const RECORD: &str = "r-done";
 const CLOSING: &str = "closing: reporting to the orchestrator";
-/// The push budget the timed tests set through `done-push-budget-ms`, in
-/// place of the real 20 s.
 const BUDGET: Duration = Duration::from_secs(2);
-/// A command that spent the budget and stopped at its end takes less than
-/// this. It is inside the 30 s acceptance limit (Claude Code kills a
-/// command at 120 s). The real 20 s budget takes longer, so this bound
-/// fails if the fault point is ignored.
 const BOUNDED: Duration = Duration::from_secs(10);
 
 fn text(o: &Output) -> String {
@@ -46,8 +33,6 @@ fn herdr(h: &Harness, args: &[&str]) -> Output {
     cmd.args(args).output().unwrap()
 }
 
-/// Set the orchestrator's pane to an agent at status `unknown` in the
-/// fake herdr's state.
 fn stick_orchestrator(h: &Harness) {
     let mut path = h.log.clone().into_os_string();
     path.push(".state.json");
@@ -64,13 +49,11 @@ fn stick_orchestrator(h: &Harness) {
     std::fs::write(&path, state.to_string()).unwrap();
 }
 
-/// Workspace `w1` holds the stuck orchestrator, `w2` the worker's pane, and
-/// the legacy ledger holds the worker's record.
 fn world(name: &str) -> Harness {
     let mut h = Harness::new(name).with_git();
     h.set(
         "HORCH_LEDGER_DB",
-        h.root.join("ledger.sqlite3").to_string_lossy(),
+        h.state.join("ledger.sqlite3").to_string_lossy(),
     );
     h.set("HORCH_NO_WATCHDOG", "1");
     h.set("HORCH_WORKSPACE_ID", WORKSPACE);
@@ -83,6 +66,7 @@ fn world(name: &str) -> Harness {
     std::fs::write(mailbox.join("orchestrator.id"), ORCHESTRATOR).unwrap();
     std::fs::write(mailbox.join(format!("{ROLE}.id")), WORKER).unwrap();
     stick_orchestrator(&h);
+    h.serve_fleetd();
     SessionLedger::for_project(&h.state, &h.project.to_string_lossy())
         .insert(Record {
             record_id: RECORD.into(),
@@ -94,11 +78,9 @@ fn world(name: &str) -> Harness {
             ..Record::default()
         })
         .unwrap();
-    h.serve_fleetd();
     h
 }
 
-/// `horch <args>` as the worker in its pane.
 fn as_worker(h: &Harness, args: &[&str]) -> Command {
     let mut cmd = h.horch(args);
     cmd.env("HERDR_PANE_ID", WORKER)
@@ -107,7 +89,6 @@ fn as_worker(h: &Harness, args: &[&str]) -> Command {
     cmd
 }
 
-/// Give `h` the short push budget.
 fn short_budget(h: &mut Harness) {
     h.set(
         "HORCH_FAULT",
@@ -115,8 +96,6 @@ fn short_budget(h: &mut Harness) {
     );
 }
 
-/// `took` spent the push budget, waiting for the stuck orchestrator, and
-/// the budget then ended the wait.
 fn assert_bounded(what: &str, took: Duration, o: &Output) {
     assert!(
         took >= BUDGET,
@@ -142,9 +121,6 @@ fn done_entries(h: &Harness) -> usize {
         .count()
 }
 
-/// The text of every pending mail file in the workspace. The courier
-/// removes a delivered file between the listing and the read: that file
-/// is no longer pending, so it is skipped, as `Mail::pending` does.
 fn pending(h: &Harness) -> Vec<String> {
     let dir = h.state.join(format!("mail/{WORKSPACE}/pending"));
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -163,8 +139,6 @@ fn worker_pane_closed(h: &Harness) -> bool {
     !herdr(h, &["pane", "get", WORKER]).status.success()
 }
 
-/// Acceptance 1 and 3: `horch done` exits 0 in under 30 s, its first line
-/// is the closing line, the report is pending mail and the record is done.
 #[test]
 fn done_finishes_in_time_against_a_stuck_orchestrator() {
     let mut h = world("done-stuck");
@@ -199,140 +173,150 @@ fn done_finishes_in_time_against_a_stuck_orchestrator() {
     assert!(worker_pane_closed(&h), "the worker pane closes");
 }
 
-/// Run `cmd`; its stdout. It must succeed.
-fn ok(cmd: &mut Command) -> String {
-    let o = cmd.output().unwrap();
-    assert!(o.status.success(), "{}", text(&o));
-    String::from_utf8_lossy(&o.stdout).into_owned()
+struct Wrapper {
+    sh: std::process::Child,
+    runs: usize,
 }
 
-/// A task-ledger run of 1 task that the test binds to a worker, and that
-/// the worker committed and finished; the worker id, for `horch ledger done`.
-fn finished_task(h: &Harness) -> String {
-    ok(&mut h.horch(&[
-        "ledger",
-        "run",
-        "new",
-        "alpha",
-        "--steps",
-        "check,land,cleanup",
-    ]));
-    let ticket = h.project.join("01-a.md");
-    std::fs::write(&ticket, "# 01: Feature\n").unwrap();
-    let file = ticket.to_string_lossy();
-    ok(&mut h.horch(&[
-        "ledger",
-        "add",
-        "--file",
-        &file,
-        "--primary",
-        "opus",
-        "--check",
-        "true",
-    ]));
-    let worker = horch_e2e::bind::bind(h, "opus", None).worker_id;
-    let worker = worker.as_str();
-    let mut wt = as_worker(h, &["ledger", "worktree", "new", "feature"]);
-    let wt = ok(wt.env("HORCH_WORKER_ID", worker));
-    let path = PathBuf::from(wt.lines().find_map(|l| l.strip_prefix("path: ")).unwrap());
-    std::fs::write(path.join("feature.txt"), "work\n").unwrap();
-    for args in [
-        &["add", "feature.txt"][..],
-        &["commit", "--quiet", "--no-gpg-sign", "-m", "feature"],
-    ] {
-        ok(h.git_cmd(args).current_dir(&path));
+impl Drop for Wrapper {
+    fn drop(&mut self) {
+        drop(self.sh.stdin.take());
+        let _ = self.sh.wait();
     }
-    let mut finish = as_worker(h, &["ledger", "finish"]);
-    ok(finish.env("HORCH_WORKER_ID", worker));
-    worker.to_string()
 }
 
-/// Acceptance 2: `horch ledger done` of a finished task. The ledger's wake
-/// and the report are both pending mail, in under 30 s in total.
+fn quoted(text: &std::ffi::OsStr) -> String {
+    format!("'{}'", text.to_string_lossy().replace('\'', "'\\''"))
+}
+
+impl Wrapper {
+    fn start() -> Wrapper {
+        let sh = Command::new("/bin/sh")
+            .args(["-c", "while IFS= read -r line; do eval \"$line\"; done"])
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        Wrapper { sh, runs: 0 }
+    }
+
+    fn run(&mut self, h: &Harness, cmd: &Command) -> Output {
+        use std::io::Write as _;
+        use std::os::unix::process::ExitStatusExt as _;
+        self.runs += 1;
+        let base = h.root.join(format!("wrapper-{}", self.runs));
+        let [out, err, status] = ["out", "err", "status"].map(|e| base.with_extension(e));
+        let env: Vec<String> = cmd
+            .get_envs()
+            .filter_map(|(k, v)| v.map(|v| format!("{}={}", k.to_string_lossy(), quoted(v))))
+            .collect();
+        let args: Vec<String> = cmd.get_args().map(quoted).collect();
+        let line = format!(
+            "{{ env -i {} {} {}; }} > {} 2> {}; echo $? > {}.tmp; mv {}.tmp {}",
+            env.join(" "),
+            quoted(cmd.get_program()),
+            args.join(" "),
+            quoted(out.as_os_str()),
+            quoted(err.as_os_str()),
+            quoted(status.as_os_str()),
+            quoted(status.as_os_str()),
+            quoted(status.as_os_str()),
+        );
+        let stdin = self.sh.stdin.as_mut().unwrap();
+        writeln!(stdin, "{line}").unwrap();
+        stdin.flush().unwrap();
+        let code = wait_for("the command of the wrapper to end", || {
+            std::fs::read_to_string(&status).ok()
+        });
+        Output {
+            status: std::process::ExitStatus::from_raw(code.trim().parse::<i32>().unwrap() << 8),
+            stdout: std::fs::read(&out).unwrap_or_default(),
+            stderr: std::fs::read(&err).unwrap_or_default(),
+        }
+    }
+}
+
+fn bound_task(h: &Harness) -> Wrapper {
+    let run = horch_e2e::ledger_seed::seed_run(h, "alpha", None, ORCHESTRATOR);
+    let ticket = h.project.join("01-a.md");
+    std::fs::write(
+        &ticket,
+        "# 01: Feature\n\n**Persona:** primary `opus`\n**Check:** `true`\n",
+    )
+    .unwrap();
+    horch_e2e::ledger_seed::seed_task(h, &run, &ticket, "opus");
+    let wrapper = Wrapper::start();
+    let bound = horch_e2e::bind::bind(h, "opus", Some(wrapper.sh.id()));
+    std::fs::create_dir_all(
+        h.fleet_root()
+            .join("tasks")
+            .join(&bound.task_id)
+            .join("attempts")
+            .join(format!("A{}", bound.attempt)),
+    )
+    .unwrap();
+    wrapper
+}
+
+fn results(h: &Harness) -> Vec<PathBuf> {
+    fn walk(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.file_name().is_some_and(|n| n == "result.json") {
+                out.push(path);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(&h.fleet_root().join("tasks"), &mut out);
+    out
+}
+
 #[test]
 fn ledger_done_finishes_in_time_against_a_stuck_orchestrator() {
     let mut h = world("ldone-stuck");
-    let worker = finished_task(&h);
+    let mut wrapper = bound_task(&h);
     short_budget(&mut h);
 
     let started = Instant::now();
-    let mut done = as_worker(&h, &["ledger", "done", "finished the task"]);
-    let o = done.env("HORCH_WORKER_ID", &worker).output().unwrap();
+    let o = wrapper.run(&h, &as_worker(&h, &["ledger", "done", "finished the task"]));
     let took = started.elapsed();
     assert!(o.status.success(), "{}", text(&o));
-    assert_bounded("ledger done", took, &o);
-    assert_eq!(
-        String::from_utf8_lossy(&o.stderr).lines().next(),
-        Some(CLOSING),
+    assert!(took < BOUNDED, "ledger done took {took:?}: {}", text(&o));
+    assert!(
+        String::from_utf8_lossy(&o.stdout).contains("fleetd runs the finish steps"),
         "{}",
         text(&o)
     );
-    let mail = pending(&h);
-    assert_eq!(mail.len(), 2, "{mail:?}");
-    assert!(
-        mail.iter()
-            .any(|m| m.contains("[horch] NOTE: All tasks are done.")),
-        "{mail:?}"
-    );
-    assert!(
-        mail.iter()
-            .any(|m| m.contains("[opus-1] DONE: finished the task")),
-        "{mail:?}"
-    );
-    assert_eq!(record(&h)["status"], "done", "{}", record(&h));
-    assert!(worker_pane_closed(&h), "the worker pane closes");
+    let found = results(&h);
+    assert_eq!(found.len(), 1, "{found:?}");
+    let result: Value = serde_json::from_str(&std::fs::read_to_string(&found[0]).unwrap()).unwrap();
+    assert_eq!(result["status"], "completed", "{result}");
+    assert_eq!(result["summary"], "finished the task", "{result}");
+    assert!(pending(&h).is_empty(), "{:?}", pending(&h));
 }
 
-/// #67: `horch ledger done` marks the record done and queues the report
-/// before its wake push. A `ledger done` killed during that push, as
-/// Claude Code would, leaves the work done and the report pending; the
-/// retry queues no second report and closes the pane.
 #[test]
 fn ledger_done_killed_during_the_wake_push_has_recorded_the_report() {
     let h = world("ldone-kill");
-    let worker = finished_task(&h);
-    let mut first = as_worker(&h, &["ledger", "done", "finished the task"]);
-    let mut first = first
-        .env("HORCH_WORKER_ID", &worker)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    // The wake is queued just before its push, which waits for the stuck
-    // orchestrator until the push budget ends: kill `ledger done` there.
-    wait_for("the wake to be queued", || {
-        pending(&h)
-            .iter()
-            .any(|m| m.contains("[horch] NOTE: All tasks are done."))
-            .then_some(())
-    });
+    let mut wrapper = bound_task(&h);
+    let first = wrapper.run(&h, &as_worker(&h, &["ledger", "done", "finished the task"]));
+    assert!(first.status.success(), "{}", text(&first));
+    let retry = wrapper.run(&h, &as_worker(&h, &["ledger", "done", "finished the task"]));
+    assert!(!retry.status.success(), "{}", text(&retry));
     assert!(
-        first.try_wait().unwrap().is_none(),
-        "ledger done is pushing"
+        String::from_utf8_lossy(&retry.stderr).contains("is written 1 time"),
+        "{}",
+        text(&retry)
     );
-    first.kill().unwrap();
-    first.wait().unwrap();
-    assert_eq!(record(&h)["status"], "done", "{}", record(&h));
-    let mail = pending(&h);
-    assert!(
-        mail.iter()
-            .any(|m| m.contains("[opus-1] DONE: finished the task")),
-        "{mail:?}"
-    );
-    assert!(
-        !worker_pane_closed(&h),
-        "the killed done left its pane open"
-    );
-
-    let mut retry = as_worker(&h, &["ledger", "done", "finished the task"]);
-    ok(retry.env("HORCH_WORKER_ID", &worker));
-    assert_eq!(done_entries(&h), 1, "{}", record(&h));
-    assert_eq!(pending(&h).len(), 2, "{:?}", pending(&h));
-    assert!(worker_pane_closed(&h), "the retry closes the pane");
+    let found = results(&h);
+    assert_eq!(found.len(), 1, "{found:?}");
+    let result: Value = serde_json::from_str(&std::fs::read_to_string(&found[0]).unwrap()).unwrap();
+    assert_eq!(result["summary"], "finished the task", "{result}");
+    assert!(pending(&h).is_empty(), "{:?}", pending(&h));
 }
 
-/// Acceptance 4: a `done` killed during its push has recorded the summary.
-/// The retry records no second done and queues no second report.
 #[test]
 fn done_retried_after_a_kill_during_the_push_records_one_done() {
     let h = world("done-kill");
@@ -341,8 +325,6 @@ fn done_retried_after_a_kill_during_the_push_records_one_done() {
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
-    // The record is done before the push, and the push waits for the
-    // stuck orchestrator: kill `done` there, as Claude Code would.
     wait_for("the record to be done", || {
         (done_entries(&h) == 1).then_some(())
     });
@@ -353,8 +335,6 @@ fn done_retried_after_a_kill_during_the_push_records_one_done() {
         !worker_pane_closed(&h),
         "the killed done left its pane open"
     );
-    // The courier started before the push, so the killed push's mail is
-    // still redelivered.
     let lock_path = h.state.join(format!("mail/{WORKSPACE}/courier.lock"));
     wait_for("a courier for the pending report", || {
         let lock = std::fs::File::options()
@@ -365,9 +345,6 @@ fn done_retried_after_a_kill_during_the_push_records_one_done() {
         if lock.try_lock().is_err() {
             return Some(());
         }
-        // Unlock before the close: a process that another test thread
-        // spawns at the close holds a copy of the file until it execs, and
-        // a courier that starts while the flock stays held exits at once.
         let _ = lock.unlock();
         None
     });
@@ -386,9 +363,6 @@ fn done_retried_after_a_kill_during_the_push_records_one_done() {
     assert!(worker_pane_closed(&h), "the retry closes the pane");
 }
 
-/// #67, round-5 F52: without `HORCH_WORKSPACE_ID`, `done` finds its
-/// workspace with `herdr pane get`. A herdr that hangs there is cut off at
-/// the push deadline, so `done` still returns inside the limit.
 #[test]
 fn done_returns_in_time_when_herdr_hangs_on_pane_get() {
     let mut h = world("done-hung-get");

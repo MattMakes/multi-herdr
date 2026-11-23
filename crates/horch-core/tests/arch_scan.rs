@@ -1,17 +1,7 @@
-//! Source scans for the module rules of the architecture refactor.
-//!
-//! A scan reads the source as text, so a rule holds for code that no test
-//! happens to run. Comment lines and `#[cfg(test)]` modules are skipped: a
-//! test may build a `MapEnv`, and a doc comment may name what it replaced.
-
 use std::path::{Path, PathBuf};
 
-/// Files that still read the process environment, with the phase that
-/// removes each entry. Do not add entries. The last one (`teammates.rs`) is
-/// gone.
 const PENDING: &[&str] = &[];
 
-/// Ambient environment access. `std::env::consts` is allowed.
 const AMBIENT: &[&str] = &[
     "std::env::var",
     "env::var_os",
@@ -43,9 +33,6 @@ fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// The lines of `path` that are code outside tests, numbered from 1. A file
-/// named `tests.rs` is a `#[cfg(test)]` module; a file's own `#[cfg(test)]`
-/// module ends the scan of that file.
 fn code_lines(path: &Path) -> Vec<(usize, String)> {
     if path.file_name().is_some_and(|n| n == "tests.rs") {
         return Vec::new();
@@ -77,8 +64,6 @@ fn relative(path: &Path, root: &Path) -> String {
         .replace('\\', "/")
 }
 
-/// Domain code never calls `std::env`: only `runtime/` reads the process
-/// environment, and the `horch` binary's bootstrap builds the context.
 #[test]
 fn arc_05_no_ambient_env_in_core() {
     let root = crate_src("horch-core");
@@ -108,7 +93,6 @@ fn arc_05_no_ambient_env_in_core() {
         "ambient environment access outside runtime/:\n{}",
         found.join("\n")
     );
-    // An entry nothing needs any more must go, so the list only shrinks.
     for entry in PENDING {
         assert!(
             pending_used.iter().any(|p| p == entry),
@@ -117,9 +101,6 @@ fn arc_05_no_ambient_env_in_core() {
     }
 }
 
-/// The environment is the child's transport, not this process's scratch
-/// space. A2 began with 44 environment access sites; the mutations among
-/// them are gone from both crates.
 #[test]
 fn arc_06_env_mutation_sites_reduced() {
     let mut count = 0;
@@ -142,7 +123,6 @@ fn arc_06_env_mutation_sites_reduced() {
     assert_eq!(count, 0, "no process environment mutation left: {sites:?}");
 }
 
-/// The scan's own filter: test modules and comment lines are not code.
 #[test]
 fn arc_05_scan_skips_tests_and_comments() {
     let tmp = std::env::temp_dir().join(format!("arch-scan-{}", std::process::id()));
@@ -158,15 +138,8 @@ fn arc_05_scan_skips_tests_and_comments() {
     assert_eq!(lines, vec![(2, "fn a() {}".to_string())]);
 }
 
-/// Code that matches on text that looks like error text, each with the
-/// reason it is not a Rust error value. Do not add entries without a reason.
-///
-/// - `horch-core/telemetry/readers.rs`, `FreeUsageLimitError`: the `error`
-///   field of an OpenCode message row is external data from OpenCode's
-///   database, not an error this code produced. Its name is the only signal.
 const ALLOWED: &[(&str, &str)] = &[("horch-core/telemetry/readers.rs", "FreeUsageLimitError")];
 
-/// The needle in `line` that matches on an error's text, if any.
 fn error_text_match(line: &str) -> Option<&'static str> {
     const RECEIVERS: [&str; 5] = ["e", "err", "error", "why", "cause"];
     if line.contains(".to_string().contains(") {
@@ -199,8 +172,6 @@ fn error_text_match(line: &str) -> Option<&'static str> {
     None
 }
 
-/// `lines` with each line that starts with `.` joined to the line before
-/// it, so a method chain that spans lines is matched as 1 line.
 fn chained(lines: Vec<(usize, String)>) -> Vec<(usize, String)> {
     let mut out: Vec<(usize, String)> = Vec::new();
     for (n, line) in lines {
@@ -213,8 +184,6 @@ fn chained(lines: Vec<(usize, String)>) -> Vec<(usize, String)> {
     out
 }
 
-/// Application code branches on typed errors, never on their message text:
-/// a reworded message must not change behavior (ARC-22).
 #[test]
 fn arc_22_no_error_string_matching() {
     let mut found = Vec::new();
@@ -256,7 +225,6 @@ fn arc_22_no_error_string_matching() {
     }
 }
 
-/// The ARC-22 matcher's own cases.
 #[test]
 fn arc_22_matcher_finds_error_text_checks() {
     for hit in [
@@ -299,18 +267,11 @@ fn arc_22_matcher_finds_error_text_checks() {
     assert_eq!(error_text_match(&miss[0].1), None, "false hit: {miss:?}");
 }
 
-/// Files outside `harness/` that still match on a harness variant, with the
-/// phase that removes each entry. Do not add entries. A10 removed the last
-/// one (`skills.rs`).
 const HARNESS_MATCH_PENDING: &[&str] = &[];
 
-/// Whether `line` is a match arm (or a `matches!`) on a `HarnessKind` /
-/// `Agent` variant. A comparison such as `t.agent == Agent::None` or an
-/// assignment is not a match.
 fn harness_match(line: &str) -> bool {
     for prefix in ["HarnessKind::", "Agent::"] {
         for (i, _) in line.match_indices(prefix) {
-            // `Agent::` inside a longer path segment, e.g. `SubAgent::`.
             if line[..i]
                 .chars()
                 .next_back()
@@ -318,7 +279,6 @@ fn harness_match(line: &str) -> bool {
             {
                 continue;
             }
-            // The right side of a comparison, even inside a match guard.
             let before = line[..i].trim_end();
             if before.ends_with("==") || before.ends_with("!=") {
                 continue;
@@ -341,8 +301,6 @@ fn harness_match(line: &str) -> bool {
     false
 }
 
-/// Adding a harness is one new module: outside tests, harness variants are
-/// matched only under `harness/` and in `roster/validation.rs`.
 #[test]
 fn arc_10_harness_match_only_in_harness() {
     let mut found = Vec::new();
@@ -383,7 +341,6 @@ fn arc_10_harness_match_only_in_harness() {
     }
 }
 
-/// The scan's own filter: arms and `matches!` count, comparisons do not.
 #[test]
 fn arc_10_scan_tells_matches_from_comparisons() {
     assert!(harness_match("        Agent::Claude => 1,"));
@@ -400,10 +357,6 @@ fn arc_10_scan_tells_matches_from_comparisons() {
     assert!(!harness_match("    SubAgent::Claude => 1,"));
 }
 
-/// The core skill model knows no harness: no file under `skills/` (nor
-/// `skills.rs`) names a harness variant or one harness's way of exposing
-/// skills. Each adapter's `expose_skills` owns that (SKL-05). The whole text
-/// is scanned, tests and comments included.
 #[test]
 fn skl_05_core_skill_model_has_no_harness_flags() {
     const FORBIDDEN: [&str; 6] = [
@@ -436,18 +389,6 @@ fn skl_05_core_skill_model_has_no_harness_flags() {
     );
 }
 
-// ─── ARC-25 ─────────────────────────────────────────────────────────────────
-
-/// `pub use` lines that re-export an item from outside the file's own child
-/// modules, each with the reason. Do not add entries without a reason.
-///
-/// - `skills/catalog.rs`, `horch_marketplace as marketplace`: the `horch`
-///   binary may depend on `horch-core` only (NFR-05), and it drives the
-///   marketplace through this path.
-/// - `harness/launch.rs`, `horch_platform::start::FORBIDDEN_ENV`: the
-///   forbidden list moved to the platform start function
-///   (`docs/tickets/fleetd-p7/MAP.md`, Q1), and its callers keep the old
-///   path.
 const REEXPORT_ALLOWED: &[(&str, &str)] = &[
     (
         "horch-core/skills/catalog.rs",
@@ -459,8 +400,6 @@ const REEXPORT_ALLOWED: &[(&str, &str)] = &[
     ),
 ];
 
-/// The top-level `horch-core` files that were re-export shims (or the
-/// `ledger.rs` facade) during the refactor. None may come back.
 const REMOVED_SHIM_FILES: [&str; 18] = [
     "agent.rs",
     "balance.rs",
@@ -482,8 +421,6 @@ const REMOVED_SHIM_FILES: [&str; 18] = [
     "tile.rs",
 ];
 
-/// Signatures of the wrappers the refactor kept for old callers. Matched
-/// against code lines outside tests.
 const REMOVED_SHIM_ITEMS: [&str; 17] = [
     "fn from_process(",
     "fn send_line(&self",
@@ -504,7 +441,6 @@ const REMOVED_SHIM_ITEMS: [&str; 17] = [
     "HarnessKind as Agent",
 ];
 
-/// The child modules a file declares (`mod x;`, `pub mod x;`, ...).
 fn child_modules(lines: &[(usize, String)]) -> Vec<String> {
     lines
         .iter()
@@ -521,7 +457,6 @@ fn child_modules(lines: &[(usize, String)]) -> Vec<String> {
         .collect()
 }
 
-/// The re-export on `line`, if it is a `pub use` (any visibility).
 fn reexport(line: &str) -> Option<&str> {
     let t = line.trim_start();
     let rest = t.strip_prefix("pub ").or_else(|| {
@@ -531,9 +466,6 @@ fn reexport(line: &str) -> Option<&str> {
     rest.strip_prefix("use ")
 }
 
-/// The refactor ends with no shim: no file only re-exports, every `pub use`
-/// names one of the file's own child modules, and none of the removed shim
-/// files or wrappers exist (ARC-25).
 #[test]
 fn arc_25_no_shim_modules() {
     let core = crate_src("horch-core");
@@ -607,8 +539,6 @@ fn arc_25_no_shim_modules() {
     }
 }
 
-/// The ARC-25 scan's own cases: a glob shim is caught, a module's own
-/// re-exports are not.
 #[test]
 fn arc_25_scan_tells_shims_from_module_apis() {
     let lines = |src: &str| -> Vec<(usize, String)> {
@@ -627,10 +557,6 @@ fn arc_25_scan_tells_shims_from_module_apis() {
     assert_eq!(reexport("pub fn used() {}"), None);
 }
 
-// ─── Spec A §3 module rules ─────────────────────────────────────────────────
-
-/// Lines of the code in `files` (outside tests and comments) that name a
-/// `forbidden` item, as `file:line: needle`.
 fn forbidden_lines(root: &Path, files: &[PathBuf], forbidden: &[&str]) -> Vec<String> {
     let mut found = Vec::new();
     for path in files {
@@ -643,8 +569,6 @@ fn forbidden_lines(root: &Path, files: &[PathBuf], forbidden: &[&str]) -> Vec<St
     found
 }
 
-/// Telemetry observes and does not route (Spec A §3): it reads quota and
-/// executions, and never makes or builds a routing decision.
 #[test]
 fn arc_23_telemetry_never_routes() {
     let root = crate_src("horch-core");
@@ -665,8 +589,6 @@ fn arc_23_telemetry_never_routes() {
     assert!(found.is_empty(), "telemetry routes:\n{}", found.join("\n"));
 }
 
-/// Prompts hold no execution policy (Spec A §3): the prompt text never
-/// branches on a harness, a balance mode, an execution state or routing.
 #[test]
 fn arc_10_prompts_hold_no_execution_policy() {
     let root = crate_src("horch-core");
@@ -683,8 +605,6 @@ fn arc_10_prompts_hold_no_execution_policy() {
     );
 }
 
-/// The compaction rules are pure (CTX-07): windows, thresholds and the row
-/// policy start no process and touch no file, environment or workspace.
 #[test]
 fn ctx_07_compaction_pure_modules_do_no_io() {
     let root = crate_src("horch-core");
@@ -715,10 +635,6 @@ fn ctx_07_compaction_pure_modules_do_no_io() {
     );
 }
 
-/// A child's environment is cleaned in 1 place (#88, SR-7): the platform
-/// start function (`horch-platform/src/start.rs`) and the launcher of
-/// fleetd remove each forbidden name. A hand-built removal of the API key
-/// elsewhere is the sign of a start that goes around them.
 #[test]
 fn arc_88_children_are_scrubbed_in_one_place() {
     let needle = concat!("env_remove(\"ANTHROPIC", "_API_KEY\")");
@@ -756,27 +672,18 @@ fn arc_88_children_are_scrubbed_in_one_place() {
     );
 }
 
-/// PL-2: the 1 site that cannot call the platform layer, with its reason.
 const OS_CFG_EXEMPT: &[(&str, &str)] = &[(
     "horch-core/build.rs",
     "a build script runs on the build host before the crate compiles, so it cannot call the platform layer of the target",
 )];
 
-/// The predicate words that make a `cfg` an OS `cfg`.
 const OS_WORDS: [&str; 4] = ["target_os", "unix", "windows", "target_family"];
 
-/// The production code of a file text.
 struct Production {
-    /// The production lines, numbered from 1.
     lines: Vec<(usize, String)>,
-    /// The child modules that a test-only `cfg` declares (`mod x;`).
     test_mods: Vec<String>,
 }
 
-/// The production code of `text`. Unlike `code_lines`, it skips each item
-/// under a group of attributes, also over more than 1 line, that holds a
-/// test-only `cfg(..)`: the item to its `;` or to the `}` that closes its
-/// body. The lines after the item are code again.
 fn production_lines(text: &str) -> Production {
     let lines: Vec<&str> = text.lines().collect();
     let mut out = Production {
@@ -815,9 +722,6 @@ fn is_attribute(line: &str) -> bool {
     t.starts_with("#[") || t.starts_with("#![")
 }
 
-/// The attributes from line `start`, each to the line of its closing `]`,
-/// with the comment lines between them skipped, and the index of the line
-/// after the group.
 fn attribute_group(lines: &[&str], start: usize) -> (Vec<(usize, String)>, usize) {
     let mut group = Vec::new();
     let mut i = start;
@@ -839,7 +743,6 @@ fn attribute_group(lines: &[&str], start: usize) -> (Vec<(usize, String)>, usize
     (group, i)
 }
 
-/// Whether a group of attributes holds a `cfg(..)` that is test-only.
 fn gates_test_only(group: &[(usize, String)]) -> bool {
     let text: String = group.iter().map(|(_, l)| format!("{l}\n")).collect();
     cfgs(&text)
@@ -847,7 +750,6 @@ fn gates_test_only(group: &[(usize, String)]) -> bool {
         .any(|c| c.form == CfgForm::Gate && test_only(&c.pred))
 }
 
-/// The name of the module that `line` declares without a body (`mod x;`).
 fn declared_module(line: &str) -> Option<String> {
     let item = line.trim_start();
     let item = item
@@ -858,7 +760,6 @@ fn declared_module(line: &str) -> Option<String> {
     Some(name.trim().to_string())
 }
 
-/// The lexer state of `lex` between characters.
 #[derive(Clone, Copy)]
 enum Lex {
     Code,
@@ -867,16 +768,11 @@ enum Lex {
     Block(usize),
 }
 
-/// Rust source after `lex`: the code of each line without comments and
-/// without the content of string and char literals (a string stays as
-/// `""`), and each string literal with the index of its first line.
 struct Lexed {
     code: Vec<String>,
     strings: Vec<(usize, String)>,
 }
 
-/// Split `lines` into code and string literals. Line comments, nested block
-/// comments, string, raw string and char literals are lexed.
 fn lex(lines: &[&str]) -> Lexed {
     let mut out = Lexed {
         code: Vec::new(),
@@ -965,10 +861,6 @@ fn lex(lines: &[&str]) -> Lexed {
     out
 }
 
-/// The index of the line after the item that starts on line `start`: the
-/// line of its `;` outside a body and outside brackets (`[u8; 4]`), or of
-/// the `}` that closes its body. Braces in string, raw string and char
-/// literals and in comments do not count.
 fn item_end(lines: &[&str], start: usize) -> usize {
     let (mut depth, mut nested) = (0, 0);
     for (i, line) in lex(&lines[start..]).code.iter().enumerate() {
@@ -991,8 +883,6 @@ fn item_end(lines: &[&str], start: usize) -> usize {
     lines.len()
 }
 
-/// The count of `#` of the raw string literal that starts at `chars[k]`
-/// (`r"`, `r#"`, ...), or `None` when no raw string starts there.
 fn raw_string_hashes(chars: &[char], k: usize) -> Option<usize> {
     if k > 0 && (chars[k - 1].is_alphanumeric() || chars[k - 1] == '_') && chars[k - 1] != 'b' {
         return None;
@@ -1001,7 +891,6 @@ fn raw_string_hashes(chars: &[char], k: usize) -> Option<usize> {
     (chars.get(k + 1 + hashes) == Some(&'"')).then_some(hashes)
 }
 
-/// The text inside the parenthesis that opens at byte `open` of `text`.
 fn balanced(text: &str, open: usize) -> Option<&str> {
     let mut depth = 0;
     for (i, c) in text[open..].char_indices() {
@@ -1019,26 +908,19 @@ fn balanced(text: &str, open: usize) -> Option<&str> {
     None
 }
 
-/// The form of a `cfg`.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum CfgForm {
-    /// `#[cfg(..)]`: it gates the item under it.
     Gate,
-    /// `#[cfg_attr(..)]`: it gates only an attribute.
     Attr,
-    /// `cfg!(..)`: an expression.
     Macro,
 }
 
-/// A `cfg` in a text: its byte position, its form and its predicate.
 struct Cfg {
     at: usize,
     form: CfgForm,
     pred: String,
 }
 
-/// Each `cfg(..)`, `cfg_attr(..)` and `cfg!(..)` of `text`. The predicate
-/// of `cfg_attr` is its first argument.
 fn cfgs(text: &str) -> Vec<Cfg> {
     let mut out = Vec::new();
     for (at, _) in text.match_indices("cfg") {
@@ -1075,7 +957,6 @@ fn cfgs(text: &str) -> Vec<Cfg> {
     out
 }
 
-/// The arguments of `body`, split at each comma outside parentheses.
 fn arguments(body: &str) -> Vec<&str> {
     let mut out = Vec::new();
     let mut depth = 0;
@@ -1096,7 +977,6 @@ fn arguments(body: &str) -> Vec<&str> {
     out
 }
 
-/// The identifiers of a predicate, without the text of its string literals.
 fn predicate_words(pred: &str) -> Vec<&str> {
     pred.split('"')
         .step_by(2)
@@ -1109,13 +989,10 @@ fn names_os(pred: &str) -> bool {
     predicate_words(pred).iter().any(|w| OS_WORDS.contains(w))
 }
 
-/// Whether `pred` is false in each build without `test`.
 fn test_only(pred: &str) -> bool {
     without_test(pred) == Some(false)
 }
 
-/// The value of `pred` in a build without `test`: `test` is false, and each
-/// other option is unknown (`None`).
 fn without_test(pred: &str) -> Option<bool> {
     let pred = pred.trim();
     let call = |name: &str| {
@@ -1152,16 +1029,11 @@ fn without_test(pred: &str) -> Option<bool> {
     }
 }
 
-/// The OS `cfg` sites of a file text, and its test-only child modules.
 struct Scan {
-    /// Each site as its first line number and its text.
     sites: Vec<(usize, String)>,
     test_mods: Vec<String>,
 }
 
-/// The OS `cfg` sites of `text`: `cfg(..)`, `cfg_attr(..)` and `cfg!(..)`
-/// in production code whose predicate names an OS word and is not
-/// test-only.
 fn os_cfg_sites(text: &str) -> Scan {
     let production = production_lines(text);
     let lines = &production.lines;
@@ -1245,7 +1117,6 @@ fn l() {}
     );
 }
 
-/// A predicate is test-only when it cannot hold in a build without `test`.
 #[test]
 fn pl2_test_only_predicates_are_the_ones_false_without_test() {
     for pred in [
@@ -1266,9 +1137,6 @@ fn pl2_test_only_predicates_are_the_ones_false_without_test() {
     }
 }
 
-/// The production files of the workspace outside the platform layer: each
-/// member crate of the root `Cargo.toml`, its `src/` and its `build.rs`.
-/// `crates/horch-platform` is the layer; `crates/horch-e2e` is test code.
 fn production_files() -> (PathBuf, Vec<PathBuf>) {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let manifest = std::fs::read_to_string(root.join("Cargo.toml")).unwrap();
@@ -1276,7 +1144,10 @@ fn production_files() -> (PathBuf, Vec<PathBuf>) {
     let end = start + manifest[start..].find(']').unwrap();
     let mut files = Vec::new();
     for member in manifest[start..end].split('"').skip(1).step_by(2) {
-        if member == "crates/horch-platform" || member == "crates/horch-e2e" {
+        if member == "crates/horch-platform"
+            || member == "crates/horch-e2e"
+            || member == "crates/ui-prop-tester"
+        {
             continue;
         }
         let dir = root.join(member);
@@ -1288,8 +1159,6 @@ fn production_files() -> (PathBuf, Vec<PathBuf>) {
     (root.join("crates"), files)
 }
 
-/// The path of each file of a child module that a `cfg` naming `test`
-/// declares in `parent`, as a file or a folder prefix.
 fn test_module_paths(parent: &Path, names: &[String]) -> Vec<PathBuf> {
     let stem = parent.file_stem().unwrap();
     let dir = if ["lib", "main", "mod"].iter().any(|s| stem == *s) {
@@ -1303,8 +1172,6 @@ fn test_module_paths(parent: &Path, names: &[String]) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Each OS `cfg` site of the workspace production code outside the platform
-/// layer, as `<crate>/<path>:<line>: <text>`.
 fn workspace_os_cfg_sites() -> Vec<String> {
     let (root, files) = production_files();
     let mut scanned = Vec::new();
@@ -1332,8 +1199,6 @@ fn workspace_os_cfg_sites() -> Vec<String> {
     found
 }
 
-/// PL-2: no OS `cfg` in production code outside the platform layer, except
-/// the sites of `OS_CFG_EXEMPT`.
 #[test]
 fn fitness_workspace_production_code_has_no_os_cfg_outside_horch_platform() {
     let found = workspace_os_cfg_sites();
@@ -1350,7 +1215,6 @@ fn fitness_workspace_production_code_has_no_os_cfg_outside_horch_platform() {
     );
 }
 
-/// Each exempt file still has an OS `cfg`, so the exemption list stays true.
 #[test]
 fn pl2_exempt_build_script_still_needs_its_exemption() {
     let (root, _) = production_files();
@@ -1363,9 +1227,6 @@ fn pl2_exempt_build_script_still_needs_its_exemption() {
     }
 }
 
-// ─── fleetd module rules (docs/tickets/fleetd-p1/MAP.md, Q13) ───────────────
-
-/// The contexts under `fleetd/`, each with the ledger tables it owns.
 const FLEETD_TABLE_OWNERS: &[(&str, &[&str])] = &[
     (
         "fleet_runtime",
@@ -1416,8 +1277,6 @@ const FLEETD_TABLE_OWNERS: &[(&str, &[&str])] = &[
     ),
 ];
 
-/// The module files of Phase 5 (docs/tickets/fleetd-p5/MAP.md, Q16), under
-/// `fleetd/`. Each exists and is a `pub mod` of the `mod.rs` of its folder.
 const FLEETD_PHASE5_FILES: &[&str] = &[
     "fleet_runtime/domain/requests.rs",
     "fleet_runtime/domain/authorize.rs",
@@ -1446,8 +1305,6 @@ const FLEETD_PHASE5_FILES: &[&str] = &[
     "worker_profiles/adapters/sandbox_rules.rs",
 ];
 
-/// The module files of Phase 6 (docs/tickets/fleetd-p6/MAP.md, Q16), under
-/// `fleetd/`. Each exists and is a `pub mod` of the `mod.rs` of its folder.
 const FLEETD_PHASE6_FILES: &[&str] = &[
     "ideas/domain/idea.rs",
     "ideas/domain/idea_folder.rs",
@@ -1499,10 +1356,6 @@ const FLEETD_PHASE6_FILES: &[&str] = &[
     "fleet_runtime/application/handlers_idea.rs",
 ];
 
-/// The 1 door: it writes the state of each entity, so it names the tables
-/// of every context.
-/// The module files of Phase 7 (docs/tickets/fleetd-p7/MAP.md, Q17), under
-/// `fleetd/`. Each exists and is a `pub mod` of the `mod.rs` of its folder.
 const FLEETD_PHASE7_FILES: &[&str] = &[
     "worker_profiles/domain/conformance.rs",
     "worker_profiles/domain/health.rs",
@@ -1519,21 +1372,17 @@ const FLEETD_PHASE7_FILES: &[&str] = &[
 
 const FLEETD_DOOR: &str = "fleetd/fleet_runtime/adapters/sqlite.rs";
 
-/// Primitive types, which a path such as `u64::MAX` can start with.
 const PRIMITIVES: &[&str] = &[
     "bool", "char", "str", "u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64",
     "i128", "isize", "f32", "f64",
 ];
 
-/// The code of `path` outside tests, after `lex`, with the line number of
-/// each lexed line.
 fn lexed_file(path: &Path) -> (Vec<usize>, Lexed) {
     let lines = code_lines(path);
     let texts: Vec<&str> = lines.iter().map(|(_, l)| l.as_str()).collect();
     (lines.iter().map(|(n, _)| *n).collect(), lex(&texts))
 }
 
-/// A token of lexed code for `code_paths`.
 #[derive(Clone, PartialEq)]
 enum Tok {
     Ident(String),
@@ -1541,7 +1390,6 @@ enum Tok {
     Punct(char),
 }
 
-/// The tokens of `code`, each with the index of its line.
 fn tokens(code: &[String]) -> Vec<(usize, Tok)> {
     let mut out = Vec::new();
     for (i, line) in code.iter().enumerate() {
@@ -1572,10 +1420,6 @@ fn tokens(code: &[String]) -> Vec<(usize, Tok)> {
     out
 }
 
-/// Each path in `code`, as its segments with the index of its first line.
-/// A path has a `::`, or it follows `use` or `extern crate`. A leading `::`
-/// gives an empty first segment, and a path in a `use` group (`a::{b, c}`)
-/// starts with the prefix of the group.
 fn code_paths(code: &[String]) -> Vec<(usize, Vec<String>)> {
     let toks = tokens(code);
     let tok = |i: usize| toks.get(i).map(|(_, t)| t);
@@ -1649,9 +1493,6 @@ fn code_paths(code: &[String]) -> Vec<(usize, Vec<String>)> {
     out
 }
 
-/// The paths of `code` that leave the domain module `module` (its path
-/// below `crate`, as `["fleetd", ctx, "domain", ...]`), each with the index
-/// of its line. `siblings` are the modules of that `domain/` folder.
 fn outward_paths(code: &[String], module: &[&str], siblings: &[String]) -> Vec<(usize, String)> {
     let inside =
         |abs: &[String]| abs.len() >= 3 && abs.iter().zip(&module[..3]).all(|(a, d)| a == d);
@@ -1681,11 +1522,6 @@ fn outward_paths(code: &[String], module: &[&str], siblings: &[String]) -> Vec<(
         .collect()
 }
 
-/// The SQL tables that the string `literal` names and that are not in
-/// `owned`, in lower case. A string is SQL when its first word, up to a
-/// space, is a statement keyword (so `update-ref` is not), or it holds an
-/// upper-case `BEFORE_TABLE` keyword.
-/// Keywords and tables match in any case, as SQLite reads them.
 fn foreign_tables(literal: &str, owned: &[&str]) -> Vec<String> {
     const STATEMENTS: &[&str] = &[
         "SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "ALTER", "DROP", "WITH", "REPLACE",
@@ -1725,10 +1561,6 @@ fn foreign_tables(literal: &str, owned: &[&str]) -> Vec<String> {
     found
 }
 
-/// The `fleetd/` folder, after it asserts that each context of
-/// `FLEETD_TABLE_OWNERS` has a `domain/` folder, that no other context
-/// folder exists, and that each file of `FLEETD_PHASE5_FILES`,
-/// `FLEETD_PHASE6_FILES` and `FLEETD_PHASE7_FILES` is a module.
 fn fleetd_root() -> PathBuf {
     let fleetd = crate_src("horch-core").join("fleetd");
     for (ctx, _) in FLEETD_TABLE_OWNERS {
@@ -1762,8 +1594,6 @@ fn fleetd_root() -> PathBuf {
     fleetd
 }
 
-/// A domain module names only `std` and its own context's `domain` module:
-/// no other crate, and no other module of `crate`.
 #[test]
 fn fitness_domain_imports_nothing_outward() {
     let fleetd = fleetd_root();
@@ -1801,7 +1631,6 @@ fn fitness_domain_imports_nothing_outward() {
     );
 }
 
-/// The domain rule's own cases.
 #[test]
 fn fitness_domain_rule_finds_outward_paths() {
     let module = ["fleetd", "ideas", "domain", "needs_you"];
@@ -1851,8 +1680,6 @@ fn fitness_domain_rule_finds_outward_paths() {
     assert!(!outward("use super::application::X;", &mod_rs).is_empty());
 }
 
-/// Each SQL table that a file under `fleetd/<context>/` names is a table of
-/// that context. The 1 door is exempt.
 #[test]
 fn fitness_no_context_touches_foreign_tables() {
     let fleetd = fleetd_root();
@@ -1884,7 +1711,6 @@ fn fitness_no_context_touches_foreign_tables() {
     );
 }
 
-/// The table rule's own cases.
 #[test]
 fn fitness_table_rule_finds_foreign_tables() {
     let owned = ["needs_you"];
@@ -1928,11 +1754,6 @@ fn fitness_table_rule_finds_foreign_tables() {
     }
 }
 
-// ─── OR-2: the state writes go through the 1 door ───────────────────────────
-
-/// Whether the SQL string `literal` writes the state column of a table in
-/// [`STATE_COLUMNS`]: an `UPDATE` of that table whose `SET` clause names
-/// that column. Keywords and names match in any case, as SQLite reads them.
 fn writes_state_column(literal: &str) -> bool {
     let words = sql_words(literal);
     (0..words.len()).any(|at| {
@@ -1941,8 +1762,6 @@ fn writes_state_column(literal: &str) -> bool {
     })
 }
 
-/// The words of the SQL string `literal`: names and keywords in lower case,
-/// and each other sign as 1 word.
 fn sql_words(literal: &str) -> Vec<String> {
     tokens(&[literal.to_string()])
         .into_iter()
@@ -1954,12 +1773,6 @@ fn sql_words(literal: &str) -> Vec<String> {
         .collect()
 }
 
-/// The tables whose state column only the 1 door writes, with that
-/// column. `worktrees.status` keeps the writes of today
-/// (`docs/tickets/fleetd-p3/MAP.md`, Q3): only its `state` is here. The
-/// task branch, the bundle and the feature are entities of Phase 4
-/// (`docs/tickets/fleetd-p4/06-integration-entities-in-the-door.md`), and
-/// the idea is an entity of Phase 6 (`docs/tickets/fleetd-p6/04-door.md`).
 const STATE_COLUMNS: &[(&str, &str)] = &[
     ("tasks", "status"),
     ("workers", "status"),
@@ -1970,10 +1783,6 @@ const STATE_COLUMNS: &[(&str, &str)] = &[
     ("ideas", "state"),
 ];
 
-/// When the words from `at` start `UPDATE [OR <conflict>] [main.]<table>`
-/// for a table of [`STATE_COLUMNS`], with an optional alias (`[AS] t`), and
-/// then `SET`: the index of the first word after `SET`, and the state
-/// column of the table.
 fn set_clause_of_state_table(words: &[String], at: usize) -> Option<(usize, &'static str)> {
     let word = |i: usize| words.get(i).map(String::as_str);
     if word(at) != Some("update") {
@@ -1991,7 +1800,6 @@ fn set_clause_of_state_table(words: &[String], at: usize) -> Option<(usize, &'st
         .find(|(table, _)| word(next) == Some(*table))
         .map(|(_, column)| *column)?;
     next += 1;
-    // The alias: `AS t` or a bare `t`.
     if word(next) == Some("as") {
         next += 2;
     } else if word(next) != Some("set") {
@@ -2000,9 +1808,6 @@ fn set_clause_of_state_table(words: &[String], at: usize) -> Option<(usize, &'st
     (word(next) == Some("set")).then_some((next + 1, column))
 }
 
-/// Whether the assignments of a `SET` clause, from its first word to its
-/// end, assign `column` (also as `t.<column>`). The clause ends at a
-/// `WHERE`, `FROM`, `RETURNING` or `;` outside parentheses.
 fn assigns(clause: &[String], column: &str) -> bool {
     let mut depth = 0;
     let mut starts_assignment = true;
@@ -2030,8 +1835,6 @@ fn assigns(clause: &[String], column: &str) -> bool {
     false
 }
 
-/// The direct state writes that are not a state change of a row in flight:
-/// the path, a part of the SQL text, and why it is exempt.
 const STATE_WRITES_EXEMPT: &[(&str, &str, &str)] = &[
     (
         "horch-core/src/taskledger/schema.rs",
@@ -2053,9 +1856,6 @@ fn exempt(found: &str) -> bool {
         .any(|(path, sql, _)| found.starts_with(&format!("{path}:")) && found.contains(sql))
 }
 
-/// Each direct write of a state column of [`STATE_COLUMNS`] in the
-/// production code of `horch-core` and `horch`, as `<path>:<line>: <sql>`,
-/// outside the 1 door.
 fn direct_state_writes() -> Vec<String> {
     let door = format!("horch-core/src/{FLEETD_DOOR}:");
     let mut found = production_sql(writes_state_column);
@@ -2063,8 +1863,6 @@ fn direct_state_writes() -> Vec<String> {
     found
 }
 
-/// Each SQL string of the production code of `horch-core` and `horch`
-/// that `matches`, as `<path>:<line>: <sql>`.
 fn production_sql(matches: fn(&str) -> bool) -> Vec<String> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let mut files = Vec::new();
@@ -2097,9 +1895,6 @@ fn production_sql(matches: fn(&str) -> bool) -> Vec<String> {
     found
 }
 
-/// OR-2: each production write of a state column of [`STATE_COLUMNS`]
-/// goes through `transition()`, so each state change has its event and
-/// cause.
 #[test]
 fn fitness_status_writes_go_through_transition() {
     let mut found = direct_state_writes();
@@ -2111,7 +1906,6 @@ fn fitness_status_writes_go_through_transition() {
     );
 }
 
-/// Each exemption of [`STATE_WRITES_EXEMPT`] still exempts a write.
 #[test]
 fn each_state_write_exemption_is_still_needed() {
     let found = direct_state_writes();
@@ -2125,7 +1919,6 @@ fn each_state_write_exemption_is_still_needed() {
     }
 }
 
-/// The state write matcher's own cases.
 #[test]
 fn status_write_matcher_finds_a_direct_update() {
     let writes = |src: &str| -> Vec<bool> {
@@ -2169,8 +1962,6 @@ fn status_write_matcher_finds_a_direct_update() {
     assert_eq!(writes(src), Vec::<bool>::new());
 }
 
-/// The production files that may move a worktree to `removed` through the
-/// door, and why.
 const REMOVED_MOVERS: &[(&str, &str)] = &[
     (
         "horch-core/src/fleetd/worktree_custody/application/remove.rs",
@@ -2183,7 +1974,6 @@ const REMOVED_MOVERS: &[(&str, &str)] = &[
     ),
 ];
 
-/// The arguments of `body`, split at each comma outside (), [] and {}.
 fn call_arguments(body: &str) -> Vec<&str> {
     let mut out = Vec::new();
     let mut depth = 0;
@@ -2204,8 +1994,6 @@ fn call_arguments(body: &str) -> Vec<&str> {
     out
 }
 
-/// Whether `text` holds a call of `transition(` whose target is
-/// `"removed"`: the 5th argument of the door.
 fn moves_to_removed(text: &str) -> bool {
     text.match_indices("transition(").any(|(at, _)| {
         let ident = text[..at]
@@ -2219,8 +2007,6 @@ fn moves_to_removed(text: &str) -> bool {
     })
 }
 
-/// Each production file of `horch-core` and `horch` that moves a worktree
-/// to `removed` through the door.
 fn removed_movers() -> Vec<String> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let mut files = Vec::new();
@@ -2249,9 +2035,6 @@ fn removed_movers() -> Vec<String> {
     found
 }
 
-/// RR-9 and FM-27: only the worktree_remove job and the triage settle of a
-/// gone folder move a worktree to `removed`; no other caller uses the door
-/// move `orphaned` to `removed`.
 #[test]
 fn fitness_only_custody_and_triage_move_a_worktree_to_removed() {
     let found = removed_movers();
@@ -2271,8 +2054,6 @@ fn fitness_only_custody_and_triage_move_a_worktree_to_removed() {
     }
 }
 
-/// The matcher of the rule above finds a door call to `removed` and no
-/// other call.
 #[test]
 fn removed_matcher_finds_a_door_call_to_removed() {
     assert!(moves_to_removed(
@@ -2289,12 +2070,8 @@ fn removed_matcher_finds_a_door_call_to_removed() {
     ));
 }
 
-/// The production folder whose files may run `git worktree add`, `remove`
-/// and `prune`: the worktree custody adapters of fleetd.
 const WORKTREE_CUSTODY: &str = "horch-core/src/fleetd/worktree_custody/adapters/";
 
-/// The production files outside worktree custody that may run `git worktree
-/// add`, `remove` or `prune`, and why.
 const WORKTREE_CALL_EXEMPT: &[(&str, &str)] = &[(
     "horch-core/src/vcs/landing.rs",
     "the claims of `horch worktree new` and `land` make trees that belong to no \
@@ -2302,10 +2079,6 @@ const WORKTREE_CALL_EXEMPT: &[(&str, &str)] = &[(
      it (docs/tickets/fleetd-p3/MAP.md, Q15)",
 )];
 
-/// Whether `text` holds the string literal `"worktree"` followed in the same
-/// call by `"add"`, `"remove"` or `"prune"`: as the next item of a list
-/// (`["worktree", "add"]`) or as the next `.arg(..)` or `.args(..)` of a
-/// command.
 fn runs_git_worktree_change(text: &str) -> bool {
     text.match_indices("\"worktree\"").any(|(at, lit)| {
         let mut rest = text[at + lit.len()..].trim_start();
@@ -2330,9 +2103,6 @@ fn runs_git_worktree_change(text: &str) -> bool {
     })
 }
 
-/// Each production file of the workspace, outside `horch-e2e` (test code),
-/// that runs `git worktree add`, `remove` or `prune`, relative to `crates/`:
-/// each member's `src/` and its `build.rs`.
 fn git_worktree_changers() -> Vec<String> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let manifest = std::fs::read_to_string(root.join("Cargo.toml")).unwrap();
@@ -2371,8 +2141,6 @@ fn git_worktree_changers() -> Vec<String> {
     found
 }
 
-/// FR-11 and FM-26: only worktree custody runs `git worktree add`, `remove`
-/// or `prune`. `git worktree list` is a read and is not in the rule (Q16).
 #[test]
 fn fitness_only_worktree_custody_runs_git_worktree_add_remove_or_prune() {
     let found = git_worktree_changers();
@@ -2394,7 +2162,6 @@ fn fitness_only_worktree_custody_runs_git_worktree_add_remove_or_prune() {
     }
 }
 
-/// The matcher of the rule above finds a worktree change and no read.
 #[test]
 fn git_worktree_matcher_finds_add_remove_and_prune() {
     for hit in [
@@ -2422,11 +2189,6 @@ fn git_worktree_matcher_finds_add_remove_and_prune() {
     }
 }
 
-// ─── The state of a new worktree row is written, not defaulted ──────────────
-
-/// Whether the SQL string `literal` inserts into `worktrees` without the
-/// `state` column in its column list. A row that takes the default state
-/// `orphaned` would list a live tree as orphaned (fleetd-p3, Q19).
 fn inserts_worktree_without_state(literal: &str) -> bool {
     let words = sql_words(literal);
     let word = |i: usize| words.get(i).map(String::as_str);
@@ -2458,8 +2220,6 @@ fn inserts_worktree_without_state(literal: &str) -> bool {
     })
 }
 
-/// Each production `INSERT INTO worktrees` names the `state` column, so no
-/// new row relies on the default `orphaned` of the Phase 3 migration.
 #[test]
 fn fitness_each_worktree_insert_writes_its_state() {
     let found = production_sql(inserts_worktree_without_state);
@@ -2470,7 +2230,6 @@ fn fitness_each_worktree_insert_writes_its_state() {
     );
 }
 
-/// The matcher of the rule above.
 #[test]
 fn worktree_insert_matcher_finds_an_insert_without_state() {
     for hit in [
@@ -2492,17 +2251,10 @@ fn worktree_insert_matcher_finds_an_insert_without_state() {
     }
 }
 
-/// The files of fleetd, the 1 writer of the ledger from Phase 5 (RR-5,
-/// FM-24): its folder in `horch-core` and its composition root.
 const FLEETD_FILES: &[&str] = &["horch-core/src/fleetd/", "horch/src/cmd/fleetd.rs"];
 
-/// The 1 file that makes the writer of fleetd: `horch fleetd` and
-/// `horch ledger watch --once`, which takes the fleetd lock.
 const FLEETD_ROOT: &str = "horch/src/cmd/fleetd.rs";
 
-/// The writable opens of the ledger outside [`FLEETD_FILES`]: the path, a
-/// part of the line, and why. An entry with a ticket goes when that ticket
-/// lands, and gate T-498 does not pass while 1 of them stays.
 const LEDGER_WRITERS_EXEMPT: &[(&str, &str, &str)] = &[
     (
         "horch-core/src/taskledger/store.rs",
@@ -2527,8 +2279,6 @@ const LEDGER_WRITERS_EXEMPT: &[(&str, &str, &str)] = &[
     ),
 ];
 
-/// True when `line` holds `needle` as the start of a path or a name: the
-/// character before it is not part of a name.
 fn starts_name(line: &str, at: usize) -> bool {
     !line[..at]
         .chars()
@@ -2536,9 +2286,6 @@ fn starts_name(line: &str, at: usize) -> bool {
         .is_some_and(|c| c.is_alphanumeric() || c == '_')
 }
 
-/// The calls of `line` that open the ledger for a write, or make the writer
-/// of fleetd. `ledger_store` says whether a bare `Store` of the file is the
-/// ledger store (and not, for example, the telemetry store).
 fn ledger_write_calls(line: &str, ledger_store: bool) -> Vec<&'static str> {
     let mut found = Vec::new();
     let calls = |needle: &str| -> Vec<usize> {
@@ -2568,9 +2315,6 @@ fn ledger_write_calls(line: &str, ledger_store: bool) -> Vec<&'static str> {
     found
 }
 
-/// Whether a bare `Store` in the file at `rel` (relative to `crates/`)
-/// with the production `lines` is the ledger store: a file of the ledger
-/// module, or a file whose `use` of `taskledger` names `Store`.
 fn names_ledger_store(rel: &str, lines: &[(usize, String)]) -> bool {
     if rel.starts_with("horch-core/src/taskledger/") {
         return true;
@@ -2593,9 +2337,6 @@ fn names_ledger_store(rel: &str, lines: &[(usize, String)]) -> bool {
     })
 }
 
-/// Each writable open of the ledger, and each writer of fleetd that is
-/// made, in the production code outside [`FLEETD_FILES`], as
-/// `<path>:<line>: <call>: <text>`.
 fn ledger_writers() -> Vec<String> {
     let (root, files) = production_files();
     let mut scanned = Vec::new();
@@ -2637,10 +2378,6 @@ fn ledger_writer_exempt(found: &str) -> bool {
         .any(|(path, part, _)| found.starts_with(&format!("{path}:")) && found.contains(part))
 }
 
-/// RR-5, FM-24 (Phase 1 Q13): no production file outside fleetd opens the
-/// ledger for a write, and only the composition root of fleetd makes the
-/// writer of fleetd. Each other process opens the ledger with
-/// `open_existing_read_only`.
 #[test]
 fn fitness_only_fleet_runtime_opens_the_ledger_writable() {
     let mut found = ledger_writers();
@@ -2653,7 +2390,6 @@ fn fitness_only_fleet_runtime_opens_the_ledger_writable() {
     );
 }
 
-/// Each exemption of [`LEDGER_WRITERS_EXEMPT`] still exempts a writer.
 #[test]
 fn each_ledger_writer_exemption_is_still_needed() {
     let found = ledger_writers();
@@ -2667,7 +2403,6 @@ fn each_ledger_writer_exemption_is_still_needed() {
     }
 }
 
-/// The matchers of the rule above.
 #[test]
 fn ledger_writer_matcher_finds_each_writable_open() {
     for (line, store, call) in [
@@ -2762,20 +2497,11 @@ fn ledger_writer_matcher_finds_each_writable_open() {
     assert!(names_ledger_store("horch-core/src/taskledger/x.rs", &[]));
 }
 
-/// SR-7: the 2 production files that may start a process directly: the
-/// platform start function and the launcher (docs/tickets/fleetd-p7/MAP.md,
-/// Q1). Each removes each forbidden name before the start.
 const PROCESS_START_ALLOWED: [&str; 2] = [
     "horch-platform/src/start.rs",
     "horch-core/src/fleetd/worker_profiles/adapters/launcher.rs",
 ];
 
-/// Each direct process start in the production code of `text`, with its
-/// line number: a `Command::new` of a `process` module (`std::process`), or
-/// a bare `Command::new`. `horch_platform::start::Command` has no `new` (its
-/// start is `start::command`), so a bare `Command::new` is a `std` start. A
-/// `Command` of another module (`clap::Command`) and a
-/// `std::process::Command` as a type are not starts.
 fn process_starts(text: &str) -> Vec<(usize, String)> {
     let production = production_lines(text);
     let texts: Vec<&str> = production.lines.iter().map(|(_, l)| l.as_str()).collect();
@@ -2790,17 +2516,14 @@ fn process_starts(text: &str) -> Vec<(usize, String)> {
         .collect()
 }
 
-/// Each direct process start in the production code under `crates`, as
-/// `<crate>/src/<path>:<line>: <path>`, outside `PROCESS_START_ALLOWED`.
-/// It reads the `src/` of each crate. `horch-e2e` is test code: its library
-/// starts the development binaries with the environment that a test gives,
-/// and its `src/bin/` holds the fake agents. A `tests.rs` file and each
-/// module that a test-only `cfg` declares are test code.
 fn process_starts_under(crates: &Path) -> Vec<String> {
     let mut files = Vec::new();
     for entry in std::fs::read_dir(crates).unwrap() {
         let dir = entry.unwrap().path();
-        if dir.file_name().is_some_and(|n| n != "horch-e2e") && dir.join("src").is_dir() {
+        let own = dir
+            .file_name()
+            .is_some_and(|n| n != "horch-e2e" && n != "ui-prop-tester");
+        if own && dir.join("src").is_dir() {
             rust_files(&dir.join("src"), &mut files);
         }
     }
@@ -2828,8 +2551,27 @@ fn process_starts_under(crates: &Path) -> Vec<String> {
     found
 }
 
-/// SR-7: production code starts each process through the launcher or the
-/// platform start function, and through no other `Command::new`.
+#[test]
+fn no_crate_of_horch_depends_on_ui_prop_tester() {
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir(&crates).unwrap() {
+        let dir = entry.unwrap().path();
+        let manifest = dir.join("Cargo.toml");
+        if dir.file_name().is_some_and(|n| n == "ui-prop-tester") || !manifest.is_file() {
+            continue;
+        }
+        let text = std::fs::read_to_string(&manifest).unwrap();
+        if text.contains("ui-prop-tester") || text.contains("ui_prop_tester") {
+            found.push(relative(&manifest, &crates));
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "these crates name ui-prop-tester: {found:?}"
+    );
+}
+
 #[test]
 fn fitness_no_process_start_outside_the_launcher() {
     let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
@@ -2844,9 +2586,6 @@ fn fitness_no_process_start_outside_the_launcher() {
     );
 }
 
-/// The process start rule's own cases: a start planted in a temporary file
-/// is found with its file and line, and test code, the 2 allowed files,
-/// `horch-e2e`, comments, strings and a `Command` of another module are not.
 #[test]
 fn fitness_process_start_rule_finds_a_planted_start() {
     let tmp = tempfile::tempdir().unwrap();

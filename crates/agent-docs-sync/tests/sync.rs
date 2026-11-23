@@ -1,6 +1,3 @@
-//! The library API of agent-docs-sync. Each page comes from a local fixture
-//! through the fetch port; no test uses the network.
-
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -10,7 +7,6 @@ use agent_docs_sync::{
 };
 use sha2::{Digest, Sha256};
 
-/// A fetch port that serves fixture files by URL and records each request.
 struct Fixture {
     pages: BTreeMap<String, PathBuf>,
     asked: RefCell<Vec<String>>,
@@ -60,7 +56,6 @@ fn source(name: &str) -> Source {
         .unwrap()
 }
 
-/// A claude source with 2 includes, so the fixture stays small.
 fn small_claude(include: &str) -> Source {
     let text = format!(
         "[claude]\nkind = \"llms_txt\"\nurl = \"https://code.claude.com/docs/llms.txt\"\n\
@@ -185,7 +180,6 @@ fn llms_txt_source_fetches_only_the_included_pages_with_the_md_suffix() {
     )
     .unwrap();
 
-    // The suffix is added once; "hooks" is the top page, not the SDK page.
     assert_eq!(
         *fetch.asked.borrow(),
         [
@@ -224,7 +218,6 @@ fn sitemap_source_keeps_the_herdr_behavior() {
     assert_eq!(seen["retired.md"], Outcome::Removed);
     assert!(!dir.join("retired.md").exists(), "a stale page is pruned");
 
-    // The English pages only, converted to markdown.
     let readme = read(&dir.join("README.md"));
     assert!(readme.starts_with("# Herdr\n"), "{readme}");
     assert!(readme.contains("Herdr runs agents in panes."), "{readme}");
@@ -269,7 +262,6 @@ fn a_page_that_fails_is_reported_and_the_others_are_written() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("retired.md"), "# Gone\n").unwrap();
 
-    // settings is listed but its fetch fails; mcp is not listed at all.
     let report = sync(
         &small_claude("\"cli-reference\", \"settings\", \"mcp\""),
         "2.1.0",
@@ -291,7 +283,6 @@ fn a_page_that_fails_is_reported_and_the_others_are_written() {
     assert_eq!(report.failed().len(), 2);
 
     assert!(dir.join("cli-reference.md").is_file());
-    // A partial picture never deletes a page.
     assert!(dir.join("retired.md").is_file());
     assert!(!seen.contains_key("retired.md"));
     let manifest: Manifest = serde_json::from_str(&read(&dir.join(MANIFEST_FILE))).unwrap();

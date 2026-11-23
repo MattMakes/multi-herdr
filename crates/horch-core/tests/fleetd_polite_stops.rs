@@ -1,11 +1,3 @@
-//! The polite stop of a process is a row of `polite_stops`, not a file in
-//! `<fleet root>/run/stops/` (docs/tickets/fleetd-p5/34-polite-stops-row.md,
-//! MAP.md of fleetd-p5, Q12).
-//!
-//! Each test uses a temp ledger and a temp fleet root, and runs the pass as
-//! a library call. A test process is an orphan: an ended worker row names
-//! it, so the pass stops it. Windows has no polite stop, so these tests run
-//! on unix only.
 #![cfg(unix)]
 
 use std::collections::BTreeMap;
@@ -31,14 +23,9 @@ use horch_core::taskledger::workers::{self, NewWorker};
 use horch_core::taskledger::{schema, util};
 use rusqlite::{params, Connection, OptionalExtension};
 
-/// The ledger that [`probe_rows`] reads.
 const PROBE_DB: &str = "POLITE_PROBE_DB";
-/// The file that [`probe_rows`] writes: the count of `polite_stops` rows.
 const PROBE_OUT: &str = "POLITE_PROBE_OUT";
 
-// ─── the world ──────────────────────────────────────────────────────────
-
-/// A temp ledger at generation 1, a fleet root and 1 run.
 struct World {
     dir: PathBuf,
     _temp: tempfile::TempDir,
@@ -89,7 +76,6 @@ impl World {
         self.root().join("run").join("stops")
     }
 
-    /// The file of today's fleetd for the polite stop of `p`.
     fn old_stop_file(&self, p: Recorded) -> PathBuf {
         self.stops_dir()
             .join(format!("{}-{}.json", p.pid, p.pid_start.unwrap()))
@@ -117,8 +103,6 @@ impl World {
         )
     }
 
-    /// An ended worker row that names the live process `p`: an orphan to
-    /// stop (I5).
     fn orphan(&self, p: &Proc) {
         let new = NewWorker {
             run_id: self.run.run_id.clone(),
@@ -149,7 +133,6 @@ impl World {
             .unwrap();
     }
 
-    /// The fleet clock time of the polite stop row of `p`, if any.
     fn row(&self, p: Recorded) -> Option<i64> {
         self.conn
             .query_row(
@@ -166,7 +149,6 @@ impl World {
     }
 }
 
-/// The outside of the tests: no herdr snapshot, no health hold, no folder.
 struct Fake;
 
 impl Outside for Fake {
@@ -191,12 +173,9 @@ impl Outside for Fake {
     }
 }
 
-/// A shell process of a test, killed when the test ends.
 struct Proc(Child);
 
 impl Proc {
-    /// A shell that runs `on_term` on the polite stop. It returns when the
-    /// shell has set its trap.
     fn start(w: &World, on_term: &str, env: &[(&str, &Path)]) -> Proc {
         let ready = w.file("ready");
         let _ = std::fs::remove_file(&ready);
@@ -214,12 +193,10 @@ impl Proc {
         p
     }
 
-    /// A process that ignores the polite stop: only the kill ends it.
     fn stubborn(w: &World) -> Proc {
         Proc::start(w, "", &[])
     }
 
-    /// A process that exits on the polite stop.
     fn polite(w: &World) -> Proc {
         Proc::start(w, "exit 0", &[])
     }
@@ -232,7 +209,6 @@ impl Proc {
         }
     }
 
-    /// Wait until it exits, and reap it.
     fn wait_exit(&mut self) -> bool {
         wait_for(|| matches!(self.0.try_wait(), Ok(Some(_))))
     }
@@ -245,7 +221,6 @@ impl Drop for Proc {
     }
 }
 
-/// Wait until `cond` holds. The bound only ends a test that hangs.
 fn wait_for(mut cond: impl FnMut() -> bool) -> bool {
     let end = Instant::now() + Duration::from_secs(30);
     while Instant::now() < end {
@@ -257,10 +232,6 @@ fn wait_for(mut cond: impl FnMut() -> bool) -> bool {
     false
 }
 
-/// Not a test of its own: the trap of the process of
-/// [`polite_stop_is_a_row_before_the_signal`] runs it on the polite stop.
-/// It writes the count of `polite_stops` rows at that time. It runs only
-/// with [`PROBE_DB`].
 #[test]
 fn probe_rows() {
     let Some(db) = std::env::var_os(PROBE_DB) else {
@@ -276,8 +247,6 @@ fn probe_rows() {
     std::fs::write(&tmp, n.to_string()).unwrap();
     std::fs::rename(tmp, out).unwrap();
 }
-
-// ─── the tests ──────────────────────────────────────────────────────────
 
 #[test]
 fn polite_stop_is_a_row_before_the_signal() {
@@ -331,14 +300,12 @@ fn kill_comes_after_the_grace_across_a_restart() {
     let at = w.row(p.recorded()).expect("the row of the polite stop");
     drop(pass);
 
-    // A new fleetd within the grace (stop_grace_s, 20 s): no new stop.
     w.set_clock(at + 10);
     let mut pass = w.pass(&fake);
     assert_eq!(w.run(&mut pass).done, Vec::new(), "within its grace");
     assert_eq!(w.row(p.recorded()), Some(at), "the time stays");
     drop(pass);
 
-    // A new fleetd past the grace: the kill.
     w.set_clock(at + 25);
     let mut pass = w.pass(&fake);
     assert_eq!(
@@ -371,7 +338,6 @@ fn old_stop_file_becomes_a_row_once() {
     w.orphan(&p);
     let r = p.recorded();
     let pid = r.pid;
-    // Today's fleetd sent the polite stop at 0 on the fleet clock.
     std::fs::create_dir_all(w.stops_dir()).unwrap();
     std::fs::write(w.old_stop_file(r), r#"{"polite_at":0}"#).unwrap();
     w.set_clock(5);
@@ -402,7 +368,6 @@ fn symlinked_old_stop_file_is_removed_and_logged() {
     w.orphan(&p);
     let r = p.recorded();
     let pid = r.pid;
-    // A link to a record that would make the kill due at once.
     let target = w.file("forged.json");
     std::fs::write(&target, r#"{"polite_at":0}"#).unwrap();
     std::fs::create_dir_all(w.stops_dir()).unwrap();

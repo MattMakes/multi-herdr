@@ -1,7 +1,3 @@
-//! TRF-18: a shared-checkout task diffs from its claim commit, so
-//! code-sweep and complexity-sweep see its work. Its commits are on the run
-//! branch already, so `run_branch...HEAD` is empty.
-
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -39,8 +35,6 @@ fn commit(dir: &Path, file: &str) -> String {
     git(dir, &["rev-parse", "HEAD"])
 }
 
-/// A repository on its run branch, with 1 claimed shared-checkout task
-/// that ran the shared claim, then 1 commit of `file` on the run branch.
 struct World {
     _tmp: tempfile::TempDir,
     top: PathBuf,
@@ -54,7 +48,7 @@ struct World {
 impl World {
     fn new(steps: &[StepName], file: &str) -> World {
         let tmp = tempfile::tempdir().unwrap();
-        let top = tmp.path().canonicalize().unwrap();
+        let top = horch_platform::path::canonicalize(tmp.path()).unwrap();
         let root = top.join("repo");
         std::fs::create_dir_all(&root).unwrap();
         git(&root, &["init", "--quiet", "-b", "main"]);
@@ -81,7 +75,6 @@ impl World {
                         ..Default::default()
                     },
                 )?;
-                // FR-12: a task needs an idea in flight of the feature of its run.
                 horch_core::taskledger::schema::run_idea(
                     tx,
                     &run.run_id,
@@ -217,7 +210,6 @@ fn trf_18_the_diff_base_is_the_claim_commit() {
         .unwrap()
     };
     assert_eq!(cx(&w.tools), w.start);
-    // No claim commit recorded: the run branch, as before.
     let mut other = w.tools.clone();
     other.evidence_root = w.top.join("elsewhere");
     assert_eq!(cx(&other), RUN_BRANCH);

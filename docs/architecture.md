@@ -58,7 +58,7 @@ open first.
 | `exeid` | which binary a long-lived horch process runs, so a stale watchdog or collector is noticed after an install | `crates/horch-core/src/exeid.rs` |
 | `heartbeat` | the liveness of background jobs (the compaction job) | `crates/horch-core/src/heartbeat.rs` |
 | `sweep` | the removal of stale state whose owner is gone (records, spools, sockets, registries, mail, bundles, codex homes, temp files), run by `fleet`, `spawn` and `doctor --clean` | `crates/horch-core/src/sweep.rs` |
-| `runtime` | the process boundary: `RuntimeContext`, paths, binary overrides (`HORCH_*_BIN`), fault points | `crates/horch-core/src/runtime/context.rs`, `crates/horch-core/src/runtime/paths.rs`, `crates/horch-core/src/runtime/bins.rs` |
+| `runtime` | the process boundary: `RuntimeContext`, backend resolution (`herdr` vs `hc`), paths, binary overrides (`HORCH_*_BIN`), fault points | `crates/horch-core/src/runtime/context.rs`, `crates/horch-core/src/runtime/backend.rs`, `crates/horch-core/src/runtime/paths.rs`, `crates/horch-core/src/runtime/bins.rs` |
 | `roster` | `teammates/` files: parsing, layering, `--check` rules, effort and permission mapping | `crates/horch-core/src/roster/repository.rs`, `crates/horch-core/src/roster/validation.rs` |
 | `prompts` | rendering briefings from `teammates/` | `crates/horch-core/src/prompts.rs` |
 | `skills` | skill catalogs, phase selection, activation plans, launch bundles | `crates/horch-core/src/skills/selection.rs`, `crates/horch-core/src/skills/catalog.rs` |
@@ -155,7 +155,7 @@ open first.
 | `fleetd/worker_profiles/adapters/docs_dir` | the docs files of a CLI under `<fleet root>/docs/<cli>/<version>/` (fleetd-p7 tickets 22 and 25) | `crates/horch-core/src/fleetd/worker_profiles/adapters/docs_dir.rs` |
 | `fleetd/task_execution/domain/context_limit` | the outcome `context_limit` of an attempt and its loop guard (fleetd-p7 ticket 18) | `crates/horch-core/src/fleetd/task_execution/domain/context_limit.rs` |
 | `compaction` | context windows, thresholds, row states and the compaction job | `crates/horch-core/src/compaction/policy.rs`, `crates/horch-core/src/compaction/job.rs` |
-| `workspace` | the herdr client, layout, tiling and balancing | `crates/horch-core/src/workspace/herdr.rs`, `crates/horch-core/src/workspace/tile.rs` |
+| `workspace` | the `PaneHost` handle (`herdr` and `hc` + `herdr-app` clients), bounded CLI command runner, spawn placement, layout, tiling and balancing | `crates/horch-core/src/workspace/host.rs`, `crates/horch-core/src/workspace/herdr.rs`, `crates/horch-core/src/workspace/hc.rs`, `crates/horch-core/src/workspace/exec.rs`, `crates/horch-core/src/workspace/place.rs`, `crates/horch-core/src/workspace/tile.rs` |
 | `telemetry` | live per-pane token telemetry and the collector | `crates/horch-core/src/telemetry/collect.rs`, `crates/horch-core/src/telemetry/readers.rs` |
 | `usage` | what a run cost, read back from each harness's own records | `crates/horch-core/src/usage.rs` |
 | `vcs` | typed git and landing | `crates/horch-core/src/vcs/git.rs` |

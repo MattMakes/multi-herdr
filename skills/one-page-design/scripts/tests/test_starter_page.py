@@ -44,10 +44,10 @@ class Starter(unittest.TestCase):
         self.code = re.sub(r"<!--.*?-->", "", self.text, flags=re.S)
         self.css = re.search(r"<style>(.*)</style>", self.code, re.S).group(1)
 
-    def test_checker_passes(self):  # spec-page-starter t1, spec-rewrite-starter-p2 t1
+    def test_checker_passes(self):
         self.assertEqual(check_page.check_page(self.text), ([], (17.0, 11.0), 0))
 
-    def test_file_level_rules(self):  # spec-page-starter t2
+    def test_file_level_rules(self):
         page = rule_body(self.css, "@page")
         self.assertRegex(page, r"size:\s*var\(--sheet-w\)\s+var\(--sheet-h\)")
         self.assertRegex(page, r"margin:\s*0")
@@ -96,9 +96,7 @@ class Starter(unittest.TestCase):
         self.assertRegex(self.text,
                          r'class="dateline">\w+ · \d{4}-\d{2}-\d{2}<')
 
-    def test_shared_names_are_defined(self):  # spec-drop-old-name-list-p3 b2
-        # The names the checker reads and the drawing parts use come from
-        # this starter.
+    def test_shared_names_are_defined(self):
         for name in (check_page.SIZE_W, check_page.SIZE_H):
             self.assertIn(name + ":", rule_body(self.css, ":root"))
         self.assertIn(f'<{check_page.SURFACE_TAG} class="'
@@ -110,7 +108,7 @@ class Starter(unittest.TestCase):
             self.assertIsNotNone(rule_body(self.css, "." + cls), cls)
             self.assertRegex(parts, r'class="[^"]*\b' + cls + r'\b', cls)
 
-    def test_new_size_prints_at_that_size(self):  # spec-page-starter t3
+    def test_new_size_prints_at_that_size(self):
         bigger = (self.text.replace("--sheet-w: 17in", "--sheet-w: 30in")
                   .replace("--sheet-h: 11in", "--sheet-h: 20in"))
         self.assertEqual(check_page.check_page(bigger), ([], (30.0, 20.0), 0))
@@ -132,7 +130,6 @@ class Starter(unittest.TestCase):
 
 
 class ChromeProbe(unittest.TestCase):
-    # System binaries with known exit codes stand in for Chrome.
     def test_a_chrome_that_exits_0_can_run(self):
         self.assertIsNone(chrome_cannot_run("/usr/bin/true"))
 

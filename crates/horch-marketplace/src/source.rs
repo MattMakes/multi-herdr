@@ -1,9 +1,3 @@
-//! Fetch a resolved source into a staging directory. Git runs with hooks
-//! off: a bare repository receives the pinned commit, and its tree is
-//! checked out with `read-tree` and `checkout-index`, so no worktree, no
-//! hook and no remote config is involved. The git listing is checked
-//! before the checkout, so a rejected tree is never written.
-
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -14,8 +8,6 @@ use crate::git::GitRunner;
 use crate::integrity::{check_limits, check_relative_path};
 use crate::resolver::{ResolvedOrigin, ResolvedSource};
 
-/// Write the skill tree under `staging` and return the staged skill
-/// directory.
 pub fn fetch(git: &GitRunner, resolved: &ResolvedSource, staging: &Path) -> Result<PathBuf> {
     let tree = staging.join("tree");
     match &resolved.origin {
@@ -48,9 +40,6 @@ fn stage_file(tree: &Path, file: &BundledFile) -> Result<()> {
     set_executable(&path, file)
 }
 
-/// The store renames the staged tree into place, so this mode is the store
-/// mode.
-/// Windows has no mode bits: the extension decides there.
 fn set_executable(path: &Path, file: &BundledFile) -> Result<()> {
     if !file.executable {
         return Ok(());
@@ -73,12 +62,9 @@ fn fetch_git(
     checkout(git, &repo, &treeish, tree)
 }
 
-/// Fetch `commit` into a bare repository under `staging` and return it.
 fn fetch_commit(git: &GitRunner, staging: &Path, url: &str, commit: &str) -> Result<PathBuf> {
     let repo = staging.join("repo.git");
     git.run(staging, &["init", "--quiet", "--bare", "repo.git"])?;
-    // Fetching by commit is the existence check: a missing commit fails
-    // here or in the `rev-parse` below.
     git.run(
         &repo,
         &["fetch", "--quiet", "--no-tags", "--depth=1", url, commit],
@@ -101,9 +87,6 @@ fn checkout(git: &GitRunner, repo: &Path, treeish: &str, tree: &Path) -> Result<
     Ok(())
 }
 
-/// Apply the tree rules to the git listing before anything is checked out,
-/// so a symlink, a submodule or an oversize tree is never written to disk.
-/// `integrity::tree_digest` checks the written tree again.
 fn check_listing(git: &GitRunner, repo: &Path, treeish: &str) -> Result<()> {
     let out = git.run(repo, &["ls-tree", "-r", "-l", "-z", "--full-tree", treeish])?;
     let mut total = 0u64;
@@ -116,8 +99,6 @@ fn check_listing(git: &GitRunner, repo: &Path, treeish: &str) -> Result<()> {
     Ok(())
 }
 
-/// Parse one `ls-tree -l` record, `<mode> <type> <sha> <size>\t<path>`, and
-/// return the path and size of a regular file.
 fn listing_entry(record: &str) -> Result<(&str, u64)> {
     let (meta, path) = record
         .split_once('\t')
@@ -224,8 +205,6 @@ mod tests {
         assert_eq!(fs::read_to_string(tree.join("refs/a.md")).unwrap(), "a");
     }
 
-    /// A repo whose index holds `entries` as `(mode, blob text, path)`, and
-    /// the tree they make. A mode of `160000` is a submodule: no blob.
     fn tree_of(entries: &[(&str, &str, &str)]) -> (tempfile::TempDir, GitRunner, String) {
         let tmp = tempfile::tempdir().unwrap();
         let config = tmp.path().join("gitconfig");

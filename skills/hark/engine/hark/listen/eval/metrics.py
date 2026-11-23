@@ -42,9 +42,6 @@ NEGATIVE_MOODS = ("dark and tense music", "sad and melancholic music", "mysterio
                   "suspenseful build-up music")
 
 
-# ---------------------------------------------------------------- data split and labels
-
-
 def split_of(file_id: str) -> str:
     """'dev' when SHA-1 of the UTF-8 id, read as an integer, is even, else 'test' (rule 2)."""
     return "dev" if int(hashlib.sha1(file_id.encode("utf-8")).hexdigest(), 16) % 2 == 0 else "test"
@@ -74,9 +71,6 @@ def label_matrix(file_classes: Sequence[Iterable[str]], columns: Sequence[str] =
     """The files x classes label matrix of E8."""
     return np.array([label_row(c, columns, lenient) for c in file_classes], dtype=np.int8).reshape(
         len(file_classes), len(columns))
-
-
-# ---------------------------------------------------------------- ranking metrics
 
 
 def average_precision(scores: Sequence[float], relevant: Sequence[bool]) -> float | None:
@@ -159,9 +153,6 @@ def tagging(U: np.ndarray, file_classes: Sequence[Iterable[str]], columns: Seque
     return {"n": len(r), "accuracy": float(np.mean(r == 1)), "mrr": float(np.mean(1 / r))}
 
 
-# ---------------------------------------------------------------- verdict thresholds and bands
-
-
 def band_counts(pos: np.ndarray, neg: np.ndarray, lo: float, hi: float) -> tuple[int, int]:
     """The true and wrong pairs with lo <= z < hi."""
     pos, neg = np.asarray(pos, np.float64), np.asarray(neg, np.float64)
@@ -240,9 +231,6 @@ def cumulative_grid(pos: np.ndarray, neg: np.ndarray, grid: Sequence[float] = IN
     return rows
 
 
-# ---------------------------------------------------------------- query metrics on a score matrix
-
-
 def category_metrics(scores: np.ndarray, folders: Sequence[str], categories: Sequence[str] = CATEGORIES) -> dict:
     """E4: MAP, mean P@5, mean P@10 and AP per category (scores: files x categories)."""
     ap, p5, p10 = {}, [], []
@@ -280,9 +268,6 @@ def mood_share(top_moods: Sequence[str], n_mood_terms: int, negatives: Sequence[
     n = len(top_moods)
     neg = sum(m in negatives for m in top_moods)
     return {"n": n, "negative": neg, "share": neg / n if n else None, "chance": len(negatives) / n_mood_terms}
-
-
-# ---------------------------------------------------------------- find checks
 
 
 def attack_time(x: np.ndarray, start_s: float, sr: int, level: float = ATTACK_LEVEL) -> float:
@@ -352,8 +337,6 @@ def scene_found(segments: Sequence[Mapping], events: Sequence[float]) -> dict:
     return {"found": sorted(found), "n_found": len(found), "top1": top1, "tight": len(leads),
             "leads_ms": [round(1000 * v, 1) for v in leads]}
 
-
-# ---------------------------------------------------------------- calibration variants (E1)
 
 METHODS = ("raw", "sound", "center", "both", "term_sd", "both_sd")
 

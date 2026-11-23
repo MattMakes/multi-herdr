@@ -1,26 +1,11 @@
-//! Schema v8 (docs/specs/fleetd/design.md, "Ledger" and "Migration plan";
-//! docs/tickets/fleetd-p1/03-schema-v8.md): the Phase 1 tables, the new
-//! columns of `events`, the backfill of `attempts`, and the 3 safety rules
-//! of OR-6 (a backup first, a newer schema refused, no migration of the
-//! shared ledger by a development build).
-
 use std::path::Path;
 
 use horch_core::taskledger::schema;
 use horch_core::taskledger::store::{self, migrate_refusal};
 use rusqlite::Connection;
 
-/// The version before the Phase 1 step, which the tests of this file
-/// migrate from. Each test of the step migrates to
-/// [`schema::PHASE_1_VERSION`], not to the newest version.
 const BEFORE_PHASE_1: i64 = schema::PHASE_1_VERSION - 1;
 
-/// A ledger at [`BEFORE_PHASE_1`] at `path`, built by the migration of today, with rows
-/// in `tasks`, `workers` and `events`:
-/// - `w1` works on `t1` (attempt 2), so it is live.
-/// - `w2` starts on `t2` (attempt 1), so it is live.
-/// - `w3` stopped on `t3`, so it is not live.
-/// - `w4` spawns with no task yet.
 fn before_phase_1_file(path: &Path) {
     let mut conn = Connection::open(path).unwrap();
     schema::migrate_to(&mut conn, BEFORE_PHASE_1).unwrap();
@@ -59,8 +44,6 @@ fn columns(conn: &Connection, table: &str) -> Vec<String> {
         .unwrap()
 }
 
-/// The migration of the file at `path` up to the Phase 1 step, with foreign
-/// keys on as `Store::open` sets them.
 fn migrate(path: &Path) -> Connection {
     let mut conn = Connection::open(path).unwrap();
     conn.pragma_update(None, "foreign_keys", true).unwrap();
@@ -68,8 +51,6 @@ fn migrate(path: &Path) -> Connection {
     conn
 }
 
-/// A ledger at [`BEFORE_PHASE_1`], migrated to the Phase 1 step: its folder (kept alive) and a connection
-/// with foreign keys on.
 fn migrated_to_phase_1() -> (tempfile::TempDir, Connection) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("ledger.sqlite3");
@@ -179,7 +160,6 @@ fn phase_1_migration_adds_the_phase_1_tables_and_keeps_rows() {
         ]
     );
 
-    // The old rows stay, with null in each new column.
     type Event = (i64, String, String, Option<String>, Option<String>);
     let events: Vec<Event> = conn
         .prepare("SELECT event_id, kind, text, entity, data_json FROM events ORDER BY event_id")
@@ -205,7 +185,6 @@ fn phase_1_migration_adds_the_phase_1_tables_and_keeps_rows() {
     }
     drop(conn);
 
-    // A second migration changes nothing and writes no backup.
     let before = schema::backups_in(dir.path()).len();
     let conn = migrate(&path);
     assert_eq!(user_version(&conn), schema::PHASE_1_VERSION);
@@ -215,8 +194,6 @@ fn phase_1_migration_adds_the_phase_1_tables_and_keeps_rows() {
 #[test]
 fn events_v8_takes_a_transition_event_and_keeps_its_indexes() {
     let (_dir, conn) = migrated_to_phase_1();
-    // A transition event: the kind `transition` is in the CHECK list, and a
-    // new event takes the next id.
     conn.execute(
         "INSERT INTO events (at, actor, kind, entity, entity_id, from_state, to_state, cause, data_json)
             VALUES ('now', 'horch', 'transition', 'task', 't3', 'queued', 'running', 'claimed', '{}')",
@@ -230,7 +207,6 @@ fn events_v8_takes_a_transition_event_and_keeps_its_indexes() {
             []
         )
         .is_err());
-    // The indexes of `events` are back.
     let indexes: i64 = conn
         .query_row(
             "SELECT count(*) FROM sqlite_master WHERE type = 'index' AND tbl_name = 'events' AND sql IS NOT NULL",
@@ -244,7 +220,6 @@ fn events_v8_takes_a_transition_event_and_keeps_its_indexes() {
 #[test]
 fn fleetd_starts_empty_and_its_pid_start_fits_i64() {
     let (_dir, conn) = migrated_to_phase_1();
-    // `fleetd` has no row: ticket 14 writes generation 1 at the first start.
     let rows: i64 = conn
         .query_row("SELECT count(*) FROM fleetd", [], |r| r.get(0))
         .unwrap();
@@ -255,7 +230,6 @@ fn fleetd_starts_empty_and_its_pid_start_fits_i64() {
         conn.execute(fleetd, rusqlite::params![2, 1]).is_err(),
         "id is 1"
     );
-    // pid_start is an INTEGER that fits i64: a larger value is refused, not wrapped.
     assert!(conn
         .execute(fleetd, rusqlite::params![1, u64::MAX])
         .is_err());
@@ -273,7 +247,6 @@ fn fleetd_starts_empty_and_its_pid_start_fits_i64() {
 #[test]
 fn phase_1_check_lists_and_references_hold() {
     let (_dir, conn) = migrated_to_phase_1();
-    // The other CHECK lists hold.
     let state = |s: &str| {
         conn.execute(
             "INSERT INTO needs_you (key, kind, entity, entity_id, state, text, created_at)
@@ -301,7 +274,6 @@ fn phase_1_check_lists_and_references_hold() {
             [],
         )
         .is_err(), "pid_start fits i64");
-    // An orchestrator attempt has no task.
     conn.execute(
         "INSERT INTO attempts (id, task_id, worker_id, state) VALUES ('o/A1', NULL, 'w4', 'launching')",
         [],
@@ -342,7 +314,6 @@ fn phase_1_migration_writes_a_backup_first() {
     );
     let copy = Connection::open(&copies[0]).unwrap();
     assert_eq!(user_version(&copy), BEFORE_PHASE_1);
-    // The backup is the state before the migration: no attempts table.
     assert!(copy.prepare("SELECT * FROM attempts").is_err());
     let workers: i64 = copy
         .query_row("SELECT count(*) FROM workers", [], |r| r.get(0))
@@ -386,8 +357,6 @@ fn development_build_does_not_migrate_the_shared_ledger() {
     let path = store::default_path(home.path());
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     before_phase_1_file(&path);
-    // The guard that `Store::open` passes, for a development build and a
-    // ledger at `<passwd home>/.horch/ledger.sqlite3`.
     let dev = Path::new("/Users/op/src/horch/target/debug/horch");
     let guard = |from: i64| match migrate_refusal(dev, &path, Some(home.path()), None, from) {
         Some(text) => anyhow::bail!(text),
@@ -412,7 +381,6 @@ fn development_build_does_not_migrate_the_shared_ledger() {
     );
     assert_eq!(user_version(&conn), BEFORE_PHASE_1);
     assert!(conn.prepare("SELECT * FROM attempts").is_err());
-    // The guard runs before the backup.
     assert!(schema::backups_in(path.parent().unwrap()).is_empty());
 }
 
@@ -488,20 +456,16 @@ fn jobs_one_active_refuses_a_second_queued_run_of_1_kind_and_subject() {
         job(1, "k2", "running", "t1").is_err(),
         "a running run beside a queued one"
     );
-    // Another subject, and ended runs, are not active.
     job(1, "k1", "queued", "t2").unwrap();
     job(2, "k1", "passed", "t1").unwrap();
     job(3, "k1", "failed", "t1").unwrap();
-    // UNIQUE (kind, subject, input_key, run).
     assert!(job(2, "k1", "abandoned", "t1").is_err());
-    // Once the queued run ends, a new run may queue.
     conn.execute(
         "UPDATE jobs SET state = 'abandoned' WHERE subject = 't1' AND run = 1",
         [],
     )
     .unwrap();
     job(4, "k1", "queued", "t1").unwrap();
-    // pid_start is an INTEGER that fits i64, as in `attempts` and `fleetd`.
     let start = "UPDATE jobs SET pid_start = ?1 WHERE subject = 't1' AND run = 4";
     conn.execute(start, [i64::MAX]).unwrap();
     assert!(conn.execute(start, [u64::MAX]).is_err());

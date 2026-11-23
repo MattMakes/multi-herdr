@@ -40,7 +40,7 @@ ORIGINALITY_LIMIT = 0.96
 NULL_ORIGINAL = {"made": "recipe", "max_ref_clap": None, "ref": "none"}
 PITCHED_PARTIAL = ("click", "pro_click", "toggle")
 PARTIAL_SPAN_ST = 6.0
-PARTIAL_PARAM = "pitch"  # the tink centre of click, pro_click and toggle (forge-core knobs PITCH)
+PARTIAL_PARAM = "pitch"
 FIT_ID = re.compile(r"^fit/[a-z0-9_.]+/[a-z0-9_]+$")
 SOURCE_KEYS = ("id", "title", "author", "license", "url")
 FREE_LICENCES = ("cc0", "public domain", "publicdomain", "cc-pdm", "pdm")
@@ -51,7 +51,6 @@ TOLERANCE_DUR = 0.10
 TOLERANCE_CENTROID = 1.26
 TOLERANCE_LUFS = 3.0
 TOLERANCE_CENTS = 50.0
-# Default takes that keep their audit warning (bank-kit-sfx part 2, 3.11): build --derive does not re-derive them.
 KNOWN_WARNINGS = frozenset({
     "pro_zip/up", "pro_zip/up_hi", "pro_zip/arc", "logo_sting/zip_ping", "pro_logo_sting/sweep_hit", "pop/2",
     "pro_pop/bloop", "typing_key/light", "typing_key/laptop", "pro_hover_tick/air", "pro_hover_tick/glass",
@@ -74,9 +73,6 @@ def _refuse(failures: list[str]) -> None:
     if failures:
         lines = "\n".join(f"  {f}" for f in failures)
         raise B.BankError(f"{len(failures)} pick(s) refused, nothing written:\n{lines}")
-
-
-# ---------------------------------------------------------------- writer (3.1)
 
 
 def _layout(doc: dict) -> str:
@@ -150,9 +146,6 @@ def _wrote(log: Callable | None, out: str, doc: dict) -> dict:
     return doc
 
 
-# ---------------------------------------------------------------- entry meta
-
-
 def _meta(raw: np.ndarray, category: str, params: dict | None = None) -> dict:
     y = B.normalize(raw, B.DEFAULT_PEAK).astype(np.float32)
     meta = M.meta_of(y)
@@ -179,9 +172,6 @@ def _entry(category: str, member: str, recipe: str, fn: str, params: dict, seed:
 
 def _render_entry(entry: dict, sound_id: str) -> np.ndarray:
     return B.renderer({**entry, "id": sound_id})()
-
-
-# ---------------------------------------------------------------- 7.1 forge finals
 
 
 def _final_dirs(dirs: Iterable[str]) -> list[str]:
@@ -268,9 +258,6 @@ def _build_pick(doc: dict, report: dict, pick: dict, folder: str, cat: str, fail
     _say(log, f"{sound_id}: {len(raw) / B.SR:.3f} s, err <= {BUILD_TOL:g}")
 
 
-# ---------------------------------------------------------------- 7.2 pluck
-
-
 def pluck_params(edits: dict, factors: dict) -> dict:
     """The pluck DEFAULTS at C5 with set values and factors applied."""
     from hark.forge import recipes
@@ -295,9 +282,6 @@ def build_pluck(out: str, version: str | None = None, log: Callable | None = Non
         doc["entries"][sound_id] = entry
         _say(log, f"{sound_id}: {entry['meta']['dur_s']:.3f} s")
     return _wrote(log, out, doc)
-
-
-# ---------------------------------------------------------------- palette members (7.3, 12.2)
 
 
 def _defaults_for(module: Any, fn: str) -> dict:
@@ -332,7 +316,6 @@ def _from_family(module: Any, category: str, member: str) -> dict | None:
     return None
 
 
-# Extra palettes kept in their own tables: (params table, names table).
 _NAMED_TABLES = (("RUNS", "RUN_NAMES"), ("FAMILY_MID", "FAMILY_NAMES_MID"))
 
 
@@ -382,13 +365,12 @@ def _from_seed_bank(recipe: str, category: str, member: str) -> dict | None:
 
     try:
         path = recipes.seed_path(recipe)
-    except recipes.UnknownRecipe:  # a recipe outside the package registry has no seed bank
+    except recipes.UnknownRecipe:
         return None
     if not os.path.isfile(path):
         return None
     entries = json.loads(Path(path).read_text(encoding="utf-8")).get("entries") or []
     hits = [e for e in entries if e.get("member") == member]
-    # "delivered" names the category the member was delivered for: prefer that category, then any delivery
     hits.sort(key=lambda e: 0 if e.get("delivered") == category else 1 if e.get("delivered") else 2)
     return dict(hits[0]["params"]) if hits else None
 
@@ -406,9 +388,6 @@ def member_params(recipe: str, fn: str, category: str, member: str) -> dict:
     if found is None:
         raise B.BankError(f"recipe {recipe} has no palette member {member!r}")
     return {**_defaults_for(module, fn), **found}
-
-
-# ---------------------------------------------------------------- 7.3 forge04
 
 
 def block_digest(entry: dict) -> str:
@@ -514,9 +493,6 @@ def build_forge04(out: str, version: str | None = None, ref_clap: dict | None = 
     return _wrote(log, out, doc)
 
 
-# ---------------------------------------------------------------- 12.2 derive
-
-
 def _derive_fn(recipe: str, category: str) -> str:
     """The render function name of a category: a second render where the category needs one."""
     if category != "pro_typing_run":
@@ -606,7 +582,7 @@ def _seed_members(recipe: str, category: str) -> dict:
 
     try:
         path = recipes.seed_path(recipe)
-    except recipes.UnknownRecipe:  # a recipe outside the package registry has no seed bank
+    except recipes.UnknownRecipe:
         return {}
     if not os.path.isfile(path):
         return {}
@@ -624,7 +600,6 @@ def _candidates(recipe: str, fn: str, category: str, cache: dict) -> dict:
         pool = {m: {**base, **p} for m, p in _seed_members(recipe, category).items()} or {"defaults": base}
         rows = {m: (p, _meta(_render_entry(_entry(category, m, recipe, fn, p, 0), f"{category}/{m}"), category, p))
                 for m, p in pool.items()}
-        # Row order (T-41; the spec gives no rule): ascending rendered length, then member id. It breaks distance ties.
         cache[key] = dict(sorted(rows.items(), key=lambda kv: (kv[1][1]["dur_s"], kv[0])))
     return cache[key]
 
@@ -680,7 +655,6 @@ def _derive_entry(sound_id: str, cache: dict, used: set, log: Callable | None) -
     entry = _derived(sound_id, recipe, fn, params)
     if entry is not None:
         return entry
-    # T-41: the first render fails sfx check, so try the next-closest renders in order
     for member in _ranked(sound_id, recipe, fn, cache, used):
         if member == source:
             continue
@@ -723,9 +697,6 @@ def _derive_into(doc: dict, sound_id: str, cache: dict, used: set, log: Callable
     misses = target_misses(sound_id, entry["meta"])
     _say(log, f"{sound_id}: {entry['meta']['dur_s']:.3f} s" + (f"; misses {'; '.join(misses)}" if misses else ""))
     return None
-
-
-# ---------------------------------------------------------------- 7.4 add-fit
 
 
 def _load_json_arg(value: dict | str, what: str) -> dict:
@@ -835,9 +806,6 @@ def _check_free(doc: dict, sound_id: str, path: str, force: bool) -> None:
 def _fit_line(sound_id: str, path: str, entry: dict, source: dict) -> str:
     pitch = f", {entry['pitch_hz']} Hz" if entry["pitch_hz"] else ""
     return f"{sound_id} -> {path}: {entry['meta']['dur_s']:.3f} s, {entry['fit']['kind']}{pitch}, {source['license']}"
-
-
-# ---------------------------------------------------------------- 9 check
 
 
 def check(ids: Iterable[str] | None = None, log: Callable | None = None) -> dict:

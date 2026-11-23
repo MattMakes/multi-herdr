@@ -1,34 +1,3 @@
-//! The use cases of task branches: the rebase resolver task and the branch invariants (tickets 42 and 44).
-//!
-//! `docs/specs/fleetd/design.md`, "Between features": Continuous rebase (a
-//! conflict becomes a resolver task) and Starting values (a resolver task
-//! covers at most `resolver_max_lines` changed lines and
-//! `resolver_max_files` files, else fleetd splits it by file).
-//!
-//! [`open_rebase_resolvers`] reads the last `rebase` run of each live
-//! feature branch. When it ended with a conflict and the branch is still at
-//! the tip of its input key, fleetd adds the resolver tasks of the conflict
-//! to the run of the feature through `tasks::add`: a code kind, with a
-//! ticket that fleetd writes (the conflict files in `zdiff3` form, the 2
-//! tips and the tests of both sides). A task of the run lands on the
-//! feature branch as any task. Each ticket starts with the line of its pair
-//! of tips, so the same pair never opens a second set, also after a cancel.
-//! The rebase of a stack edge (a feature with `stacked_on`, or a key with a
-//! cut) is not read here: `stack_edges.rs` opens its resolver task.
-//!
-//! I11 and I12 (`docs/specs/fleetd/design.md`, "No work is lost" items 4
-//! and 5; preservation row 04 W6; MAP.md of fleetd-p4, Q17):
-//! - [`read_listing`] runs in the `worktree_list` job: the fleet branches
-//!   with their tips and the branches that a `git stash` entry names.
-//! - [`adopt_orphans`] is the pass part of I11: each listed fleet branch
-//!   with no row is adopted as an orphan row and reported.
-//! - [`deletions`] is the pass part of I12: each listed branch whose row
-//!   passes the guard of `domain/invariants.rs` gets 1 [`Deletion`].
-//! - [`run`] is the effect after the commit: `git update-ref -d` on the
-//!   listed tip, the compare-and-set form of `git branch -D`. It records
-//!   nothing, so a crash at any point gives the deletion again on the next
-//!   pass, and a tip that moved after the listing is never deleted.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -63,39 +32,25 @@ use crate::taskledger::model::{Actor, EventKind, TaskStatus, WorkKind};
 use crate::taskledger::runs::{self, Run};
 use crate::taskledger::tasks::{self, NewTask, Task};
 
-/// The kind of a resolver task: a code kind.
 const RESOLVER_KIND: WorkKind = WorkKind::Feature;
 
-/// What [`open_rebase_resolvers`] works with.
 pub struct Resolvers<'a> {
-    /// The tips of the branches and the `fleet.toml` of a tip.
     pub git: &'a dyn IntegrationGitGateway,
-    /// The conflict of 1 file in `zdiff3` form.
     pub conflicts: &'a dyn StackGit,
-    /// `resolver_max_lines` and `resolver_max_files` of `fleet.toml`.
     pub planner: StackPlanner,
-    /// The profile of a resolver task.
     pub profile: &'a str,
-    /// The generation of fleetd, or `None` outside fleetd.
     pub guard: Option<Generation>,
 }
 
-/// The resolver tasks that 1 rebase conflict opened.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Opened {
     pub feature_id: String,
     pub branch: String,
-    /// The tip of the branch that the rebase did not move.
     pub tip: String,
-    /// The primary tip that the rebase moved onto.
     pub onto: String,
-    /// The task ids, 1 for each file group.
     pub tasks: Vec<String>,
 }
 
-/// For each live feature branch whose last rebase run ended with a
-/// conflict of its current tip, add its resolver tasks to the run of the
-/// feature, in `tx`, 1 time for each pair of tips.
 pub fn open_rebase_resolvers(
     tx: &Connection,
     r: &Resolvers<'_>,
@@ -104,8 +59,6 @@ pub fn open_rebase_resolvers(
     open_rebase_resolvers_in(tx, r, cause, None)
 }
 
-/// [`open_rebase_resolvers`] for the work budget of 1 pass: only the
-/// features of `features`. `None` is each feature.
 pub fn open_rebase_resolvers_in(
     tx: &Connection,
     r: &Resolvers<'_>,
@@ -141,8 +94,6 @@ fn open_one(
     let Some(Rebased::Conflict { files }) = result else {
         return Ok(None);
     };
-    // A rebase with a cut, or of a feature with a lower feature, is the
-    // rebase of a stack edge: `stack_edges.rs` opens its resolver task.
     let Some(RebaseKey {
         tip,
         onto,
@@ -158,8 +109,6 @@ fn open_one(
         return Ok(None);
     };
     let repo = Path::new(&run.project_root);
-    // A branch that moved after the run makes a new rebase run: this
-    // conflict is old.
     if r.git.tip(repo, &format!("refs/heads/{branch}"))?.as_deref() != Some(tip) {
         return Ok(None);
     }
@@ -184,7 +133,7 @@ fn open_one(
         onto,
         pair: &pair,
         feature_tests: feature_tests(&run_tasks),
-        primary_tests: features::project_settings(r.git, repo, onto)
+        primary_tests: features::project_settings(r.git, repo, onto)?
             .ok()
             .and_then(|s| s.gates.fast),
     };
@@ -218,12 +167,6 @@ fn open_one(
     }))
 }
 
-/// The persona of the resolver tasks of a conflict of the branch `branch`
-/// of the feature `feature_id` (the rule of the orchestrator for T-390): the
-/// primary persona of the task of the branch, the task that the resolver
-/// repairs. A branch with no task, as a feature branch, takes the primary
-/// persona of the newest task of the feature that has one. `None` when no
-/// task of the feature has a primary persona.
 pub fn resolver_persona(
     conn: &Connection,
     feature_id: &str,
@@ -243,13 +186,10 @@ pub fn resolver_persona(
         .find_map(|t| t.primary_persona))
 }
 
-/// The first line of each ticket of the conflict of `branch` at `tip` onto
-/// `onto`: the key of the pair of tips.
 fn pair_line(branch: &str, tip: &str, onto: &str) -> String {
     format!("<!-- horch-rebase-resolver: {branch} {tip} {onto} -->")
 }
 
-/// The check of each task of the run that is not cancelled, each 1 time.
 fn feature_tests(run_tasks: &[Task]) -> Vec<String> {
     let mut tests: Vec<String> = Vec::new();
     for task in run_tasks {
@@ -263,19 +203,15 @@ fn feature_tests(run_tasks: &[Task]) -> Vec<String> {
     tests
 }
 
-/// The facts of both sides of a rebase conflict, for its tickets.
 struct Sides<'a> {
     branch: &'a str,
     tip: &'a str,
     onto: &'a str,
     pair: &'a str,
-    /// The checks of the tasks of the feature.
     feature_tests: Vec<String>,
-    /// The fast gate of the project at the primary tip.
     primary_tests: Option<String>,
 }
 
-/// Add the resolver task of `group` to `run`.
 fn add_task(
     tx: &Connection,
     r: &Resolvers<'_>,
@@ -297,12 +233,10 @@ fn add_task(
     tasks::add(tx, run, &new, Actor::Horch)
 }
 
-/// The first 12 characters of the object id `id`.
 fn short(id: &str) -> &str {
     id.get(..12).unwrap_or(id)
 }
 
-/// The ticket of the resolver task `title` of `group`.
 fn ticket(title: &str, sides: &Sides<'_>, group: &[Conflict]) -> String {
     let mut out = format!(
         "{}\n# {title}\n\n**Kind:** feature\n\n\
@@ -340,46 +274,34 @@ fn ticket(title: &str, sides: &Sides<'_>, group: &[Conflict]) -> String {
     out
 }
 
-// ─── I11 and I12 (ticket 44) ────────────────────────────────────────────
-
-/// The kind of the needs-you item of an orphan branch.
 pub const ORPHAN_KIND: &str = "orphan_branch";
 
-/// The owner of an orphan row: you decide what happens to it.
 const ORPHAN_OWNER: &str = "operator";
 
-/// The key of the fleet branches in the data of a `worktree_list` run.
 pub const LISTING_KEY: &str = "fleet_branches";
 
-/// The key of the error text when the job could not list them.
 pub const LISTING_ERROR_KEY: &str = "fleet_branches_error";
 
-/// A fleet branch and its tip, as the `worktree_list` job read them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Listed {
     pub name: String,
     pub tip: String,
 }
 
-/// The fleet branches and the stash names of 1 repository.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Listing {
     pub branches: Vec<Listed>,
     pub stash_branches: Vec<String>,
 }
 
-/// The facts of the last passed `worktree_list` run of 1 repository.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoListing {
     pub repo: String,
-    /// `None` when the run did not list the fleet branches.
     pub listing: Option<Listing>,
-    /// `None` when the run did not read the rescue refs.
     pub rescue: Option<Vec<RefFacts>>,
 }
 
 impl RepoListing {
-    /// The facts in the result data `data` of a run of `repo`.
     pub fn of(repo: String, data: &serde_json::Value) -> RepoListing {
         let listing = data
             .get(LISTING_KEY)
@@ -392,7 +314,6 @@ impl RepoListing {
     }
 }
 
-/// The facts of the newest passed `worktree_list` run of each repository.
 pub fn listings(conn: &Connection) -> Result<Vec<RepoListing>> {
     Ok(jobs_store::last_passed(conn, Kind::WorktreeList)?
         .into_iter()
@@ -403,9 +324,6 @@ pub fn listings(conn: &Connection) -> Result<Vec<RepoListing>> {
         .collect())
 }
 
-/// The fleet branches and the stash names of `repo`, for the
-/// `worktree_list` job (Q17): each branch below `fleet/`, and the branch
-/// and the task branches of each feature of `repo` outside `fleet/`.
 pub fn read_listing(
     conn: &Connection,
     git: &dyn IntegrationGitGateway,
@@ -438,7 +356,6 @@ pub fn read_listing(
     })
 }
 
-/// The feature of each run of `repo` that has a run branch.
 fn features_of_repo(conn: &Connection, repo: &Path) -> Result<Vec<FeatureBranch>> {
     let mut out: Vec<FeatureBranch> = Vec::new();
     for run in runs::of_project(conn, repo)? {
@@ -461,22 +378,14 @@ fn features_of_repo(conn: &Connection, repo: &Path) -> Result<Vec<FeatureBranch>
     Ok(out)
 }
 
-/// A fleet branch with no row: adopted when a feature has it, else only
-/// reported.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Orphan {
     pub repo: String,
     pub branch: String,
     pub tip: String,
-    /// The feature of the adopted row, `None` when no feature has the
-    /// branch.
     pub feature_id: Option<String>,
 }
 
-/// I11, in the transaction `tx` of the pass: each listed fleet branch with
-/// no row is adopted as an orphan row of its feature, and 1 needs-you item
-/// reports it. A branch of no feature can have no row: it is reported in
-/// each pass. Reads no git.
 pub fn adopt_orphans(
     ctx: &JobCtx<'_>,
     tx: &Connection,
@@ -510,8 +419,6 @@ pub fn adopt_orphans(
     Ok(out)
 }
 
-/// Write the orphan row of `branch` in the feature `feature_id`. It has no
-/// task and no landing state, so no rule of landing acts on it.
 fn adopt(
     tx: &Connection,
     guard: Option<Generation>,
@@ -534,7 +441,6 @@ fn adopt(
     rows::set_branch_fact(tx, guard, branch, BranchFact::Orphan, cause)
 }
 
-/// Open the needs-you item of `o`.
 fn report(needs_you: &dyn NeedsYouItems, tx: &Connection, o: &Orphan) -> Result<()> {
     let row = match &o.feature_id {
         Some(id) => format!("fleetd adopted it as an orphan row of feature {id}"),
@@ -557,18 +463,13 @@ fn report(needs_you: &dyn NeedsYouItems, tx: &Connection, o: &Orphan) -> Result<
     )
 }
 
-/// 1 deletion of a task branch, to run after the commit of its pass.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Deletion {
     pub repo: PathBuf,
     pub branch: String,
-    /// The tip that the listing gave: git deletes the branch only at it.
     pub tip: String,
 }
 
-/// I12, in the transaction `tx` of the pass: 1 deletion for each listed
-/// branch whose row passes the guard [`may_delete`]. Reads no git and
-/// writes no row: the next listing observes the effect.
 pub fn deletions(tx: &Connection, lists: &[RepoListing]) -> Result<Vec<Deletion>> {
     let live: Vec<WorktreeState> = WorktreeState::ALL
         .into_iter()
@@ -608,8 +509,6 @@ pub fn deletions(tx: &Connection, lists: &[RepoListing]) -> Result<Vec<Deletion>
     Ok(out)
 }
 
-/// Whether a rescue ref of `row` is at `tip`: a ref of its branch, or the
-/// ref that the row names.
 fn rescued(refs: Option<&[RefFacts]>, row: &BranchRow, tip: &str) -> bool {
     refs.unwrap_or_default().iter().any(|r| {
         r.tip == tip
@@ -618,22 +517,13 @@ fn rescued(refs: Option<&[RefFacts]>, row: &BranchRow, tip: &str) -> bool {
     })
 }
 
-/// What [`run`] did with 1 [`Deletion`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Ran {
-    /// The branch was at the listed tip, and git deleted it.
     Deleted,
-    /// A `git stash` entry names the branch now, so nothing was deleted.
     Stashed,
-    /// The branch was not at the listed tip, and nothing was deleted.
-    /// `actual` is the tip that git has, or `None` when it is gone.
     Mismatch { actual: Option<String> },
 }
 
-/// Run `d` after the commit of its pass. A stash entry made after the
-/// listing still keeps the branch. The deletion is a compare-and-set on the
-/// listed tip, so a commit after the listing is never lost. A failure of
-/// git is an error, and the next pass gives the deletion again.
 pub fn run(git: &dyn IntegrationGitGateway, d: &Deletion) -> Result<Ran> {
     if git.stash_branches(&d.repo)?.contains(&d.branch) {
         return Ok(Ran::Stashed);

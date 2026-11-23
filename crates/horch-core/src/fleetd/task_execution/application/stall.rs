@@ -1,22 +1,3 @@
-//! The use case of the stall ladder: write the rows of 1 decision of
-//! [`decide`](crate::fleetd::task_execution::domain::stall::decide) and
-//! return its effects.
-//!
-//! The rows go through `transition()`, `record()` and the needs-you list
-//! in the caller's transaction. No effect occurs here: a stop or a
-//! doorbell is returned, and the pass does it after the commit.
-//!
-//! - A doorbell: 1 event of kind `doorbell` with the fleet clock.
-//! - An end: the attempt ends with its outcome, and its live worker row
-//!   ends `incomplete`. `stalled` moves the task to `stalled`, and `asked`
-//!   moves it to `blocked_on_user`. No end burns an attempt here: rung 6
-//!   (ticket 10) acts on `stalled` and `no_result`, and the quota rule
-//!   (ticket 11) acts on `quota`.
-//! - Rung 4: the end `stalled`, 1 needs-you item `dialog:<attempt>` with
-//!   the screen excerpt, and the profile of the worker marked unhealthy.
-//! - [`settle_stalled`]: a `stalled` task goes to rung 6 only after the
-//!   pass sees no process of its old attempt alive (FM-14).
-
 use anyhow::{bail, Result};
 use rusqlite::Connection;
 
@@ -36,19 +17,13 @@ use crate::fleetd::worker_profiles::domain::health::dialog_reason;
 use crate::taskledger::model::{Actor, EventKind, TaskStatus, WorkerStatus};
 use crate::taskledger::{tasks, util, workers};
 
-/// The kind of the needs-you item of an attempt that waits on a dialog.
 const DIALOG: &str = "dialog";
 
-/// The kind of the needs-you item of a `stalled` task whose old process
-/// lives past the stop bound.
 const STOP_FAILED: &str = "stop_failed";
 
-/// 1 effect of the ladder, to do after the commit.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Effect {
-    /// Stop the process group of an ended attempt.
     Stop(Stop),
-    /// Type the constant `DOORBELL` into the pane `pane`.
     Doorbell { pane: String },
 }
 
@@ -59,9 +34,6 @@ fn cause(text: &str) -> Cause<'_> {
     }
 }
 
-/// Write the rows of `decision` for the live attempt `a` at the fleet
-/// clock `clock`, in `tx`, and return its effects. The fleetd of
-/// generation `guard` writes them.
 pub fn apply(
     tx: &Connection,
     guard: Option<Generation>,
@@ -111,8 +83,6 @@ pub fn apply(
                     text: &text,
                 },
             )?;
-            // A dialog is a defect of the profile: it stays unhealthy until
-            // a conformance run passes (fleetd-p2 Q18).
             if let Some(profile) = workers::get(tx, &a.worker_id)?.persona {
                 health::mark_unhealthy(tx, guard, &profile, &dialog_reason(&a.id))?;
             }
@@ -121,43 +91,19 @@ pub fn apply(
     }
 }
 
-/// A `stalled` task whose old processes are each stopped: the pass saw it
-/// dead, or it has the proof of its hard stop ([`settle`]). Rung 6
-/// applies to it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Stopped {
     pub task: String,
-    /// The last attempt of the task.
     pub attempt: String,
-    /// The worker of `attempt`.
     pub worker: String,
 }
 
-/// The bounds of the stop of the old process of a `stalled` task, in
-/// seconds of the fleet clock.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StopBounds {
-    /// After this time from the stall, a live old process opens 1
-    /// needs-you item.
     pub bound_s: u64,
-    /// The time from the hard stop to the proof of the stop.
     pub stop_grace_s: u64,
 }
 
-/// The rule of each `stalled` task at the fleet clock `clock`, in `tx`
-/// ([`settle`]). `facts` holds what the pass saw of each process.
-/// `killed_at` gives the fleet clock of the sent mark of the hard stop of
-/// a process (its pid and its start time): the proof for a process that
-/// the pass cannot tell.
-///
-/// - The first pass of a stall writes `tasks.due_at`: the end of the stop
-///   bound.
-/// - The tasks that rung 6 can move are returned. The caller does rung 6.
-/// - A task with an old process that is not stopped past the bound gets 1
-///   needs-you item and stays `stalled`.
-/// - A task with a cancel that waits has its own path: `complete_cancels`.
-/// - The item of each task that left `stalled` by another path is
-///   resolved.
 pub fn settle_stalled(
     tx: &Connection,
     clock: i64,
@@ -187,7 +133,6 @@ pub fn settle_stalled(
         let mut old = Vec::new();
         for p in cancel::watched(tx, &task)? {
             let seen = facts.processes.get(&p).copied().unwrap_or(Seen::Unknown);
-            // Only a process that the pass cannot tell needs the proof.
             let killed_at = match (seen, p.pid_start) {
                 (Seen::Unknown, Some(start)) => killed_at((p.pid, start))?,
                 _ => None,
@@ -212,8 +157,6 @@ pub fn settle_stalled(
     Ok(out)
 }
 
-/// Resolve the `stop_failed` item of each task that is not `stalled` now,
-/// for example after a cancel moved it to `cancelled`.
 fn resolve_left(tx: &Connection) -> Result<()> {
     let prefix = format!("{STOP_FAILED}:");
     for key in needs_you::open_keys(tx, STOP_FAILED)? {
@@ -227,7 +170,6 @@ fn resolve_left(tx: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// Each `stalled` task with no cancel that waits, with its `due_at`.
 fn stalled_tasks(tx: &Connection) -> Result<Vec<(String, Option<i64>)>> {
     let mut stmt = tx.prepare(
         "SELECT task_id, due_at FROM tasks
@@ -239,7 +181,6 @@ fn stalled_tasks(tx: &Connection) -> Result<Vec<(String, Option<i64>)>> {
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// The id and the worker of the last attempt of task `task`.
 fn last_attempt(tx: &Connection, task: &str) -> Result<(String, String)> {
     Ok(tx.query_row(
         "SELECT id, worker_id FROM attempts WHERE task_id = ?1 ORDER BY rowid DESC LIMIT 1",
@@ -248,7 +189,6 @@ fn last_attempt(tx: &Connection, task: &str) -> Result<(String, String)> {
     )?)
 }
 
-/// Open the needs-you item `key` of the `stalled` task `task`.
 fn stop_failed(tx: &Connection, task: &str, key: &str, bound_s: u64) -> Result<()> {
     let text = format!(
         "Task {task} is stalled. {bound_s} s after the stall, a process of its old attempt is \
@@ -268,8 +208,6 @@ fn stop_failed(tx: &Connection, task: &str, key: &str, bound_s: u64) -> Result<(
     )
 }
 
-/// End the attempt `a` with `outcome`, end its live worker row, and move
-/// its task for `stalled` and `asked`.
 fn end(tx: &Connection, guard: Option<Generation>, a: &AttemptRow, outcome: Outcome) -> Result<()> {
     let text = format!("the stall ladder ended it: {}", outcome.as_str());
     store::set_ended(tx, &a.id, outcome.as_str(), &util::now())?;
@@ -287,8 +225,6 @@ fn end(tx: &Connection, guard: Option<Generation>, a: &AttemptRow, outcome: Outc
     let to = match outcome {
         Outcome::Stalled => TaskStatus::Stalled,
         Outcome::Asked => TaskStatus::BlockedOnUser,
-        // The ladder ends no attempt with the words that are not stalled,
-        // asked, quota or no_result; each has the path of its outcome.
         Outcome::Quota
         | Outcome::NoResult
         | Outcome::Rejected
@@ -296,7 +232,8 @@ fn end(tx: &Connection, guard: Option<Generation>, a: &AttemptRow, outcome: Outc
         | Outcome::TimedOut
         | Outcome::Killed
         | Outcome::CriticalOpen
-        | Outcome::ContextLimit => return Ok(()),
+        | Outcome::ContextLimit
+        | Outcome::ResumeRefused => return Ok(()),
     };
     if let Some(task) = &a.task_id {
         transition(
@@ -312,9 +249,6 @@ fn end(tx: &Connection, guard: Option<Generation>, a: &AttemptRow, outcome: Outc
     Ok(())
 }
 
-/// The stop of the process group of `a`. An attempt with no recorded
-/// process, or with no start time, has none: a pid alone can name a later
-/// program (S8).
 fn stop_of(a: &AttemptRow) -> Vec<Effect> {
     let Some(p) = a.process else {
         return Vec::new();
@@ -355,7 +289,6 @@ mod tests {
         worker: String,
     }
 
-    /// A run with 1 task that 1 worker in pane `w0:p1` claimed.
     fn fixture() -> Fixture {
         let dir = tempfile::tempdir().unwrap();
         let mut store = Store::open(&dir.path().join("ledger.sqlite3")).unwrap();
@@ -366,7 +299,6 @@ mod tests {
                     ..Default::default()
                 };
                 let run = runs::create(tx, dir.path(), &new_run)?;
-                // FR-12: a task needs an idea in flight of the feature of its run.
                 crate::taskledger::schema::run_idea(
                     tx,
                     &run.run_id,
@@ -497,14 +429,10 @@ mod tests {
         assert_eq!(f.worker_status(), "incomplete");
     }
 
-    /// [`settle_stalled`] at `clock` with a bound of 50 s, in a pass that
-    /// saw the agent as `seen`.
     fn settle_at(f: &mut Fixture, clock: i64, seen: Seen) -> Vec<Stopped> {
         settle_marked(f, clock, seen, None)
     }
 
-    /// [`settle_at`], with the sent mark of the hard stop of the agent at
-    /// `killed`.
     fn settle_marked(f: &mut Fixture, clock: i64, seen: Seen, killed: Option<i64>) -> Vec<Stopped> {
         let facts = Facts {
             processes: [(AGENT, seen)].into(),
@@ -530,14 +458,10 @@ mod tests {
             .unwrap()
     }
 
-    /// The `stop_failed` items that are open.
     fn stop_items(f: &Fixture) -> Vec<String> {
         needs_you::open_keys(f.store.conn(), STOP_FAILED).unwrap()
     }
 
-    /// Step 4 of FM-14: the agent lives past the stop bound. The task stays
-    /// `stalled` with 1 needs-you item. When the agent is gone, the item
-    /// is resolved and the task goes to rung 6.
     #[test]
     fn stalled_task_whose_old_process_lives_past_the_bound_gets_1_item() {
         let mut f = fixture();
@@ -545,7 +469,6 @@ mod tests {
             outcome: Outcome::Stalled,
             stop: true,
         });
-        // The first pass of the stall writes the end of the bound.
         assert_eq!(settle_at(&mut f, 1_300, Seen::Alive), Vec::new());
         assert_eq!(settle_at(&mut f, 1_349, Seen::Alive), Vec::new());
         assert_eq!(f.task().due_at, Some(1_350));
@@ -569,10 +492,6 @@ mod tests {
         assert!(needs_you::open_items(f.store.conn()).unwrap().is_empty());
     }
 
-    /// F1 of review round 1: the decision of rung 3 is committed, but no
-    /// effect ran, and the pass cannot tell the process. Past the bound the
-    /// task is still `stalled`, with 1 item. Only the sent mark of the hard
-    /// stop and its grace (20 s) release it.
     #[test]
     fn unknown_process_with_no_proof_of_the_hard_stop_stays_stalled() {
         let mut f = fixture();
@@ -585,7 +504,6 @@ mod tests {
         assert_eq!(f.task().status, "stalled");
         assert_eq!(stop_items(&f), [format!("stop_failed:{}", f.task)]);
 
-        // The hard stop ran at 1_510: its grace ends at 1_530.
         let marked = Some(1_510);
         assert_eq!(
             settle_marked(&mut f, 1_529, Seen::Unknown, marked),
@@ -595,8 +513,6 @@ mod tests {
         assert!(stop_items(&f).is_empty());
     }
 
-    /// F2 of review round 1: a cancel moves a stuck task out of `stalled`;
-    /// the next pass resolves its item.
     #[test]
     fn stop_failed_item_is_resolved_when_a_cancel_ends_the_stall() {
         let mut f = fixture();

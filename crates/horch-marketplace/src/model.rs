@@ -1,6 +1,3 @@
-//! Skill identity and sources. Parsing is pure; nothing here touches the
-//! network or the filesystem.
-
 use std::fmt;
 use std::path::PathBuf;
 
@@ -8,8 +5,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{MarketplaceError, Result};
 
-/// A skill name under the SKILL.md rules: lowercase ASCII letters, digits
-/// and `-`, no leading, trailing or doubled `-`.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct SkillId(String);
@@ -59,8 +54,6 @@ impl fmt::Display for SkillId {
     }
 }
 
-/// An installed version: `git+<commit12>`, `local+<digest12>` or
-/// `bundled+<digest12>`. It names the directory `skills/<id>/<version>/`.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct SkillVersion(pub String);
@@ -74,22 +67,19 @@ impl fmt::Display for SkillVersion {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum SkillSource {
-    /// A skill compiled into the binary. The caller supplies its files
-    /// through `Catalog`.
-    Bundled { name: String },
-    /// An absolute path to a skill directory.
-    Local { path: PathBuf },
+    Bundled {
+        name: String,
+    },
+    Local {
+        path: PathBuf,
+    },
     Git {
         url: String,
         revision: GitRevision,
-        /// The skill directory inside the repository; `None` is the root.
         subdir: Option<String>,
     },
 }
 
-/// A requested git revision. `Tag` resolves to a tag first and falls back
-/// to a branch of the same name, because `owner/repo@name` does not say
-/// which it is. `Branch("HEAD")` is the remote's default branch.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "value", rename_all = "snake_case")]
 pub enum GitRevision {
@@ -99,16 +89,12 @@ pub enum GitRevision {
 }
 
 impl GitRevision {
-    /// The text the user asked for; the lock records it as
-    /// `requested_revision`.
     pub fn requested(&self) -> &str {
         match self {
             Self::Branch(s) | Self::Tag(s) | Self::Commit(s) => s,
         }
     }
 
-    /// The revision for `@rev` text, as `parse_source` reads it. The lock's
-    /// `requested_revision` parses back to the same revision.
     pub fn from_requested(rev: &str) -> Result<Self> {
         Self::from_spec(Some(rev))
     }
@@ -134,7 +120,6 @@ const BAD_REF_SUFFIXES: [&str; 2] = ["/", ".lock"];
 const BAD_REF_PARTS: [&str; 3] = ["..", "//", "@{"];
 const BAD_REF_BYTES: [u8; 7] = *b"~^:?*[\\";
 
-/// A ref name git accepts and that cannot be read as an option or a range.
 pub(crate) fn is_safe_ref_name(s: &str) -> bool {
     !s.is_empty()
         && !has_bad_shape(s)
@@ -149,29 +134,16 @@ fn has_bad_shape(s: &str) -> bool {
 }
 
 impl SkillSource {
-    /// Parse a source spec:
-    /// - `owner/repo[@rev]`: a GitHub repository over https;
-    /// - `https://host/path[@rev]` or `file:///path[@rev]`: a git repository;
-    /// - `/absolute/path`: a local skill directory;
-    /// - `bundled:<name>`: a bundled skill.
-    ///
-    /// A 40-hex `@rev` is a commit. Any other `@rev` resolves as a tag, then
-    /// as a branch. Without `@rev` the remote's default branch is used. The
-    /// last `@` in the path starts `@rev`, so a path that contains `@` needs
-    /// an explicit `@rev`. A git spec can end in `#<subdir>`; `with_subdir`
-    /// sets it too.
     pub fn parse(spec: &str) -> Result<Self> {
         parse_source(spec)
     }
 }
 
-/// See `SkillSource::parse`. A git spec can end in `#<subdir>`, the skill
-/// directory inside the repository: `owner/repo@v1#skills/tdd`.
 pub fn parse_source(spec: &str) -> Result<SkillSource> {
     let spec = spec.trim();
     if let Some(name) = spec.strip_prefix("bundled:") {
         parse_bundled(name)
-    } else if spec.starts_with('/') {
+    } else if is_absolute_path_text(spec) {
         Ok(SkillSource::Local {
             path: PathBuf::from(spec),
         })
@@ -185,8 +157,16 @@ pub fn parse_source(spec: &str) -> Result<SkillSource> {
     }
 }
 
-/// `head` and the optional suffix of a split of `s`; `s` whole when there
-/// is no split.
+fn is_absolute_path_text(spec: &str) -> bool {
+    let b = spec.as_bytes();
+    spec.starts_with('/')
+        || spec.starts_with("\\\\")
+        || (b.len() >= 3
+            && b[0].is_ascii_alphabetic()
+            && b[1] == b':'
+            && matches!(b[2], b'\\' | b'/'))
+}
+
 fn split_off<'a>(s: &'a str, parts: Option<(&'a str, &'a str)>) -> (&'a str, Option<&'a str>) {
     parts.map_or((s, None), |(head, tail)| (head, Some(tail)))
 }
@@ -240,8 +220,6 @@ fn is_github_name(s: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b'.'))
 }
 
-/// Reject a URL that git must not see: a scheme other than https or file,
-/// userinfo (`user:pass@host`, `token@host`), or a query with `token=`.
 pub fn check_url(url: &str) -> Result<()> {
     let (scheme, rest) = url.split_once("://").ok_or_else(|| {
         MarketplaceError::BadSource("a git URL needs https:// or file://".to_owned())
@@ -253,7 +231,6 @@ pub fn check_url(url: &str) -> Result<()> {
     }
 }
 
-/// Why the URL carries a credential, or `None`.
 fn credential_in(url: &str, authority: &str) -> Option<&'static str> {
     let token_in_query = url.split_once('?').is_some_and(|(_, query)| {
         query
@@ -282,6 +259,26 @@ fn check_scheme(scheme: &str, authority: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_windows_absolute_path_is_a_local_source() {
+        for spec in [
+            r"C:\Users\a\src\demo",
+            "C:/Users/a/src/demo",
+            r"\\?\C:\Users\a\src\demo",
+            r"\\server\share\demo",
+        ] {
+            assert_eq!(
+                SkillSource::parse(spec).unwrap(),
+                SkillSource::Local {
+                    path: PathBuf::from(spec)
+                },
+                "{spec}"
+            );
+        }
+        assert!(SkillSource::parse("owner/repo").is_ok());
+        assert!(SkillSource::parse("c:x").is_err());
+    }
 
     #[test]
     fn parses_specs() {
@@ -364,7 +361,6 @@ mod tests {
                 subdir: Some("sk/x".into()),
             }
         );
-        // `@` in the authority is userinfo and is refused.
         assert!(matches!(
             SkillSource::parse("https://tok@example.com/r"),
             Err(MarketplaceError::Credentials(_))
@@ -431,7 +427,6 @@ mod tests {
             };
             assert_eq!(got, kind, "{bad}");
         }
-        // The text never holds the URL, so a secret cannot reach a log.
         let msg = check_url("https://sekret@example.com/r")
             .unwrap_err()
             .to_string();

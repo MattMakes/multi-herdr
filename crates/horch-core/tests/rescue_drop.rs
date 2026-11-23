@@ -1,13 +1,3 @@
-//! `horch rescue drop <ref>`: you delete 1 rescue ref, and horch verifies it
-//! (docs/specs/fleetd/design.md, "No work is lost", I10, FM-40;
-//! docs/tickets/fleetd-p4/43-horch-rescue-drop.md).
-//!
-//! Each test makes its own temporary git repository and ledger. The drop
-//! plans the ref from the facts of its rescue refs, records 1 event before
-//! the effect, then deletes the ref with `git update-ref -d <ref> <tip>` and
-//! reads it back. The role check of the caller is in the command
-//! (`crates/horch/src/cmd/rescuecmd.rs`).
-
 #![cfg(unix)]
 
 use std::path::{Path, PathBuf};
@@ -22,26 +12,21 @@ use horch_core::taskledger::Store;
 
 const BRANCH: &str = "fleet/r1-T-1";
 
-// ─── the world of a test ────────────────────────────────────────────────
-
 struct World {
     _dir: tempfile::TempDir,
     root: PathBuf,
     store: Store,
     repo: PathBuf,
-    /// The first commit of `main`.
     base: String,
 }
 
-/// A temp ledger, and a temp repository with 1 commit on `main` and the
-/// branch [`BRANCH`] at that commit.
 fn world() -> World {
     assert!(
         std::env::var_os("FLEET_ROOT").is_none(),
         "these tests use the fleet root of their temp ledger"
     );
     let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().canonicalize().unwrap();
+    let root = horch_platform::path::canonicalize(dir.path()).unwrap();
     let store = Store::open(&root.join("ledger.sqlite3")).unwrap();
     let repo = root.join("repo");
     std::fs::create_dir(&repo).unwrap();
@@ -60,8 +45,6 @@ fn world() -> World {
     }
 }
 
-/// Run git in `dir` for the test itself, with no config of the user, and
-/// give its trimmed output. A failed call fails the test.
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
         .arg("-C")
@@ -94,8 +77,6 @@ fn git(dir: &Path, args: &[&str]) -> String {
 }
 
 impl World {
-    /// The git of the drop: it can write only the git folder of the
-    /// repository.
     fn writer(&self) -> CliWorktreeGit {
         CliWorktreeGit::new("git", self.root.join("fleet")).writing(&[self.repo.join(".git")])
     }
@@ -108,7 +89,6 @@ impl World {
         self.repo.display().to_string()
     }
 
-    /// The tip of `rev`, or `None` when it does not exist.
     fn tip(&self, rev: &str) -> Option<String> {
         let out = Command::new("git")
             .arg("-C")
@@ -123,10 +103,6 @@ impl World {
             .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
     }
 
-    /// Commit the file `name` on [`BRANCH`], write the rescue ref of that
-    /// tip, and force the branch back to `main`: the ref is then the only
-    /// holder of the work, so its class is `unique`. Gives the ref and its
-    /// tip.
     fn unique_ref(&self, name: &str) -> (String, String) {
         git(&self.repo, &["checkout", "-q", BRANCH]);
         std::fs::write(self.repo.join(name), format!("{name}\n")).unwrap();
@@ -143,15 +119,11 @@ impl World {
         (rescue, tip)
     }
 
-    /// The plan of the drop of `name`, from the facts of the rescue refs
-    /// as the command reads them.
     fn plan(&self, name: &str) -> anyhow::Result<DropPlan> {
         let refs = refs_git::read_facts(&self.writer(), &self.repo, &|_| None).unwrap();
         rescue_refs::plan_drop(&self.repo_str(), name, &refs)
     }
 
-    /// 1 whole drop of `name`, as the command runs it: plan, commit the
-    /// event, then the effect.
     fn drop_ref(&mut self, name: &str) -> Deleted {
         let plan = self.plan(name).unwrap();
         self.store
@@ -160,7 +132,6 @@ impl World {
         rescue_refs::drop_ref(&self.gateway(), &plan.deletion).unwrap()
     }
 
-    /// The events about the ref `name`: actor, kind and data.
     fn events(&self, name: &str) -> Vec<(String, String, serde_json::Value)> {
         let mut stmt = self
             .store
@@ -179,8 +150,6 @@ impl World {
         .collect()
     }
 }
-
-// ─── the drop ───────────────────────────────────────────────────────────
 
 #[test]
 fn drop_deletes_the_ref_and_verifies_it() {
@@ -206,8 +175,6 @@ fn drop_deletes_the_ref_and_verifies_it() {
     assert_eq!(data["tip"], tip.as_str());
     assert_eq!(data["class"], "unique");
 
-    // Only the named ref goes: the other unique ref, its tip and the
-    // branches stay.
     assert_eq!(w.tip(&other).as_deref(), Some(other_tip.as_str()));
     assert_eq!(w.tip("main").as_deref(), Some(w.base.as_str()));
     assert!(w.events(&other).is_empty());
@@ -231,11 +198,9 @@ fn ref_outside_the_rescue_namespace_is_refused() {
             "{outside}: {err:#}"
         );
     }
-    // A name in the namespace that git does not have is refused too.
     let missing = name.replace("/1", "/9");
     assert!(w.plan(&missing).is_err());
 
-    // Nothing changed.
     assert_eq!(w.tip(&name).as_deref(), Some(tip.as_str()));
     assert_eq!(w.tip("main").as_deref(), Some(w.base.as_str()));
     assert!(w.events(&name).is_empty());
@@ -251,8 +216,6 @@ fn ref_that_moved_after_the_plan_is_not_deleted() {
     assert_eq!(w.tip(&name).as_deref(), Some(w.base.as_str()));
 }
 
-// ─── the faults ─────────────────────────────────────────────────────────
-
 #[test]
 fn crash_before_the_commit_or_before_the_effect_loses_no_tip() {
     let mut w = world();
@@ -260,8 +223,6 @@ fn crash_before_the_commit_or_before_the_effect_loses_no_tip() {
     let (second, _) = w.unique_ref("c.txt");
     let (kept, kept_tip) = w.unique_ref("d.txt");
 
-    // Fault point 1: the drop dies before the commit of its event. Nothing
-    // is written, and no effect runs.
     let plan = w.plan(&first).unwrap();
     {
         let tx = w.store.conn().unchecked_transaction().unwrap();
@@ -270,12 +231,10 @@ fn crash_before_the_commit_or_before_the_effect_loses_no_tip() {
     }
     assert!(w.events(&first).is_empty());
     assert!(w.tip(&first).is_some());
-    // The next drop completes the effect 1 time.
     assert_eq!(w.drop_ref(&first), Deleted::Deleted);
     assert_eq!(w.tip(&first), None);
     assert_eq!(w.events(&first).len(), 1);
 
-    // Fault point 2: the drop commits its event and dies before the effect.
     let plan = w.plan(&second).unwrap();
     assert!(w
         .store
@@ -283,7 +242,6 @@ fn crash_before_the_commit_or_before_the_effect_loses_no_tip() {
         .unwrap());
     assert_eq!(w.events(&second).len(), 1);
     assert!(w.tip(&second).is_some());
-    // The next drop writes no second event and completes the effect 1 time.
     let plan = w.plan(&second).unwrap();
     assert!(!w
         .store
@@ -295,13 +253,11 @@ fn crash_before_the_commit_or_before_the_effect_loses_no_tip() {
     );
     assert_eq!(w.tip(&second), None);
     assert_eq!(w.events(&second).len(), 1);
-    // A second effect of the same plan finds the ref gone.
     assert_eq!(
         rescue_refs::drop_ref(&w.gateway(), &plan.deletion).unwrap(),
         Deleted::Gone
     );
 
-    // No other tip and no other work is lost.
     assert_eq!(w.tip(&kept).as_deref(), Some(kept_tip.as_str()));
     assert_eq!(w.tip("main").as_deref(), Some(w.base.as_str()));
     assert_eq!(w.tip(BRANCH).as_deref(), Some(w.base.as_str()));

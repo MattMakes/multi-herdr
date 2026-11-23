@@ -1,16 +1,3 @@
-//! A stack edge ends with its lower feature: when the lower feature is
-//! `merged`, fleetd writes a rescue ref of the upper feature, rebases it on
-//! the fetched primary tip, runs both gates again, clears `stacked_on` and
-//! moves the base of its pull request. When the lower feature is
-//! `abandoned`, the rebase takes the commits of the lower feature out. A
-//! conflict opens 1 resolver task. Continuous rebase moves the bottom of a
-//! stack first (docs/specs/fleetd/design.md, "Between features", I10,
-//! FM-42; docs/tickets/fleetd-p6/38-stack-edges.md).
-//!
-//! Each test makes its own ledger, git repository and fake `gh` in a
-//! temporary folder. No test touches this repository or the live ledger,
-//! and no test reads the clock, the load or the limits of the machine: the
-//! fleet clock is a number of the test.
 #![cfg(unix)]
 
 use std::collections::BTreeMap;
@@ -63,18 +50,12 @@ use horch_core::taskledger::Store;
 use horch_marketplace::git::scrub_repo_env;
 use rusqlite::{params, Connection, TransactionBehavior};
 
-/// The web address of the remote, as `remote.origin.url` names it. A push
-/// goes to the local bare repository through `url.<bare>.pushInsteadOf`.
 const WEB: &str = "https://github.com/acme/x";
 
-/// The address that the fake `gh` gives to a new pull request.
 const NEW_PR: &str = "https://github.com/acme/x/pull/7";
 
-/// The profile of a resolver task in these tests.
 const RESOLVER_PROFILE: &str = "opus-hardening";
 
-/// The fake `gh`: `pr view`, `pr create`, `pr edit` and `pr ready` of 1
-/// pull request, kept as files in `<bin>/../gh/`, with its base branch.
 const FAKE_GH: &str = r#"#!/bin/sh
 d="$(cd "$(dirname "$0")/../gh" && pwd)"
 echo "$*" >> "$d/log"
@@ -117,12 +98,9 @@ case "$1 $2" in
 esac
 "#;
 
-// ─── the world of a test ────────────────────────────────────────────────
-
 struct World {
     _dir: tempfile::TempDir,
     root: PathBuf,
-    /// The repository, as its canonical path.
     repo: PathBuf,
     conn: Connection,
     config: FleetConfig,
@@ -145,7 +123,6 @@ fn ctx(config: &FleetConfig) -> JobCtx<'_> {
     }
 }
 
-/// The sandbox profiles of a test: no task check runs in these tests.
 struct NoProfiles;
 
 impl SandboxProfiles for NoProfiles {
@@ -154,13 +131,9 @@ impl SandboxProfiles for NoProfiles {
     }
 }
 
-/// A ledger of the current schema with the fleet clock at 0, a repository
-/// with 1 commit on `main` and the remote `origin` (a local bare
-/// repository), the fetched tip of `main`, and a fake `gh` on the PATH of
-/// the tools.
 fn world() -> World {
     let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().canonicalize().unwrap();
+    let root = horch_platform::path::canonicalize(dir.path()).unwrap();
     let mut conn = Connection::open(root.join("ledger.sqlite3")).unwrap();
     conn.busy_timeout(Duration::from_secs(10)).unwrap();
     schema::migrate_to(&mut conn, schema::VERSION).unwrap();
@@ -182,7 +155,6 @@ fn world() -> World {
     git(&repo, &["remote", "add", "origin", WEB]);
     let rewrite = format!("url.{}.pushInsteadOf", path(&bare));
     git(&repo, &["config", &rewrite, WEB]);
-    // The worktree_add job writes only the tree folder: its parent exists.
     std::fs::create_dir(repo.join(".worktrees")).unwrap();
 
     let bin = root.join("bin");
@@ -226,14 +198,11 @@ impl World {
         out
     }
 
-    /// The fetch saw `tip` as the tip of `main`.
     fn fetched(&self, tip: &str) {
         let repo = self.repo.to_string_lossy().into_owned();
         self.write(|tx| rows::put_remote_tip(tx, None, &repo, "main", tip).unwrap());
     }
 
-    /// Write `file` with `text` on `branch` in 1 commit, with no checkout.
-    /// Returns the new tip.
     fn commit_on(&self, branch: &str, file: &str, text: &str) -> String {
         let parent = self.tip(&format!("refs/heads/{branch}"));
         let blob = git_in(&self.repo, &["hash-object", "-w", "--stdin"], text);
@@ -257,8 +226,6 @@ impl World {
         commit
     }
 
-    /// Merge `branch` into `main` with a merge commit, as you merge a pull
-    /// request, and let the fetch see it. Returns the new tip of `main`.
     fn merge_into_main(&self, branch: &str) -> String {
         let main = self.tip("refs/heads/main");
         let other = self.tip(&format!("refs/heads/{branch}"));
@@ -276,16 +243,12 @@ impl World {
         commit
     }
 
-    /// Move `main` by 1 commit of `file`, and let the fetch see it.
     fn move_primary(&self, file: &str, text: &str) -> String {
         let tip = self.commit_on("main", file, text);
         self.fetched(&tip);
         tip
     }
 
-    /// A new `open` feature with its internal run, the branch
-    /// `fleet/<id>` made from `from` with 1 commit of `file`, its branch row
-    /// with `seen_tip`, and its gate tree. Returns (feature id, branch).
     fn feature(&mut self, from: &str, file: &str) -> (String, String) {
         let project = Project {
             root: &self.repo,
@@ -315,8 +278,6 @@ impl World {
         (id, branch)
     }
 
-    /// The upper feature `upper` is on the lower feature `lower`, as a
-    /// trial merge that conflicts leaves it.
     fn stack(&self, upper: &str, lower: &str) {
         self.conn
             .execute(
@@ -326,8 +287,6 @@ impl World {
             .unwrap();
     }
 
-    /// The feature `id` is in `state`, as the feature state machine or
-    /// `horch feature abandon` leaves it.
     fn set_state(&self, id: &str, state: &str) {
         self.conn
             .execute("UPDATE features SET state = ?2 WHERE id = ?1", [id, state])
@@ -338,7 +297,6 @@ impl World {
         rows::feature(&self.conn, id).unwrap().unwrap().stacked_on
     }
 
-    /// The idea `idea` of `feature` in `state`.
     fn idea(&self, feature: &str, idea: &str, state: &str) {
         self.write(|tx| {
             let new = NewIdea {
@@ -358,8 +316,6 @@ impl World {
             .writing(&[self.repo.join(".git")])
     }
 
-    /// The gate tree of `feature`, made by its `worktree_add` job and
-    /// observed, as a pass observes it.
     fn gate_tree(&mut self, feature: &str, branch: &str) {
         let repo = self.repo.clone();
         let tip = self.tip(&format!("refs/heads/{branch}"));
@@ -384,9 +340,6 @@ impl World {
         assert!(matches!(seen, Observed::Created(_)), "{seen:?}");
     }
 
-    /// 1 pass of the stack edges and of the rebase rule at the fleet clock
-    /// `clock`, in that order and in 1 transaction, committed. Gives the
-    /// effects of both.
     fn pass(&mut self, clock: i64) -> Vec<Effect> {
         let config = self.config.clone();
         let gw = CliGitGateway::new(self.fleet_git());
@@ -409,9 +362,6 @@ impl World {
         effects
     }
 
-    /// Run each effect after the commit of its pass. With `observe`, record
-    /// each result, as the next part of the pass does; without it, the pass
-    /// crashed before it recorded them.
     fn effects(&mut self, effects: &[Effect], observe: bool) {
         let refs = GitRebaseRefs::new(self.fleet_git());
         let config = self.config.clone();
@@ -423,8 +373,6 @@ impl World {
         }
     }
 
-    /// Passes, effects and rebase runs at the fleet clock from `clock`, until
-    /// a pass changes nothing. Gives the next clock.
     fn settle(&mut self, mut clock: i64) -> i64 {
         for _ in 0..10 {
             let effects = self.pass(clock);
@@ -445,7 +393,6 @@ impl World {
         jobs_store::get(&self.conn, id).unwrap().unwrap()
     }
 
-    /// Each rebase run, oldest first.
     fn rebases(&self) -> Vec<JobRow> {
         self.jobs_of(Kind::Rebase)
     }
@@ -470,8 +417,6 @@ impl World {
         ids.into_iter().map(|id| self.job(id)).collect()
     }
 
-    /// Run the job `id` as `horch job run` runs it, and end it from its
-    /// result file, as a pass ends it. Gives the ended row.
     fn run_job(&mut self, id: i64) -> JobRow {
         let spec = LaunchSpec {
             program: "true".into(),
@@ -494,13 +439,12 @@ impl World {
             profiles: &NoProfiles,
             sweep: None,
         };
-        let written = jobs::run_job(&ctx, &mut self.conn, id, pid, &checks).unwrap();
+        let written = jobs::run_job(&ctx, &self.conn, id, pid, &checks).unwrap();
         assert!(written.is_some(), "run_job wrote the result of job {id}");
         jobs::end_from_files(&ctx, &mut self.conn).unwrap();
         self.job(id)
     }
 
-    /// Each rescue ref of the branch `branch`, as (name, tip).
     fn rescues(&self, branch: &str) -> Vec<(String, String)> {
         let folder = format!("refs/horch/rescue/branch/{}/", branch.replace('/', "-"));
         let out = git(
@@ -513,16 +457,12 @@ impl World {
             .collect()
     }
 
-    /// The commits of `branch` that `main` does not have, newest first, by
-    /// subject.
     fn own_commits(&self, branch: &str) -> Vec<String> {
         let range = format!("refs/heads/main..refs/heads/{branch}");
         let out = git(&self.repo, &["log", "--format=%s", &range]);
         out.lines().map(str::to_string).collect()
     }
 
-    /// Each task of the internal run of `feature` whose title starts with
-    /// "Resolve", as (task id, idea id, spec).
     fn resolvers(&self, feature: &str) -> Vec<(String, String, serde_json::Value)> {
         let run = runs::of_feature(&self.conn, feature).unwrap().unwrap();
         let mut stmt = self
@@ -541,7 +481,6 @@ impl World {
         .unwrap()
     }
 
-    /// The text of each open needs-you item.
     fn needs_you(&self) -> Vec<String> {
         needs_you::open_items(&self.conn)
             .unwrap()
@@ -550,8 +489,6 @@ impl World {
             .collect()
     }
 
-    /// A task of `feature`, its git branch `name` from the feature branch
-    /// with 1 commit of `file`, and its task branch row in `to`.
     fn task_branch(&mut self, feature: &str, branch: &str, name: &str, file: &str, to: &str) {
         git(&self.repo, &["branch", name, branch]);
         self.commit_on(name, file, &format!("{name}\n"));
@@ -587,7 +524,6 @@ impl World {
         }
     }
 
-    /// 1 pass of the feature state machine at `clock`, committed.
     fn features_pass(&mut self, clock: i64) -> Vec<(String, features::Step)> {
         let config = self.config.clone();
         let gw = CliGitGateway::new(self.fleet_git());
@@ -599,7 +535,6 @@ impl World {
         self.write(|tx| features::follow(&f, tx, FleetSeconds(clock)).unwrap())
     }
 
-    /// 1 pass of the bundles at `clock`, committed.
     fn bundles_pass(&mut self, clock: i64) {
         let config = self.config.clone();
         let gw = CliGitGateway::new(self.fleet_git());
@@ -611,7 +546,6 @@ impl World {
         self.write(|tx| bundles::advance(&b, tx, FleetSeconds(clock)).unwrap());
     }
 
-    /// The full gate run `id` passed: its job and its `gate_runs` row.
     fn gate_passed(&self, id: i64) {
         self.conn
             .execute("UPDATE jobs SET state = 'passed' WHERE id = ?1", [id])
@@ -636,7 +570,6 @@ impl World {
             .collect()
     }
 
-    /// The base branch of the pull request of the fake `gh`.
     fn pr_base(&self) -> String {
         std::fs::read_to_string(self.gh_dir().join("base"))
             .unwrap()
@@ -644,8 +577,6 @@ impl World {
             .to_string()
     }
 
-    /// Queue the push of `feature` at `clock` when the push rule wants it
-    /// (`rebased`: its branch was rebased), run it, and end it passed.
     fn push(&mut self, feature: &str, rebased: bool, clock: i64) {
         self.conn
             .execute("UPDATE fleetd SET fleet_clock_s = ?1 WHERE id = 1", [clock])
@@ -672,7 +603,6 @@ impl World {
         self.run_push(id);
     }
 
-    /// Run the push run `id`, and end it passed.
     fn run_push(&mut self, id: i64) {
         let row = self.job(id);
         let job = Store::open_read_only(Path::new(self.conn.path().unwrap())).unwrap();
@@ -694,9 +624,6 @@ impl World {
     }
 }
 
-/// A stack: the lower feature with 1 commit of `l.txt`, and the upper
-/// feature on it with 1 more commit of `u.txt`. Returns (lower, lower
-/// branch, upper, upper branch).
 fn stack(w: &mut World) -> (String, String, String, String) {
     let (lower, lower_branch) = w.feature("main", "l.txt");
     let (upper, upper_branch) = w.feature(&lower_branch, "u.txt");
@@ -710,8 +637,6 @@ fn is_ancestor(repo: &Path, a: &str, b: &str) -> bool {
         .unwrap()
         .success()
 }
-
-// ─── the tests ──────────────────────────────────────────────────────────
 
 #[test]
 fn lower_feature_merged_rebases_the_upper_on_the_primary_tip() {
@@ -737,7 +662,6 @@ fn lower_feature_merged_rebases_the_upper_on_the_primary_tip() {
     assert_eq!(rebases[0].subject, upper_branch);
     assert_eq!(rebases[0].input_key, rebase::rebase_key(&old, &primary));
     assert_eq!(rebases[0].state, State::Passed);
-    // The next pass records the new tip of the upper feature.
     w.pass(100);
     let seen = rows::branch(&w.conn, &upper_branch)
         .unwrap()
@@ -787,7 +711,6 @@ fn rescue_ref_exists_before_the_rebase() {
     let primary = w.merge_into_main(&lower_branch);
     w.set_state(&lower, "merged");
 
-    // The first pass gives the rescue and queues nothing.
     let effects = w.pass(1);
     assert_eq!(
         effects,
@@ -804,7 +727,6 @@ fn rescue_ref_exists_before_the_rebase() {
     );
     assert_eq!(w.stacked_on(&upper).as_deref(), Some(lower.as_str()));
 
-    // A crash after the rescue ref and before the commit of its row.
     w.effects(&effects, false);
     assert_eq!(w.rescues(&upper_branch).len(), 1);
     let effects = w.pass(2);
@@ -826,10 +748,8 @@ fn rescue_ref_exists_before_the_rebase() {
 fn both_gates_run_again_after_the_rebase() {
     let mut w = world();
     let (lower, lower_branch, upper, upper_branch) = stack(&mut w);
-    // FR-12: the task of the upper feature needs an idea in flight.
     w.idea(&upper, "I-1", "in_progress");
     w.task_branch(&upper, &upper_branch, "fleet/t1", "t1.txt", "landed");
-    // Each idea of the upper feature is integrating.
     w.conn
         .execute(
             "UPDATE ideas SET state = 'integrating' WHERE feature_id = ?1",
@@ -849,7 +769,6 @@ fn both_gates_run_again_after_the_rebase() {
         .unwrap()
     });
     let main = w.tip("main");
-    // The full gate of the upper feature passed on its old tips.
     let steps = w.features_pass(1);
     let full = w.jobs_of(Kind::FullGate);
     assert_eq!(full.len(), 1, "{steps:?}");
@@ -868,8 +787,6 @@ fn both_gates_run_again_after_the_rebase() {
     assert_ne!(new, old);
     assert_eq!(w.stacked_on(&upper), None);
 
-    // The full gate: the old pass is stale, and a new run judges the new
-    // tips.
     w.features_pass(clock);
     w.features_pass(clock + 1);
     let full = w.jobs_of(Kind::FullGate);
@@ -880,9 +797,8 @@ fn both_gates_run_again_after_the_rebase() {
         "open"
     );
 
-    // The fast gate: a ready task branch is bundled on the new tip, and its
-    // fast gate judges the bundle over the new tip.
     w.gate_passed(full[1].id);
+    w.idea(&upper, "I-2", "in_progress");
     w.task_branch(&upper, &upper_branch, "fleet/t3", "t3.txt", "ready");
     w.bundles_pass(clock + 2);
     let builds = w.jobs_of(Kind::BundleBuild);
@@ -903,8 +819,6 @@ fn both_gates_run_again_after_the_rebase() {
 fn pr_base_moves_to_the_primary_branch() {
     let mut w = world();
     let (lower, lower_branch, upper, _) = stack(&mut w);
-    // The stacked upper feature is ready: its pull request has the branch
-    // of the lower feature as its base.
     w.set_state(&upper, "ready");
     w.push(&upper, false, 1);
     let create = w
@@ -922,7 +836,6 @@ fn pr_base_moves_to_the_primary_branch() {
     w.set_state(&lower, "merged");
     let clock = w.settle(2);
     assert_eq!(w.stacked_on(&upper), None);
-    // The pass after the rebase queues the push of the new tip.
     w.pass(clock);
     let push = jobs_store::active(&w.conn, Kind::Push, &upper)
         .unwrap()
@@ -984,7 +897,6 @@ fn stack_is_rebased_bottom_first() {
     let (lower, lower_branch, upper, upper_branch) = stack(&mut w);
     let primary = w.move_primary("p.txt", "p\n");
 
-    // The first passes rescue and rebase only the lower feature.
     let effects = w.pass(1);
     let branches: Vec<&str> = effects
         .iter()
@@ -1006,7 +918,6 @@ fn stack_is_rebased_bottom_first() {
     assert_eq!(ended.state, State::Passed, "{:?}", outcome(&ended));
     assert!(is_ancestor(&w.repo, &primary, &w.tip(&lower_branch)));
 
-    // Then the upper feature.
     let effects = w.pass(4);
     let branches: Vec<&str> = effects
         .iter()
@@ -1040,7 +951,6 @@ fn idempotent_pull_request_closed() {
         tips: Vec::new(),
         prs: vec![(lower.clone(), PrRead::Closed)],
     };
-    // 2 fetches read the closed pull request of the lower feature.
     for clock in [1, 2] {
         w.write(|tx| remote::record_passed(tx, None, &NeedsYouList, &repo, &fetched).unwrap());
         assert!(w.pass(clock).is_empty());
@@ -1063,7 +973,6 @@ fn rebase_conflict_opens_1_resolver_task() {
     let mut w = world();
     let (lower, _, upper, upper_branch) = stack(&mut w);
     w.idea(&upper, "I-1", "captured");
-    // The upper feature changes a.txt, and so does the primary branch.
     let old = w.commit_on(&upper_branch, "a.txt", "upper\n");
     w.write(|tx| {
         rows::set_branch_fact(
@@ -1093,8 +1002,6 @@ fn rebase_conflict_opens_1_resolver_task() {
     assert_eq!(spec["outputs"], serde_json::json!(["a.txt"]));
     assert_eq!(w.stacked_on(&upper).as_deref(), Some(lower.as_str()));
 }
-
-// ─── git ────────────────────────────────────────────────────────────────
 
 fn path(p: &Path) -> &str {
     p.to_str().unwrap()

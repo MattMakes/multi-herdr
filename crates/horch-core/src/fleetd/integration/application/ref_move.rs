@@ -1,25 +1,3 @@
-//! The ref move by compare and set (ticket 31).
-//!
-//! `docs/specs/fleetd/design.md`, I8, I9, FM-37, F9, "The bundle state
-//! machine" (`passed`, `landed`) and "A moved tip drops a bundle". The
-//! bundle use cases move a bundle to `passed` on a pass of its fast gate.
-//! From there:
-//! - [`advance`] is the pass part. For each `passed` bundle it reads the
-//!   tip of the feature branch. At the base tip, it records the tip as
-//!   `seen_tip` and gives 1 [`Move`] to run after the commit. At the
-//!   candidate tip, the move is observed: the bundle is `landed`, and each
-//!   member whose changes are in the candidate by content is `landed` (I8).
-//!   At another tip, the compare-and-set failed or the gate result is
-//!   stale: fleetd records the new tip, and the bundle is `dropped` (FM-37).
-//!   A member task that is cancelled drops the bundle before the move (F9).
-//! - [`run`] is the effect after the commit: it checks once more that no
-//!   member task is cancelled (F9), then moves the feature ref from the
-//!   base tip to the candidate tip with 1 compare-and-set (I9). It records
-//!   nothing: the next pass reads the ref. So a crash at any point repeats
-//!   the move safely, and the bundle lands 1 time.
-//! - A bundle in `passed` past its due time has 1 needs-you item, and the
-//!   item ends when the bundle leaves `passed`.
-
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
@@ -38,58 +16,38 @@ use crate::fleetd::integration::domain::task_branch::LandingState;
 use crate::taskledger::model::{Actor, TaskStatus};
 use crate::taskledger::{runs, tasks};
 
-/// The kind of the needs-you item of a bundle past the limit of `passed`.
-/// It is not the kind of the bundle use cases: they end each item of their
-/// kind whose bundle is not past a limit of `building` or `gating`.
 pub const OVERDUE_KIND: &str = "bundle_passed_overdue";
 
-/// The key of the needs-you item of the `passed` bundle `id` past its limit.
 pub fn overdue_key(id: i64) -> String {
     format!("{OVERDUE_KIND}:{id}")
 }
 
-/// What [`advance`] works with: the job context of the pass, and the git
-/// gateway that reads the tips.
 pub struct RefMoves<'a> {
     pub jobs: &'a JobCtx<'a>,
     pub git: &'a dyn IntegrationGitGateway,
 }
 
-/// 1 move of a feature ref, to run after the commit of its pass.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Move {
-    /// The `passed` bundle.
     pub bundle: i64,
     pub repo: PathBuf,
-    /// The full name of the feature ref, `refs/heads/<branch>`.
     pub name: String,
-    /// The expected old tip: the base tip of the bundle and `seen_tip`.
     pub from: String,
-    /// The candidate tip of the bundle.
     pub to: String,
-    /// The task of each member, in queue order.
     pub tasks: Vec<String>,
 }
 
-/// What [`run`] did with 1 [`Move`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Ran {
-    /// The ref was at the base tip, and git moved it to the candidate tip.
     Moved,
-    /// The ref was not at the base tip, and nothing moved.
     Mismatch { actual: Option<String> },
-    /// The member task `task` is cancelled, and nothing moved (F9).
     Cancelled { task: String },
 }
 
-/// Where the feature tip is, seen from a `passed` bundle.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Seen {
-    /// At the base tip: the move is due.
     AtBase,
-    /// At the candidate tip: the move is observed.
     AtCandidate,
-    /// At another tip, or no tip: the move cannot be done.
     Elsewhere(Option<String>),
 }
 
@@ -108,15 +66,10 @@ fn by_fleetd(text: &str) -> Cause<'_> {
     }
 }
 
-/// The pass part of the ref move, in the transaction `tx` of part 2 at the
-/// fleet clock `clock`: step each `passed` bundle, and keep 1 needs-you item
-/// for each bundle past its limit. Gives the moves to run after the commit.
 pub fn advance(r: &RefMoves<'_>, tx: &Connection, clock: FleetSeconds) -> Result<Vec<Move>> {
     advance_in(r, tx, clock, None)
 }
 
-/// [`advance`] for the work budget of 1 pass: step only the bundles of
-/// `bundles`. `None` is each bundle.
 pub fn advance_in(
     r: &RefMoves<'_>,
     tx: &Connection,
@@ -137,7 +90,6 @@ pub fn advance_in(
     Ok(moves)
 }
 
-/// 1 step of the `passed` bundle `bundle`.
 fn step(
     r: &RefMoves<'_>,
     tx: &Connection,
@@ -195,9 +147,6 @@ fn step(
     }
 }
 
-/// The move of the feature ref is observed: each member whose changes are
-/// in `candidate` by content goes to `landed` (I8), each other member back
-/// to `ready`, and the bundle to `landed`.
 fn land(
     r: &RefMoves<'_>,
     tx: &Connection,
@@ -212,8 +161,6 @@ fn land(
     );
     enter(r.jobs, tx, bundle.id, BundleState::Landed, &why)?;
     for member in in_bundle(tx, bundle)? {
-        // A member that git no longer has, as after the old path landed it
-        // and removed its tree, is judged by the tip the ledger recorded.
         let tip = match r.git.tip(repo, &format!("refs/heads/{member}"))? {
             Some(tip) => Some(tip),
             None => bundles::recorded_tip(r.git, tx, repo, &member)?,
@@ -245,7 +192,6 @@ fn land(
     Ok(())
 }
 
-/// Drop `bundle`, and move each member in `in_bundle` back to `ready`.
 fn drop_bundle(
     ctx: &JobCtx<'_>,
     tx: &Connection,
@@ -261,7 +207,6 @@ fn drop_bundle(
     Ok(())
 }
 
-/// Move the bundle `id` to `to` through `transition()`.
 fn enter(ctx: &JobCtx<'_>, tx: &Connection, id: i64, to: BundleState, why: &str) -> Result<()> {
     transition(
         tx,
@@ -275,8 +220,6 @@ fn enter(ctx: &JobCtx<'_>, tx: &Connection, id: i64, to: BundleState, why: &str)
     Ok(())
 }
 
-/// Write `tip` as the `seen_tip` of the row of the feature branch `branch`,
-/// when the row exists and has another tip.
 fn record_tip(ctx: &JobCtx<'_>, tx: &Connection, branch: &str, tip: &str) -> Result<()> {
     let Some(row) = rows::branch(tx, branch)? else {
         return Ok(());
@@ -294,7 +237,6 @@ fn record_tip(ctx: &JobCtx<'_>, tx: &Connection, branch: &str, tip: &str) -> Res
     Ok(())
 }
 
-/// The members of `bundle` that are still `in_bundle`, in queue order.
 fn in_bundle(tx: &Connection, bundle: &BundleRow) -> Result<Vec<String>> {
     let mut out = Vec::new();
     for member in &bundle.members {
@@ -306,7 +248,6 @@ fn in_bundle(tx: &Connection, bundle: &BundleRow) -> Result<Vec<String>> {
     Ok(out)
 }
 
-/// The task of each member of `bundle`, in queue order.
 fn member_tasks(tx: &Connection, bundle: &BundleRow) -> Result<Vec<String>> {
     let mut out = Vec::new();
     for member in &bundle.members {
@@ -316,7 +257,6 @@ fn member_tasks(tx: &Connection, bundle: &BundleRow) -> Result<Vec<String>> {
     Ok(out)
 }
 
-/// The first task of `task_ids` that is cancelled.
 fn cancelled(conn: &Connection, task_ids: &[String]) -> Result<Option<String>> {
     for id in task_ids {
         if tasks::get(conn, id)?.status == TaskStatus::Cancelled.as_str() {
@@ -326,9 +266,6 @@ fn cancelled(conn: &Connection, task_ids: &[String]) -> Result<Option<String>> {
     Ok(None)
 }
 
-/// Run `mv` after the commit of its pass: check once more that no member
-/// task is cancelled (F9), then move the feature ref by 1 compare-and-set
-/// from the base tip (I9). `conn` is only read.
 pub fn run(conn: &Connection, git: &dyn IntegrationGitGateway, mv: &Move) -> Result<Ran> {
     if let Some(task) = cancelled(conn, &mv.tasks)? {
         return Ok(Ran::Cancelled { task });
@@ -341,15 +278,12 @@ pub fn run(conn: &Connection, git: &dyn IntegrationGitGateway, mv: &Move) -> Res
     )
 }
 
-/// The ids of the `passed` bundles, by id.
 fn passed_bundles(conn: &Connection) -> Result<Vec<i64>> {
     let mut stmt = conn.prepare("SELECT id FROM bundles WHERE state = ?1 ORDER BY id")?;
     let ids = stmt.query_map([BundleState::Passed.as_str()], |r| r.get(0))?;
     Ok(ids.collect::<rusqlite::Result<_>>()?)
 }
 
-/// Open 1 needs-you item for each `passed` bundle past its due time, and
-/// end the item of each bundle that is no longer `passed`.
 fn overdue_items(ctx: &JobCtx<'_>, tx: &Connection, clock: FleetSeconds) -> Result<()> {
     let passed = passed_bundles(tx)?;
     for key in needs_you::open_keys(tx, OVERDUE_KIND)? {

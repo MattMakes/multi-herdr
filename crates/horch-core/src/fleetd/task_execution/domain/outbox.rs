@@ -1,43 +1,18 @@
-//! The outbox of an attempt: the names of its files, the closed lines of
-//! `progress.jsonl`, and the rules of a hand-off file that a worker writes.
-//!
-//! Requirements: FR-7, RR-5, RR-8, SR-6. `docs/specs/fleetd/design.md`,
-//! "Workspace layout and file protocol". The outbox is
-//! `<fleet root>/tasks/<task id>/attempts/<attempt>/outbox/` and holds 3
-//! kinds of file:
-//!
-//! - `result.json`, an immutable message. Its schema is
-//!   [`crate::fleetd::task_execution::domain::result`], with the handoff
-//!   keys of Q4 of `docs/tickets/fleetd-p5/MAP.md` ([`handoff_result`]).
-//! - `questions/<n>.json`, an immutable message ([`Question`]).
-//! - `progress.jsonl`, an append-only log of [`ProgressLine`]s.
-//!
-//! No I/O: the writer is `adapters/outbox_writer.rs`.
-
 use super::result::{json_string, ResultFile, ResultStatus};
 
-/// The outbox folder in an attempt folder.
 pub const OUTBOX: &str = "outbox";
-/// The result file in the outbox.
 pub const RESULT_JSON: &str = "result.json";
-/// The append-only log in the outbox.
 pub const PROGRESS_JSONL: &str = "progress.jsonl";
-/// The folder of the question files in the outbox.
 pub const QUESTIONS: &str = "questions";
-/// The suffix of a temp file. A reader ignores it (protocol rule 1).
 pub const TMP_SUFFIX: &str = ".tmp";
-/// The mode of the outbox and of its `questions` folder.
 pub const DIR_MODE: u32 = 0o700;
-/// The mode of each file in the outbox.
 pub const FILE_MODE: u32 = 0o600;
 
-/// The kind of a line of `progress.jsonl`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LineKind {
-    /// `horch ledger progress`.
     Progress,
-    /// `horch ledger note`.
     Note,
+    ContextWarned,
 }
 
 impl LineKind {
@@ -45,14 +20,25 @@ impl LineKind {
         match self {
             LineKind::Progress => "progress",
             LineKind::Note => "note",
+            LineKind::ContextWarned => "context-warned",
         }
     }
 }
 
-/// A file or a line over its size limit.
+pub fn warned_text(tokens: u64, threshold: u64) -> String {
+    format!("tokens {tokens} threshold {threshold}")
+}
+
+pub fn is_warned_text(text: &str) -> bool {
+    let number = |n: &str| !n.is_empty() && n.len() <= 20 && n.bytes().all(|b| b.is_ascii_digit());
+    match text.split(' ').collect::<Vec<_>>()[..] {
+        ["tokens", tokens, "threshold", threshold] => number(tokens) && number(threshold),
+        _ => false,
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TooLarge {
-    /// What is too large: `a progress line` or `a question file`.
     pub what: &'static str,
     pub bytes: u64,
     pub max: u64,
@@ -70,11 +56,9 @@ impl std::fmt::Display for TooLarge {
 
 impl std::error::Error for TooLarge {}
 
-/// 1 line of `progress.jsonl`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProgressLine {
     pub task: String,
-    /// The attempt, `A<n>`.
     pub attempt: String,
     pub at: String,
     pub kind: LineKind,
@@ -82,8 +66,6 @@ pub struct ProgressLine {
 }
 
 impl ProgressLine {
-    /// The line, with its newline, when it has at most `max_bytes` bytes
-    /// (`progress_line_max_bytes` of `fleet.toml`). The newline counts.
     pub fn to_line(&self, max_bytes: u64) -> Result<String, TooLarge> {
         let line = format!(
             "{{\"task\": {}, \"attempt\": {}, \"at\": {}, \"kind\": {}, \"text\": {}}}\n",
@@ -97,22 +79,22 @@ impl ProgressLine {
     }
 }
 
-/// A question file, `questions/<n>.json`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Question {
     pub task: String,
-    /// The attempt, `A<n>`.
     pub attempt: String,
     pub at: String,
     pub text: String,
+    pub mail_id: Option<String>,
 }
 
 impl Question {
-    /// The JSON text of the file, when it has at most `max_bytes` bytes
-    /// (`question_max_bytes` of `fleet.toml`).
     pub fn to_json(&self, max_bytes: u64) -> Result<String, TooLarge> {
+        let mail_id = self.mail_id.as_deref().map_or(String::new(), |id| {
+            format!(",\n  \"mail_id\": {}", json_string(id))
+        });
         let text = format!(
-            "{{\n  \"task\": {},\n  \"attempt\": {},\n  \"at\": {},\n  \"text\": {}\n}}\n",
+            "{{\n  \"task\": {},\n  \"attempt\": {},\n  \"at\": {},\n  \"text\": {}{mail_id}\n}}\n",
             json_string(&self.task),
             json_string(&self.attempt),
             json_string(&self.at),
@@ -122,12 +104,10 @@ impl Question {
     }
 }
 
-/// The name of question file `n`.
 pub fn question_name(n: u32) -> String {
     format!("{n}.json")
 }
 
-/// The number of the question file `name`: `<n>.json` with `n` from 1.
 pub fn question_number(name: &str) -> Option<u32> {
     let digits = name.strip_suffix(".json")?;
     if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
@@ -136,8 +116,6 @@ pub fn question_number(name: &str) -> Option<u32> {
     digits.parse().ok().filter(|n| *n > 0)
 }
 
-/// The `result.json` of `horch ledger handoff` (Q4): status `blocked`,
-/// reason `handoff`, and the absolute path of the handoff file.
 pub fn handoff_result(task: &str, attempt: &str, summary: &str, path: &str) -> ResultFile {
     ResultFile {
         task: task.to_string(),
@@ -149,6 +127,7 @@ pub fn handoff_result(task: &str, attempt: &str, summary: &str, path: &str) -> R
         acceptance_self_check: Vec::new(),
         notes_for_next: None,
         handoff: Some(path.to_string()),
+        unlanded: None,
     }
 }
 
@@ -208,10 +187,26 @@ mod tests {
             attempt: "A1".into(),
             at: "2026-11-18T12:00:00Z".into(),
             text: "which file?".into(),
+            mail_id: None,
         };
         let text = q.to_json(MAX).unwrap();
         assert!(text.contains("\"text\": \"which file?\""));
         assert!(q.to_json(text.len() as u64 - 1).is_err());
+    }
+
+    #[test]
+    fn question_file_names_its_mail_only_when_it_has_one() {
+        let mut q = Question {
+            task: "T-1".into(),
+            attempt: "A1".into(),
+            at: "2026-11-18T12:00:00Z".into(),
+            text: "which file?".into(),
+            mail_id: None,
+        };
+        assert!(!q.to_json(MAX).unwrap().contains("mail_id"));
+        q.mail_id = Some("m-1".into());
+        let text = q.to_json(MAX).unwrap();
+        assert!(text.contains("\"text\": \"which file?\",\n  \"mail_id\": \"m-1\"\n}"));
     }
 
     #[test]

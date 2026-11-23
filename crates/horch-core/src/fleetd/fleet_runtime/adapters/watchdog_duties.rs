@@ -1,50 +1,3 @@
-//! The duties of the old watchdog, done in the pass (FM-7).
-//!
-//! `docs/specs/fleetd/design.md`, "Supervision, liveness and
-//! reconciliation" and "Migration plan" item 3. [`WatchdogDuties`] runs
-//! each duty of `horch ledger watch` for each active run, in the 3 parts of
-//! the pass ([`RunDuties`]):
-//!
-//! 1. [`RunDuties::observe`] reads the facts with no transaction: herdr and
-//!    the transcript of each worker that is due for a check or has no claim.
-//! 2. [`RunDuties::run`] writes the rows in the transaction of the pass,
-//!    with the rules of [`crate::taskledger::watchdog`]: the check of each
-//!    due worker ([`watchdog::check_observed`]), which reaps no worker; the
-//!    end of a pre-claim worker whose supervisor is gone, with the stops of
-//!    its process and pane; the flag of an unclaimed spawn; and the wakes
-//!    of today, each to its new owner (`taskledger::wakes`): a stuck run, a
-//!    ready feature, a stalled blocker and a held task are needs-you items
-//!    by key; a first stall and a suspect are 1 `doorbell` event of the
-//!    live sub-orchestrator of the feature of the task; the startable, the
-//!    reviews-in and the pre-claim wakes go to fleetd and write nothing.
-//! 3. [`RunDuties::act`] does the effects of the committed rows: the
-//!    cleanup retry and the delivery of the outbox rows that other paths
-//!    wrote. The pass does the stops.
-//!
-//! Each effect comes from a committed row, never from memory. So a fleetd
-//! that dies after the commit leaves the row, and the next pass does the
-//! effect: the stop of an ended worker from `mark_orphans`, and the
-//! delivery of an outbox row.
-//!
-//! No wake goes to an orchestrator, and no duty respawns one: there is no
-//! long-lived orchestrator conversation (FM-16). A respawn attempt in
-//! `launching` that an older fleetd wrote is ended, and never launched. A
-//! live orchestrator of a run in flight is not stopped: it ends by itself.
-//!
-//! Each duty that reads rows has a work budget (PL-5, A32): it reads 1
-//! page of at most `pass_budget` rows from its cursor in `pass_cursors`
-//! ([`WORKER_CHECKS`], [`PRECLAIM`], [`BLOCKER_TASKS`], [`HELD_TASKS`]),
-//! and the next pass goes on after the page. The cursor is saved in the
-//! transaction of part 2. A duty that needs the whole run (the stuck, the
-//! startable and the settled wake) asks 1 count query first, and reads the
-//! rows only when the count says that the wake may be due. No duty starts
-//! after the time budget of the pass.
-//!
-//! "3 checks of 600 s" no longer reaps a worker: the leases and the stall
-//! ladder of the pass do (`docs/tickets/fleetd-p2/MAP.md`, Q14). The run
-//! numbers `check_every_s` and `stall_rounds` only set when a check is due
-//! and when a first stall asks for an update.
-
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -74,82 +27,52 @@ use crate::taskledger::watchdog::{self, Checked, Observation, Observer};
 use crate::taskledger::workers::{self, Worker};
 use crate::taskledger::{tasks, util};
 
-/// The outcome of a respawn attempt that is never launched.
 const GONE: &str = "gone";
 
-/// Why a respawn attempt of an older fleetd ends (FM-16).
 const RETIRED: &str = "no respawn: there is no long-lived orchestrator conversation";
 
-/// The cursor of the checks of the working workers in `pass_cursors`.
 pub const WORKER_CHECKS: &str = "duty_worker_checks";
-/// The cursor of the pre-claim sweep and the flag of an unclaimed spawn.
 pub const PRECLAIM: &str = "duty_preclaim";
-/// The cursor of the wakes of cancelled or parked blockers (I-05, I-06).
 pub const BLOCKER_TASKS: &str = "duty_blocker_tasks";
-/// The cursor of the questions of attempt-held tasks (I-07).
 pub const HELD_TASKS: &str = "duty_held_tasks";
 
-/// The statuses of a worker before its claim.
 const BEFORE_CLAIM: [WorkerStatus; 3] = [
     WorkerStatus::Spawning,
     WorkerStatus::Starting,
     WorkerStatus::Claiming,
 ];
 
-/// The rows of 1 page of a worker duty that part 1 read before the time
-/// budget of the pass ended, and the cursor before them.
 struct Page {
     workers: Vec<Worker>,
     start: Cursor,
 }
 
-/// The effects of the duties outside the ledger. The composition root of
-/// `horch fleetd` gives them; a test gives fakes.
 pub trait DutyEffects {
-    /// Deliver the outbox rows of `run` that are not delivered.
     fn deliver(&self, run: &Run);
 
-    /// Retry the removal of each worktree whose cleanup failed
-    /// (`taskledger::finish::land::retry_cleanup`). Returns 1 note for each
-    /// worktree that it tried.
     fn retry_cleanups(&self) -> Result<Vec<String>>;
 }
 
-/// The facts of part 1, and the board sighting of each run between passes.
 #[derive(Default)]
 struct State {
-    /// The observation of each worker that is due or has no claim.
     observed: BTreeMap<String, Observation>,
-    /// The page of [`WORKER_CHECKS`] and of [`PRECLAIM`] that part 1 read.
     pages: BTreeMap<&'static str, Page>,
 }
 
-/// The duties of the old watchdog for each active run.
 pub struct WatchdogDuties<'a> {
     observer: &'a dyn Observer,
     effects: &'a dyn DutyEffects,
-    /// The state folder of the mail, for the open questions of each worker.
-    state_root: PathBuf,
     state: RefCell<State>,
-    /// Check each working worker, due or not (`horch ledger watch --once
-    /// --force`).
     force: bool,
-    /// The checks of the last pass, with the run of each.
     checked: RefCell<Vec<(String, Checked)>>,
-    /// The keys of the rows that each paged duty read in the last pass.
     rows: RefCell<BTreeMap<&'static str, Vec<String>>>,
 }
 
 impl<'a> WatchdogDuties<'a> {
-    pub fn new(
-        observer: &'a dyn Observer,
-        effects: &'a dyn DutyEffects,
-        state_root: PathBuf,
-    ) -> WatchdogDuties<'a> {
+    pub fn new(observer: &'a dyn Observer, effects: &'a dyn DutyEffects) -> WatchdogDuties<'a> {
         WatchdogDuties {
             observer,
             effects,
-            state_root,
             state: RefCell::new(State::default()),
             force: false,
             checked: RefCell::new(Vec::new()),
@@ -157,27 +80,19 @@ impl<'a> WatchdogDuties<'a> {
         }
     }
 
-    /// Check each working worker in each pass, due or not.
     pub fn forced(mut self) -> Self {
         self.force = true;
         self
     }
 
-    /// The checks of the last pass, with the run id of each.
     pub fn take_checked(&self) -> Vec<(String, Checked)> {
         self.checked.take()
     }
 
-    /// The keys of the rows that each paged duty read in the last pass,
-    /// by the kind of its cursor.
     pub fn take_rows(&self) -> BTreeMap<&'static str, Vec<String>> {
         self.rows.take()
     }
 
-    /// Read the page of the worker duty `kind`, the workers with a status
-    /// in `statuses`, from its cursor. Each worker that `observe` names is
-    /// observed. The page ends at the rows of `budget` or when its time is
-    /// up.
     fn read_page(
         &self,
         conn: &Connection,
@@ -204,10 +119,6 @@ impl<'a> WatchdogDuties<'a> {
         Ok(())
     }
 
-    /// Check each due worker of the [`WORKER_CHECKS`] `page` that part 1
-    /// observed, in the order of the cursor, until the time budget ends. A
-    /// first stall or a suspect gets its wake. The cursor moves through the
-    /// last worker done. No check reaps a worker.
     fn check_page(
         &self,
         tx: &Transaction<'_>,
@@ -240,13 +151,6 @@ impl<'a> WatchdogDuties<'a> {
         Ok(())
     }
 
-    /// The pre-claim sweep (#190) and the flag of an unclaimed spawn
-    /// (TRF-23) of each worker of the [`PRECLAIM`] `page`, in the order of
-    /// the cursor, until the time budget ends. A row that no process stands
-    /// for ends, and a worker that does not claim gets 1 question. The
-    /// workers of 1 run that ended get 1 wake after the page. The cursor
-    /// moves through the last worker done. Returns the workers that ended:
-    /// their processes and panes are stopped in part 3.
     fn preclaim_page(
         &self,
         tx: &Transaction<'_>,
@@ -286,14 +190,10 @@ impl<'a> WatchdogDuties<'a> {
     }
 }
 
-/// Whether the attempt `a` is a respawn of an orchestrator that an older
-/// fleetd wrote: no task, and the id `<worker>/R<number>`.
 fn is_respawn(a: &AttemptRow) -> bool {
     respawn_number(a).is_some()
 }
 
-/// The respawn number of the attempt `a` of an orchestrator, when `a` is
-/// one.
 fn respawn_number(a: &AttemptRow) -> Option<i64> {
     if a.task_id.is_some() {
         return None;
@@ -310,7 +210,6 @@ impl RunDuties for WatchdogDuties<'_> {
         state.pages.clear();
         let runs = watchdog::active_runs(conn)?;
         let now = util::now();
-        // `horch ledger watch --once --force` checks each working worker.
         let checks = DutyBudget {
             rows: if self.force {
                 PassBudget::new(u64::MAX)
@@ -338,12 +237,6 @@ impl RunDuties for WatchdogDuties<'_> {
         let time_up = ctx.budget.time_up;
         let runs = watchdog::active_runs(tx)?;
         let now = util::now();
-        for run in runs.iter().take_while(|_| !time_up()) {
-            if let Some(workspace) = run.workspace_id.as_deref() {
-                workers::sync_questions(tx, &self.state_root, workspace)?;
-            }
-        }
-        // The findings of `horch ledger unfinished`, which only reads (T-885).
         crate::taskledger::import::sync_native(tx)?;
         let mut reaped = BTreeSet::new();
         if let Some(page) = state.pages.remove(WORKER_CHECKS) {
@@ -355,7 +248,6 @@ impl RunDuties for WatchdogDuties<'_> {
         for run in runs.iter().take_while(|_| !time_up()) {
             run_items(tx, run)?;
         }
-        // The lost wakes I-05 to I-07 (TRF-51), each from its page.
         let blockers = task_duty(
             tx,
             ctx,
@@ -381,8 +273,6 @@ impl RunDuties for WatchdogDuties<'_> {
         reaped_stops(tx, &reaped, ctx)
     }
 
-    /// A respawn attempt of an older fleetd is never launched: part 2
-    /// ends it.
     fn launches(&self, a: &AttemptRow) -> bool {
         is_respawn(a)
     }
@@ -407,9 +297,6 @@ impl RunDuties for WatchdogDuties<'_> {
     }
 }
 
-/// Check the worker `id` of `run` when it is due and part 1 observed it.
-/// Returns the check. A check reaps no worker: the stall ladder of the
-/// pass judges each live attempt (`docs/tickets/fleetd-p2/MAP.md`, Q14).
 fn check_worker(
     tx: &Transaction<'_>,
     ctx: &DutyCtx<'_>,
@@ -430,7 +317,6 @@ fn check_worker(
     Ok(Some(c))
 }
 
-/// End the attempt `id` with `outcome`, for the reason `text`.
 fn end_attempt(tx: &Connection, id: &str, outcome: &str, text: &str) -> Result<()> {
     attempts_store::set_ended(tx, id, outcome, &util::now())?;
     let by = Cause {
@@ -442,8 +328,6 @@ fn end_attempt(tx: &Connection, id: &str, outcome: &str, text: &str) -> Result<(
     Ok(())
 }
 
-/// The stops of the processes and the panes of the reaped workers and of
-/// their attempts: they are orphans now (I5).
 fn reaped_stops(
     tx: &Connection,
     reaped: &BTreeSet<String>,
@@ -468,16 +352,11 @@ fn reaped_stops(
         .collect())
 }
 
-/// The active run of `w` in `runs`.
 fn run_of<'r>(runs: &'r [Run], w: &Worker) -> Option<&'r Run> {
     runs.iter()
         .find(|r| w.run_id.as_deref() == Some(r.run_id.as_str()))
 }
 
-/// The task duty `kind` on the page that `read` gives from its cursor, in
-/// the order of the cursor, until the time budget ends: `each` writes the
-/// wakes of 1 task of its active run. The cursor moves through the last
-/// task done. Returns the keys of the tasks done.
 fn task_duty(
     tx: &Transaction<'_>,
     ctx: &DutyCtx<'_>,
@@ -506,18 +385,11 @@ fn task_duty(
     Ok(keys)
 }
 
-/// The wakes of `run` that need the whole run, each to its new owner
-/// (`taskledger::wakes`, FM-16): a stuck run and a settled run whose
-/// feature is ready are needs-you items by key. The startable re-wake and
-/// the reviews-in wake go to fleetd, which dispatches each ready task and
-/// runs the finish steps: they write nothing. The stuck and settled items
-/// ask 1 count query before they read rows.
 fn run_items(tx: &Transaction<'_>, run: &Run) -> Result<()> {
     open_item(tx, wakes::stuck_item(tx, run)?)?;
     open_item(tx, wakes::settled_item(tx, run)?)
 }
 
-/// Open the needs-you item `item` by its key, when there is one.
 fn open_item(tx: &Connection, item: Option<Item>) -> Result<()> {
     match item {
         Some(i) => i.open(tx),
@@ -525,11 +397,6 @@ fn open_item(tx: &Connection, item: Option<Item>) -> Result<()> {
     }
 }
 
-/// Give the routed wake `routed` to its owner in `tx`: a needs-you item by
-/// its key, or 1 `doorbell` event of the live sub-orchestrator of its
-/// feature, and of no other feature. A feature with no live
-/// sub-orchestrator gets no event: the stall ladder of fleetd acts on the
-/// attempt.
 fn route(tx: &Connection, ctx: &DutyCtx<'_>, routed: Option<Routed>) -> Result<()> {
     match routed {
         None => Ok(()),
@@ -558,7 +425,6 @@ fn route(tx: &Connection, ctx: &DutyCtx<'_>, routed: Option<Routed>) -> Result<(
     }
 }
 
-/// Flag the spawned worker `id` of `run` when it has no claim, once.
 fn flag_unclaimed(
     tx: &Transaction<'_>,
     run: &Run,
@@ -572,17 +438,11 @@ fn flag_unclaimed(
     let Some(u) = watchdog::unclaimed(tx, run, w, now)? else {
         return Ok(());
     };
-    // The verdict event flags it once. Its wake goes to fleetd, which binds
-    // a task before the pane exists (FM-16): no outbox row.
     let status = observed.get(id).and_then(|o| o.herdr_status.clone());
     watchdog::flag_unclaimed(tx, run, &u, status.as_deref())?;
     Ok(())
 }
 
-/// Whether the pre-claim worker `w` waits at `now` for
-/// [`watchdog::UNCLAIMED_AFTER_S`] or more: the flag of an unclaimed spawn
-/// and the question of the pre-claim sweep name the herdr status of its
-/// pane.
 fn waits_for_claim(w: &Worker, now: &str) -> bool {
     w.spawned_at
         .as_deref()
@@ -591,9 +451,6 @@ fn waits_for_claim(w: &Worker, now: &str) -> bool {
         .is_some_and(|s| s >= watchdog::UNCLAIMED_AFTER_S)
 }
 
-/// End each respawn attempt in `launching` of the orchestrator of `run`
-/// that an older fleetd wrote: no duty respawns an orchestrator (FM-16).
-/// An attempt in `launching` has no process, so nothing is stopped.
 fn end_respawns(tx: &Transaction<'_>, run: &Run) -> Result<()> {
     let Some(orch) = run.orchestrator_worker_id.as_deref() else {
         return Ok(());
@@ -606,10 +463,8 @@ fn end_respawns(tx: &Transaction<'_>, run: &Run) -> Result<()> {
     Ok(())
 }
 
-/// The observer of a real machine: herdr for the pane, the disk for the
-/// transcript.
 pub struct HerdrObserver {
-    pub herdr: crate::workspace::herdr::Herdr,
+    pub herdr: crate::workspace::PaneHost,
 }
 
 impl Observer for HerdrObserver {
@@ -634,8 +489,6 @@ impl Observer for HerdrObserver {
     }
 }
 
-/// Whether the agent PID of `w` runs with its recorded start time. An old
-/// record has no start time: the PID alone counts.
 fn agent_alive(w: &Worker) -> bool {
     match (w.agent_pid, w.agent_started) {
         (Some(p), Some(s)) => crate::procid::is_same(p as u32, s as u64),
@@ -644,7 +497,6 @@ fn agent_alive(w: &Worker) -> bool {
     }
 }
 
-/// The size and the write time of the transcript of `w`, when it can be read.
 fn transcript_facts(w: &Worker) -> (Option<i64>, Option<String>) {
     let meta = w
         .transcript_path
@@ -657,41 +509,23 @@ fn transcript_facts(w: &Worker) -> (Option<i64>, Option<String>) {
     )
 }
 
-// ─── the launch of an idea-lead attempt (T-890) ─────────────────────────
-
-/// The launch facts of 1 idea-lead sub-orchestrator attempt, from its
-/// rows. fleetd builds its launch from them, and `horch spawn --attempt`
-/// takes its first line ([`IdeaLeadLaunch::brief`]) from them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IdeaLeadLaunch {
     pub attempt: String,
     pub worker_id: String,
-    /// Always [`sub_orchestrators::PERSONA`].
     pub persona: String,
     pub idea: String,
-    /// The phase in the attempt id `<idea>/<phase>/<n>`.
     pub phase: String,
-    /// The idea folder: the only memory of the process.
     pub folder: PathBuf,
-    /// The first instruction of the process, its launch argument (FR-7).
     pub brief: String,
-    /// The state of the attempt row now.
     pub state: String,
-    /// The internal run of the feature, which holds the worker row.
     pub run_id: String,
     pub run_slug: String,
-    /// The working folder of the process: the project of the feature.
     pub project_root: String,
-    /// The pane of the feature that the attempt takes, if herdr proved one.
     pub pane: Option<String>,
     pub workspace_id: Option<String>,
 }
 
-/// The launch facts of the attempt `attempt`, when it is an idea-lead
-/// attempt: it has no task, it has an idea, its id has the form
-/// `<idea>/<phase>/<n>`, and its worker has the persona
-/// [`sub_orchestrators::PERSONA`]. Each other attempt gives `None`.
-/// `fleet_root` holds the idea folders.
 pub fn idea_lead_launch(
     conn: &Connection,
     fleet_root: &Path,
@@ -741,7 +575,6 @@ pub fn idea_lead_launch(
     }))
 }
 
-/// The phase in the attempt id `<idea>/<phase>/<n>` of `idea`.
 fn phase_of_attempt(attempt: &str, idea: &str) -> Option<String> {
     let rest = attempt.strip_prefix(idea)?.strip_prefix('/')?;
     let (phase, n) = rest.split_once('/')?;
@@ -749,10 +582,6 @@ fn phase_of_attempt(attempt: &str, idea: &str) -> Option<String> {
     Some(phase.to_string())
 }
 
-/// The launch argument of the idea-lead of `idea` in `phase`: the idea,
-/// the phase, the idea folder (FR-7) and the id of the feature of the idea,
-/// which plan.yaml names. The folder is 1 word with a space after it, so a
-/// reader can split the line on spaces.
 fn idea_lead_brief(idea: &str, feature: &str, phase: &str, folder: &Path) -> String {
     format!(
         "You are the idea-lead of idea {idea} in phase {phase}. \
@@ -766,8 +595,6 @@ fn idea_lead_brief(idea: &str, feature: &str, phase: &str, folder: &Path) -> Str
 #[cfg(unix)]
 #[cfg(test)]
 mod tests {
-    //! Each test uses a temp ledger and a temp fleet root, and runs whole
-    //! passes with these duties and fake herdr facts.
 
     use std::cell::RefCell;
     use std::path::{Path, PathBuf};
@@ -795,7 +622,6 @@ mod tests {
     use crate::taskledger::workers::NewWorker;
     use crate::taskledger::{outbox, schema, util};
 
-    /// A temp ledger at generation 1, a fleet root and 1 run.
     struct World {
         dir: PathBuf,
         _temp: Option<tempfile::TempDir>,
@@ -826,7 +652,6 @@ mod tests {
             ..Default::default()
         };
         let run = runs::create(&conn, &dir, &new_run).unwrap();
-        // FR-12: a task needs an idea in flight of the feature of its run.
         crate::taskledger::schema::run_idea(
             &conn,
             &run.run_id,
@@ -843,7 +668,6 @@ mod tests {
         }
     }
 
-    /// The ledger stamp `s` seconds ago.
     fn ago(s: i64) -> String {
         crate::clock::stamp(chrono::Utc::now() - chrono::Duration::seconds(s))
     }
@@ -863,7 +687,6 @@ mod tests {
             }
         }
 
-        /// A worker of the run, in state `status`, with the agent `agent`.
         fn worker(&self, kind: WorkerKind, status: &str, agent: Option<Recorded>) -> String {
             let new = NewWorker {
                 run_id: self.run.run_id.clone(),
@@ -888,9 +711,6 @@ mod tests {
             id
         }
 
-        /// A task bound an hour ago to a working worker with the agent
-        /// `agent`, with no progress since. Returns the task and the
-        /// worker.
         fn stalled_task(&self, agent: Recorded) -> (String, String) {
             let mut new = NewTask::work("a", "tickets/a.md", "dev");
             new.worktree_mode = WorktreeMode::Shared;
@@ -924,7 +744,6 @@ mod tests {
             (task.task_id, worker)
         }
 
-        /// The orchestrator of the run, whose agent `agent` is gone.
         fn gone_orchestrator(&self) -> String {
             let id = self.worker(WorkerKind::Orchestrator, "working", Some(Proc::dead()));
             runs::set_orchestrator(&self.conn, &self.run.run_id, &id).unwrap();
@@ -955,7 +774,6 @@ mod tests {
                 .unwrap()
         }
 
-        /// The respawn attempts of the orchestrator rows: (id, state).
         fn respawn_attempts(&self) -> Vec<(String, String)> {
             let mut st = self
                 .conn
@@ -968,8 +786,6 @@ mod tests {
         }
     }
 
-    /// The outside of the pass: no herdr snapshot, no health hold and no
-    /// launch of its own.
     struct NoOutside;
 
     impl Outside for NoOutside {
@@ -996,8 +812,6 @@ mod tests {
         }
     }
 
-    /// A launcher that refuses each launch: the duties launch nothing
-    /// through the pass.
     struct NoHost;
 
     impl ProcessHost for NoHost {
@@ -1006,7 +820,6 @@ mod tests {
         }
     }
 
-    /// herdr and the transcript: an agent that is alive and shows nothing.
     struct Quiet;
 
     impl Observer for Quiet {
@@ -1019,7 +832,6 @@ mod tests {
         }
     }
 
-    /// The effects: each delivery and each cleanup retry is counted.
     #[derive(Default)]
     struct Record {
         delivered: RefCell<usize>,
@@ -1037,7 +849,6 @@ mod tests {
         }
     }
 
-    /// 1 pass with these duties.
     fn pass(w: &mut World, duties: &WatchdogDuties<'_>, faults: Faults) -> PassReport {
         let ports = Ports {
             outside: &NoOutside,
@@ -1065,7 +876,6 @@ mod tests {
             }
         }
 
-        /// A process that ended and was reaped.
         fn dead() -> Recorded {
             let mut p = Proc::sleep();
             let r = p.recorded();
@@ -1074,7 +884,6 @@ mod tests {
             r
         }
 
-        /// Wait until it exits, at most 10 s.
         fn wait_exit(&mut self) -> bool {
             let end = Instant::now() + Duration::from_secs(10);
             while Instant::now() < end {
@@ -1094,8 +903,6 @@ mod tests {
         }
     }
 
-    // ─── the tests ──────────────────────────────────────────────────────
-
     #[test]
     fn pass_flags_an_unclaimed_spawn_once() {
         let mut w = world();
@@ -1107,14 +914,13 @@ mod tests {
             )
             .unwrap();
         let effects = Record::default();
-        let duties = WatchdogDuties::new(&Quiet, &effects, w.dir.clone());
+        let duties = WatchdogDuties::new(&Quiet, &effects);
 
         pass(&mut w, &duties, Faults::default());
         pass(&mut w, &duties, Faults::default());
 
         let flags = w.count("SELECT count(*) FROM events WHERE text LIKE 'No claim:%'");
         assert_eq!(flags, 1, "1 flag for 1 unclaimed spawn");
-        // FM-16: its wake goes to fleetd, so no outbox row.
         assert_eq!(w.outbox(OutboxEvent::UnclaimedSpawn), 0);
         assert_eq!(
             *effects.delivered.borrow(),
@@ -1129,7 +935,7 @@ mod tests {
         let agent = Proc::sleep();
         let (task, worker) = w.stalled_task(agent.recorded());
         let effects = Record::default();
-        let duties = WatchdogDuties::new(&Quiet, &effects, w.dir.clone());
+        let duties = WatchdogDuties::new(&Quiet, &effects);
 
         let report = pass(&mut w, &duties, Faults::default());
 
@@ -1151,14 +957,12 @@ mod tests {
         assert!(crate::procid::alive(pid, None), "the agent runs on");
     }
 
-    /// FM-16: the pass respawns no orchestrator. A gone orchestrator gets
-    /// no new row and no respawn attempt, and the pass launches nothing.
     #[test]
     fn pass_respawns_no_gone_orchestrator() {
         let mut w = world();
         let old = w.gone_orchestrator();
         let effects = Record::default();
-        let duties = WatchdogDuties::new(&Quiet, &effects, w.dir.clone());
+        let duties = WatchdogDuties::new(&Quiet, &effects);
 
         for _ in 0..3 {
             let report = pass(&mut w, &duties, Faults::default());
@@ -1176,8 +980,6 @@ mod tests {
         assert_eq!(guard.respawns, 0, "no respawn is counted");
     }
 
-    /// FM-16: a respawn attempt in `launching` that an older fleetd wrote
-    /// is ended by part 2, and the pass never launches it.
     #[test]
     fn pass_ends_a_respawn_attempt_of_an_older_fleetd_and_launches_nothing() {
         let mut w = world();
@@ -1193,7 +995,7 @@ mod tests {
         };
         attempts_store::insert_attempt(&w.conn, &a, &util::now()).unwrap();
         let effects = Record::default();
-        let duties = WatchdogDuties::new(&Quiet, &effects, w.dir.clone());
+        let duties = WatchdogDuties::new(&Quiet, &effects);
         assert!(duties.launches(&a), "the pass does not launch it");
 
         let report = pass(&mut w, &duties, Faults::default());
@@ -1206,11 +1008,10 @@ mod tests {
     fn pass_writes_no_startable_rewake() {
         let mut w = world();
         let effects = Record::default();
-        let duties = WatchdogDuties::new(&Quiet, &effects, w.dir.clone());
+        let duties = WatchdogDuties::new(&Quiet, &effects);
         let startable = |w: &World, title: &str| {
             let new = NewTask::work(title, &format!("tickets/{title}.md"), "dev");
             tasks::add(&w.conn, &w.run, &new, Actor::Orchestrator).unwrap();
-            // The first startable wake of this board state, 200 s ago.
             let ready: Vec<String> = tasks::startable(&w.conn, &w.run.run_id)
                 .unwrap()
                 .iter()
@@ -1232,8 +1033,6 @@ mod tests {
             w.count("SELECT count(*) FROM outbox WHERE text LIKE '%no worker is on its way%'")
         };
 
-        // FM-16: fleetd dispatches each ready task, so the board that
-        // waited 200 s gets no re-wake, in any board state.
         startable(&w, "a");
         pass(&mut w, &duties, Faults::default());
         pass(&mut w, &duties, Faults::default());
@@ -1242,7 +1041,6 @@ mod tests {
         assert_eq!(rewakes(&w), 0);
     }
 
-    /// The number of outbox rows whose text has `part`.
     fn wakes_with(w: &World, part: &str) -> i64 {
         w.conn
             .query_row(
@@ -1272,7 +1070,7 @@ mod tests {
             )
             .unwrap();
         let effects = Record::default();
-        let duties = WatchdogDuties::new(&Quiet, &effects, w.dir.clone());
+        let duties = WatchdogDuties::new(&Quiet, &effects);
 
         pass(&mut w, &duties, Faults::default());
         pass(&mut w, &duties, Faults::default());
@@ -1298,7 +1096,7 @@ mod tests {
             )
             .unwrap();
         let effects = Record::default();
-        let duties = WatchdogDuties::new(&Quiet, &effects, w.dir.clone());
+        let duties = WatchdogDuties::new(&Quiet, &effects);
 
         pass(&mut w, &duties, Faults::default());
         pass(&mut w, &duties, Faults::default());
@@ -1322,12 +1120,11 @@ mod tests {
             )
             .unwrap();
         let effects = Record::default();
-        let duties = WatchdogDuties::new(&Quiet, &effects, w.dir.clone());
+        let duties = WatchdogDuties::new(&Quiet, &effects);
 
         pass(&mut w, &duties, Faults::default());
         pass(&mut w, &duties, Faults::default());
 
-        // FM-16: both go to you, 1 needs-you item each, by key.
         assert_eq!(w.items("stuck").len(), 1, "1 stuck item");
         let held = w.items("held");
         assert_eq!(held.len(), 1, "1 held item");
@@ -1336,13 +1133,11 @@ mod tests {
         assert_eq!(wakes_with(&w, "is held: 3 attempts failed"), 0);
     }
 
-    /// FM-16: a settled run goes to you only when its feature is `ready`:
-    /// 1 needs-you item by the key of the feature, and no wake.
     #[test]
     fn pass_opens_1_item_for_a_settled_run_of_a_ready_feature() {
         let mut w = world();
         let effects = Record::default();
-        let duties = WatchdogDuties::new(&Quiet, &effects, w.dir.clone());
+        let duties = WatchdogDuties::new(&Quiet, &effects);
 
         pass(&mut w, &duties, Faults::default());
         assert!(
@@ -1374,19 +1169,15 @@ mod tests {
         tasks::add(&w.conn, &w.run, &second, Actor::Orchestrator).unwrap();
         tasks::cancel(&w.conn, &first, "drop").unwrap();
         let effects = Record::default();
-        let duties = WatchdogDuties::new(&Quiet, &effects, w.dir.clone());
+        let duties = WatchdogDuties::new(&Quiet, &effects);
 
         pass(&mut w, &duties, Faults::default());
         pass(&mut w, &duties, Faults::default());
 
-        // FM-16: 1 needs-you item by the key of the blocker, no wake.
         assert_eq!(w.items("blocker").len(), 1);
         assert_eq!(w.outbox(OutboxEvent::Cancelled), 0);
     }
 
-    /// FM-16: the first stall of a task goes to the live sub-orchestrator
-    /// of the feature of its task as 1 `doorbell` event, once. No item and
-    /// no wake.
     #[test]
     fn pass_rings_the_live_sub_orchestrator_of_the_feature_on_the_first_stall() {
         let mut w = world();
@@ -1401,7 +1192,7 @@ mod tests {
         let lead = Proc::sleep();
         let attempt = w.sub_orchestrator(&task, lead.recorded());
         let effects = Record::default();
-        let duties = WatchdogDuties::new(&Quiet, &effects, w.dir.clone());
+        let duties = WatchdogDuties::new(&Quiet, &effects);
 
         pass(&mut w, &duties, Faults::default());
         pass(&mut w, &duties, Faults::default());
@@ -1413,9 +1204,6 @@ mod tests {
         assert_eq!(w.status("tasks", "task_id", &task), "running");
     }
 
-    /// FM-16: with no live sub-orchestrator of the feature, a first stall
-    /// writes no item, no wake and no doorbell: the stall ladder of fleetd
-    /// acts on the attempt.
     #[test]
     fn pass_writes_nothing_on_a_first_stall_when_no_sub_orchestrator_runs() {
         let mut w = world();
@@ -1428,7 +1216,7 @@ mod tests {
             )
             .unwrap();
         let effects = Record::default();
-        let duties = WatchdogDuties::new(&Quiet, &effects, w.dir.clone());
+        let duties = WatchdogDuties::new(&Quiet, &effects);
 
         pass(&mut w, &duties, Faults::default());
 
@@ -1468,44 +1256,19 @@ mod tests {
             )
             .unwrap();
         let effects = Record::default();
-        let duties = WatchdogDuties::new(&Quiet, &effects, w.dir.clone());
+        let duties = WatchdogDuties::new(&Quiet, &effects);
 
         pass(&mut w, &duties, Faults::default());
         pass(&mut w, &duties, Faults::default());
 
-        // FM-16: fleetd runs the finish steps, so no wake.
         assert_eq!(w.outbox(OutboxEvent::ReviewsIn), 0);
-    }
-
-    #[test]
-    fn pass_syncs_open_questions_so_a_waiting_worker_is_not_reaped() {
-        let mut w = world();
-        let agent = Proc::sleep();
-        let (_, worker) = w.stalled_task(agent.recorded());
-        w.conn
-            .execute(
-                "UPDATE workers SET role = 'worker-1' WHERE worker_id = ?1",
-                [&worker],
-            )
-            .unwrap();
-        let mail = crate::messaging::mail::Mail::under(&w.dir, "w1");
-        let id = mail.enqueue("worker-1", "QUESTION: choose?").unwrap();
-        mail.ack(&id).unwrap();
-        let effects = Record::default();
-        let duties = WatchdogDuties::new(&Quiet, &effects, w.dir.clone());
-
-        pass(&mut w, &duties, Faults::default());
-
-        assert_eq!(w.status("workers", "worker_id", &worker), "working");
-        let waits = w.count("SELECT count(*) FROM worker_waits WHERE kind = 'question'");
-        assert_eq!(waits, 1);
     }
 
     #[test]
     fn pass_retries_the_worktree_cleanups_once_each_pass() {
         let mut w = world();
         let effects = Record::default();
-        let duties = WatchdogDuties::new(&Quiet, &effects, w.dir.clone());
+        let duties = WatchdogDuties::new(&Quiet, &effects);
 
         pass(&mut w, &duties, Faults::default());
         pass(&mut w, &duties, Faults::default());
@@ -1513,11 +1276,7 @@ mod tests {
         assert_eq!(*effects.cleanups.borrow(), 2);
     }
 
-    // ─── the tests of the old `horch ledger watch` pass (ticket 25) ─────
-
     impl World {
-        /// A live sub-orchestrator attempt of the idea of `task`, in pane
-        /// `p9`, with the process `process`. Returns the attempt id.
         fn sub_orchestrator(&self, task: &str, process: Recorded) -> String {
             let idea = attempts_store::idea_of_task(&self.conn, task)
                 .unwrap()
@@ -1536,8 +1295,6 @@ mod tests {
             a.id
         }
 
-        /// The cause texts of the `doorbell` events of `attempt`, cut to
-        /// their words after `shows`.
         fn doorbells(&self, attempt: &str) -> Vec<String> {
             let mut st = self
                 .conn
@@ -1559,7 +1316,6 @@ mod tests {
                 .collect()
         }
 
-        /// The texts of the open needs-you items of `kind`, by key.
         fn items(&self, kind: &str) -> Vec<String> {
             let mut st = self
                 .conn
@@ -1573,7 +1329,6 @@ mod tests {
                 .collect()
         }
 
-        /// The texts of the outbox rows of `event`.
         fn rows(&self, event: OutboxEvent) -> Vec<String> {
             let mut st = self
                 .conn
@@ -1586,9 +1341,6 @@ mod tests {
         }
     }
 
-    /// TRF-51, I-06: T-1 was parked unlanded, and the wake to the tasks
-    /// that wait for it was lost. The pass opens 1 needs-you item for it,
-    /// and a second pass keeps 1.
     #[test]
     fn pass_opens_a_lost_parked_blocker_item_once() {
         let mut w = world();
@@ -1610,13 +1362,11 @@ mod tests {
             )
             .unwrap();
         let effects = Record::default();
-        let duties = WatchdogDuties::new(&Quiet, &effects, w.dir.clone());
+        let duties = WatchdogDuties::new(&Quiet, &effects);
 
-        // No worker is live, so the run is stuck too: that wake is apart.
         pass(&mut w, &duties, Faults::default());
         pass(&mut w, &duties, Faults::default());
 
-        // FM-16: 1 needs-you item by the key of the blocker, and no wake.
         let items = w.items("blocker");
         assert_eq!(items.len(), 1, "{items:?}");
         assert!(
@@ -1626,8 +1376,6 @@ mod tests {
         assert!(w.rows(OutboxEvent::Held).is_empty());
     }
 
-    /// herdr and the transcript as [`Quiet`]; it counts each worker it
-    /// observes.
     #[derive(Default)]
     struct Counting(RefCell<BTreeMap<String, usize>>);
 
@@ -1638,10 +1386,6 @@ mod tests {
         }
     }
 
-    /// A big run: `working` tasks, each `running` with 1 worker that claimed
-    /// it an hour ago and 1 live attempt of this test process; `claiming`
-    /// workers that wait for a claim and are not stale; and `held` tasks
-    /// that the attempt limit holds.
     fn seed_big_run(w: &World, working: usize, claiming: usize, held: usize) {
         let pid = std::process::id();
         let start = crate::procid::start_time(pid).expect("the start time of this process") as i64;
@@ -1650,7 +1394,6 @@ mod tests {
         let host = util::host_name();
         let run = &w.run.run_id;
         let tx = w.conn.unchecked_transaction().unwrap();
-        // FR-12: each task belongs to an idea.
         let idea = crate::taskledger::schema::run_idea(&tx, run, &now, true)
             .unwrap()
             .unwrap();
@@ -1696,10 +1439,6 @@ mod tests {
                     .execute(params![format!("{t}/A1"), t, wk, pid, start, hour])
                     .unwrap();
             }
-            // The claiming workers check in 1 day from now: the 4 passes
-            // take minutes on a loaded host, and a check-in of the seed time
-            // would get stale (`heartbeat_stale_s`) or unclaimed
-            // (`UNCLAIMED_AFTER_S`) within the test.
             let later = ago(-86_400);
             for n in 1..=claiming {
                 let wk = format!("BC-{n:05}");
@@ -1731,9 +1470,6 @@ mod tests {
         tx.commit().unwrap();
     }
 
-    /// PL-5, A32: each paged duty of part 2 reads at most `pass_budget` rows
-    /// in 1 pass, and the passes of 1 lap reach each row exactly 1 time, in
-    /// the order of the cursor of the duty.
     #[test]
     fn each_paged_duty_reads_at_most_the_pass_budget_and_a_lap_reaches_each_row_once() {
         const WORKING: usize = 10_000;
@@ -1745,7 +1481,7 @@ mod tests {
         seed_big_run(&w, WORKING, CLAIMING, HELD);
         let observer = Counting::default();
         let effects = Record::default();
-        let duties = WatchdogDuties::new(&observer, &effects, w.dir.clone());
+        let duties = WatchdogDuties::new(&observer, &effects);
         let mut settings = w.settings(Faults::default());
         settings.config.pass_budget = BUDGET as u64;
         let ports = Ports {
@@ -1754,8 +1490,6 @@ mod tests {
             needs_you: &NeedsYouList,
             host: &NoHost,
         };
-        // The clock of the pass stands still: the row budget alone ends
-        // each page, on a slow host too. The time budget has its own tests.
         let start = Instant::now();
         let mut pass = Pass::new(settings, ports).with_clock(Box::new(move || start));
 
@@ -1783,7 +1517,6 @@ mod tests {
             assert_eq!(observed, n * BUDGET, "pass {n}: herdr observes 1 page");
         }
 
-        // 1 lap of the checks: each working worker once.
         let checks = &reached[WORKER_CHECKS];
         assert_eq!(checks.len(), WORKING);
         assert!(
@@ -1800,21 +1533,15 @@ mod tests {
             )
             .unwrap();
         assert_eq!((rows, workers), (WORKING as i64, WORKING as i64));
-        // 10,000 reads of 3,000 claiming workers and of 3,000 held tasks:
-        // the cursor wraps, and each row is reached 3 or 4 times, so no row
-        // is starved.
         for (duty, n) in [(PRECLAIM, CLAIMING), (HELD_TASKS, HELD)] {
             let keys = &reached[duty];
             assert_eq!(keys.len(), n, "{duty}");
             let fair = (PASSES * BUDGET / n)..=(PASSES * BUDGET).div_ceil(n);
             assert!(keys.values().all(|c| fair.contains(c)), "{duty}: {keys:?}");
         }
-        // Each held task has its 1 needs-you item, once.
         assert_eq!(w.items("held").len(), HELD);
     }
 
-    /// herdr and the transcript as [`Quiet`]; the observation number `at`
-    /// moves the clock of the pass 1 hour on, past its time budget.
     struct SlowAt {
         at: usize,
         seen: RefCell<usize>,
@@ -1831,9 +1558,6 @@ mod tests {
         }
     }
 
-    /// PL-5: the time budget ends in the middle of a page. Part 1 observes
-    /// no more workers, part 2 checks none, and the cursor stays before the
-    /// first worker not done, so the next pass checks each worker once.
     #[test]
     fn a_page_cut_by_the_time_budget_keeps_its_cursor_before_the_first_row_not_done() {
         let mut w = world();
@@ -1845,7 +1569,7 @@ mod tests {
             clock: clock.clone(),
         };
         let effects = Record::default();
-        let duties = WatchdogDuties::new(&observer, &effects, w.dir.clone());
+        let duties = WatchdogDuties::new(&observer, &effects);
         let ports = Ports {
             outside: &NoOutside,
             duties: &duties,
@@ -1879,16 +1603,13 @@ mod tests {
         assert_eq!((rows, workers), (50, 50));
     }
 
-    /// PL-5: when the time budget of the pass is used, part 2 starts no
-    /// new duty row, and the pass still writes its heartbeat. The next pass
-    /// does the rows.
     #[test]
     fn a_pass_past_its_time_budget_starts_no_duty_row_and_writes_its_heartbeat() {
         let mut w = world();
         seed_big_run(&w, 50, 0, 0);
         let observer = Counting::default();
         let effects = Record::default();
-        let duties = WatchdogDuties::new(&observer, &effects, w.dir.clone());
+        let duties = WatchdogDuties::new(&observer, &effects);
         let mut settings = w.settings(Faults::default());
         settings.config.pass_time_budget_s = 0;
         let ports = Ports {
@@ -1897,8 +1618,6 @@ mod tests {
             needs_you: &NeedsYouList,
             host: &NoHost,
         };
-        // The clock of each pass stands still: the time budget alone ends
-        // the duties, on a slow host too.
         let start = Instant::now();
         let report = Pass::new(settings, ports)
             .with_clock(Box::new(move || start))
@@ -1922,9 +1641,6 @@ mod tests {
         assert_eq!(w.count("SELECT count(*) FROM checks"), 50);
     }
 
-    /// PL-5: the time budget ends the held-task duty after 4 rows of a page
-    /// of 6. The next pass starts at row 5, so 1 lap reaches each held task
-    /// once, and each held task has its 1 question, once.
     #[test]
     fn a_held_page_cut_by_the_time_budget_goes_on_at_the_first_task_not_done() {
         const HELD: usize = 10;
@@ -1984,7 +1700,6 @@ mod tests {
 
 #[cfg(test)]
 mod idea_lead_tests {
-    //! The launch facts of an idea-lead attempt (T-890), on a temp ledger.
 
     use std::path::Path;
 
@@ -1996,7 +1711,6 @@ mod idea_lead_tests {
     use crate::taskledger::schema;
     use crate::taskledger::workers::NewWorker;
 
-    /// A temp ledger with 1 run and its idea in flight. Gives the idea.
     fn ledger(dir: &Path) -> (Connection, Run, String) {
         let mut conn = Connection::open(dir.join("ledger.sqlite3")).unwrap();
         schema::migrate_to(&mut conn, schema::VERSION).unwrap();
@@ -2012,8 +1726,6 @@ mod idea_lead_tests {
         (conn, run, idea)
     }
 
-    /// 1 attempt `id` in `launching` with no task, the idea `idea` and a
-    /// new worker of `persona`, as the sub-orchestrators write it.
     fn attempt(conn: &Connection, run: &Run, id: &str, idea: &str, persona: &str) {
         let worker_id = workers::insert(
             conn,
@@ -2058,8 +1770,6 @@ mod idea_lead_tests {
         assert_eq!(l.run_slug, "r1");
         assert_eq!(l.project_root, run.project_root);
         assert_eq!(l.workspace_id.as_deref(), Some("w1"));
-        // The brief names the idea, the phase, the feature id and the
-        // folder as 1 word.
         assert!(l.brief.contains(&idea), "{}", l.brief);
         assert!(l.brief.contains("phase clarifying"), "{}", l.brief);
         let feature: String = conn

@@ -1,32 +1,3 @@
-//! The release test of Phase 4 (`docs/specs/fleetd/design.md`, "What a
-//! release does to a run in flight", row Phase 4; "Migration plan";
-//! `docs/tickets/fleetd-p4/MAP.md`, Q4, Q5 and Q-C).
-//!
-//! A claimed attempt with a detached finish starts on Phase 3. After the
-//! update, it ends by the old path, and its task lands 1 time. Each run
-//! gets 1 feature row, and each task branch its `branches` row. A run of a
-//! project with no `[gates]` gets the dispatch hold and 1 needs-you item,
-//! and no task is lost or cancelled.
-//!
-//! The Phase 3 ledger is built by the real migration steps up to
-//! [`schema::PHASE_3_VERSION`], then the rows of a run in flight are
-//! written as a Phase 3 binary left them, in the git repository of the
-//! harness. The update is the migration to [`schema::PHASE_4_VERSION`]
-//! (ticket 02), then `horch fleetd` of this branch.
-//!
-//! The old processes are stand-ins:
-//! - the agent of the claimed attempt and the detached finish are `sleep`
-//!   processes. The run file of the finish names its stand-in, as the old
-//!   `horch ledger finish` recorded it.
-//! - the old path is the code of the old binary, in this test process: the
-//!   finish steps (`finish::finish`) that the detached process runs, and
-//!   `finish::complete`, the old `horch ledger done`. Each one writes the
-//!   ledger directly, as the old process does.
-//!
-//! No test reads the load, the limits or the clock of this machine: the
-//! harness gives the machine facts through `HORCH_MACHINE_FILE`, and the
-//! test `fleet.toml` gives the pass period.
-
 #![cfg(unix)]
 
 use std::path::{Path, PathBuf};
@@ -42,33 +13,24 @@ use horch_e2e::harness::{wait_for_or, Harness};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
 
-/// The fleet clock of the Phase 3 `fleetd` row at the update.
 const CLOCK: i64 = 5000;
-/// The lease of each live attempt ends 1 day of the fleet clock after the
-/// update: no lease ends in a test.
 const LEASE_END: i64 = CLOCK + 86_400;
 
-/// The `fleet.toml` of the fleet root: 1 pass each second. The stand-in
-/// agent writes no heartbeat file, so no stall rung stops it in a test.
 const FLEET_TOML: &str = "pass_period_s = 1\nheartbeat_max_age_s = 300\n";
 
-/// The `fleet.toml` of a project with its 2 gates (Q-C).
 const GATES: &str = "[gates]\nfast = \"true\"\nfull = \"true\"\n";
 
-/// The run in flight, its branch and its base.
 const RUN: &str = "r1";
 const SLUG: &str = "zeta";
 const RUN_BRANCH: &str = "fleet/zeta";
 const BASE: &str = "main";
 
-/// The claimed task, its attempt, its worker and its tree.
 const TASK: &str = "T-1";
 const ATTEMPT: &str = "T-1/A1";
 const WORKER: &str = "w-claim";
 const TREE: &str = "wt-a";
 const TREE_BRANCH: &str = "fleet/zeta-T-1";
 
-/// The task that waits for dispatch in the project with no gates.
 const WAITING_TASK: &str = "T-2";
 
 fn text(o: &Output) -> String {
@@ -80,8 +42,6 @@ fn text(o: &Output) -> String {
     )
 }
 
-/// A harness with its own ledger, fleet root, data folder and git
-/// repository, and no watchdog.
 fn world(name: &str) -> Harness {
     let mut h = Harness::new(name).with_git();
     let root = fleet_root(&h);
@@ -107,13 +67,10 @@ fn read(h: &Harness) -> Connection {
     Connection::open(db(h)).unwrap()
 }
 
-/// The evidence root of the old finish: its step logs and its run file.
 fn evidence_root(h: &Harness) -> PathBuf {
     h.root.join("evidence")
 }
 
-/// A `sleep` process: an old process of the run. Killed and waited on
-/// drop, so a failed assertion leaks no process.
 struct Stand {
     child: Child,
     started: u64,
@@ -146,7 +103,6 @@ impl Drop for Stand {
     }
 }
 
-/// `git` in `dir`; it must pass. Gives the trimmed stdout.
 fn git_in(h: &Harness, dir: &Path, args: &[&str]) -> String {
     let mut c = h.git_cmd(args);
     c.current_dir(dir);
@@ -155,7 +111,6 @@ fn git_in(h: &Harness, dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&o.stdout).trim().to_string()
 }
 
-/// The tip of `branch` in the project.
 fn tip(h: &Harness, branch: &str) -> String {
     git_in(
         h,
@@ -164,14 +119,12 @@ fn tip(h: &Harness, branch: &str) -> String {
     )
 }
 
-/// The commits on `branch` that are not on [`BASE`], newest first.
 fn commits_past_base(h: &Harness, branch: &str) -> Vec<String> {
     let range = format!("{BASE}..{branch}");
     let out = git_in(h, &h.project, &["rev-list", &range]);
     out.lines().map(str::to_string).collect()
 }
 
-/// Commit `body` as `file` on the checked-out branch of `dir`.
 fn commit(h: &Harness, dir: &Path, file: &str, body: &str) -> String {
     std::fs::write(dir.join(file), body).unwrap();
     git_in(h, dir, &["add", file]);
@@ -179,8 +132,6 @@ fn commit(h: &Harness, dir: &Path, file: &str, body: &str) -> String {
     git_in(h, dir, &["rev-parse", "HEAD"])
 }
 
-/// The project of `h` with `fleet_toml` committed on [`BASE`] (none: no
-/// `fleet.toml`), and the run branch [`RUN_BRANCH`] at that commit.
 fn project(h: &Harness, fleet_toml: Option<&str>) -> String {
     if let Some(body) = fleet_toml {
         commit(h, &h.project, "fleet.toml", body);
@@ -189,9 +140,6 @@ fn project(h: &Harness, fleet_toml: Option<&str>) -> String {
     tip(h, BASE)
 }
 
-/// A real tree `<project>/.worktrees/<name>` on the new branch `branch`
-/// from `from`, with 1 commit of the file `<name>.txt`. Gives the path, as
-/// the ledger writes it, and the commit.
 fn tree_with_1_commit(h: &Harness, name: &str, branch: &str, from: &str) -> (PathBuf, String) {
     let project = std::fs::canonicalize(&h.project).unwrap();
     let path = project.join(".worktrees").join(name);
@@ -212,10 +160,6 @@ fn tree_with_1_commit(h: &Harness, name: &str, branch: &str, from: &str) -> (Pat
     (path, head)
 }
 
-/// The base rows of a Phase 3 ledger: the migration steps up to
-/// [`schema::PHASE_3_VERSION`], project `p` of `h`, and the `fleetd` row of
-/// the Phase 3 fleetd, stopped for the update: its PID and start time name
-/// no live process.
 fn phase_3_base(h: &Harness) -> Connection {
     let mut conn = Connection::open(db(h)).unwrap();
     schema::migrate_to(&mut conn, schema::PHASE_3_VERSION).unwrap();
@@ -234,8 +178,6 @@ fn phase_3_base(h: &Harness) -> Connection {
     conn
 }
 
-/// Run `run_id` with `slug`, `status`, and the run branch `branch` from
-/// [`BASE`] (none: a run of the shared checkout with no run branch).
 fn insert_run(conn: &Connection, run_id: &str, slug: &str, status: &str, branch: Option<&str>) {
     conn.execute(
         "INSERT INTO runs (run_id, project_id, slug, status, base_branch, run_branch,
@@ -253,7 +195,6 @@ fn insert_run(conn: &Connection, run_id: &str, slug: &str, status: &str, branch:
     .unwrap();
 }
 
-/// Task `task_id` of `run_id` in `status`, with the check `true`.
 fn insert_task(conn: &Connection, run_id: &str, task_id: &str, seq: i64, status: &str) {
     conn.execute(
         "INSERT INTO tasks (task_id, run_id, seq, title, task_file, primary_persona, claimable_by,
@@ -264,13 +205,10 @@ fn insert_task(conn: &Connection, run_id: &str, task_id: &str, seq: i64, status:
     .unwrap();
 }
 
-/// The live claimed attempt [`ATTEMPT`] of [`TASK`] in run `run_id`.
 fn insert_claimed_attempt(conn: &Connection, run_id: &str, agent: &Stand) {
     insert_claimed(conn, run_id, (TASK, ATTEMPT, WORKER), agent);
 }
 
-/// The worktree row `id` of `task_id` at `path` on `branch`, with the
-/// status of today and the state of Phase 3.
 struct TreeRow<'a> {
     id: &'a str,
     task_id: &'a str,
@@ -307,9 +245,6 @@ fn insert_tree(h: &Harness, conn: &Connection, base: &str, t: &TreeRow<'_>) {
     .unwrap();
 }
 
-/// The detached finish of [`WORKER`] at [`TASK`], as the old
-/// `horch ledger finish` left it: its run file names the stand-in
-/// `finish`, and the worker waits on it in the background.
 fn insert_detached_finish(h: &Harness, conn: &Connection, finish: &Stand) -> PathBuf {
     let run = detach::run_path(&evidence_root(h), TASK, WORKER);
     let recorded = detach::record(&run, finish.pid()).unwrap();
@@ -329,28 +264,23 @@ fn user_version(conn: &Connection) -> i64 {
         .unwrap()
 }
 
-/// The update, part 1: the migration of ticket 02.
 fn migrate_to_phase_4(h: &Harness) {
     let mut conn = read(h);
     assert_eq!(user_version(&conn), schema::PHASE_3_VERSION);
     schema::migrate_to(&mut conn, schema::PHASE_4_VERSION).unwrap();
 }
 
-/// The update, part 2: `horch fleetd` of this branch, and its first pass.
 fn start_fleetd(h: &Harness, fleetds: &mut Fleetds) {
     fleetds.start(h, "fleetd");
     wait_passes(h, fleetds, 1);
 }
 
-/// The `at` of the heartbeat of fleetd: it changes at the end of each
-/// pass.
 fn heartbeat_at(h: &Harness) -> Option<String> {
     let path = fleet_root(h).join("run").join("heartbeat.json");
     let hb: Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
     hb["at"].as_str().map(str::to_string)
 }
 
-/// Wait for the end of `n` passes of fleetd after this call.
 fn wait_passes(h: &Harness, fleetds: &Fleetds, n: usize) {
     for _ in 0..n {
         let before = heartbeat_at(h);
@@ -365,7 +295,6 @@ fn wait_passes(h: &Harness, fleetds: &Fleetds, n: usize) {
     }
 }
 
-/// Each row of `sql`, its columns joined by ` `.
 fn rows(conn: &Connection, sql: &str) -> Vec<String> {
     let mut stmt = conn.prepare(sql).unwrap();
     let n = stmt.column_count();
@@ -387,7 +316,6 @@ fn rows(conn: &Connection, sql: &str) -> Vec<String> {
     .unwrap()
 }
 
-/// The rows of the run in flight, for the message of a failed assertion.
 fn seen(h: &Harness, fleetds: &Fleetds) -> String {
     let conn = read(h);
     let parts = [
@@ -442,7 +370,6 @@ fn scalar(conn: &Connection, sql: &str, key: &str) -> Option<String> {
     conn.query_row(sql, [key], |r| r.get(0)).optional().unwrap()
 }
 
-/// The landing state of the task branch `branch`.
 fn landing_state(conn: &Connection, branch: &str) -> Option<String> {
     scalar(
         conn,
@@ -455,9 +382,6 @@ fn count(conn: &Connection, sql: &str) -> i64 {
     conn.query_row(sql, [], |r| r.get(0)).unwrap()
 }
 
-/// The tools of the old finish: the git of the harness, `/bin/sh` for the
-/// check, and the evidence root of [`evidence_root`]. No pr step and no
-/// cleanup step runs, so no `gh`, no analyser and no custody job.
 fn old_tools(h: &Harness) -> Tools {
     Tools {
         git: Git::new(h.git_bin().expect("git").to_path_buf()),
@@ -473,9 +397,6 @@ fn old_tools(h: &Harness) -> Tools {
     }
 }
 
-/// The old path of the detached finish, in this process: the finish steps
-/// of [`WORKER`] as the old binary runs them, then the old
-/// `horch ledger done`. Each step must pass.
 fn old_finish_and_done(h: &Harness, fleetds: &Fleetds) {
     let mut store = Store::open(&db(h)).unwrap();
     let tools = old_tools(h);
@@ -488,13 +409,7 @@ fn old_finish_and_done(h: &Harness, fleetds: &Fleetds) {
     finish::complete(&mut store, WORKER, "landed by the old finish", None).unwrap();
 }
 
-/// The Phase 3 run of [`claimed_attempt_with_detached_finish_lands_once_after_the_update`]
-/// and of the crash test: run [`RUN`] of a project with its gates, and
-/// [`TASK`] in its claimed attempt with 1 commit in its tree and a detached
-/// finish that runs.
 struct Flight {
-    // fleetd stops first: the teardown of the harness fails on a live
-    // process.
     fleetds: Fleetds,
     h: Harness,
     agent: Stand,
@@ -545,7 +460,6 @@ impl Flight {
         }
     }
 
-    /// The update: the migration of ticket 02, then fleetd of this branch.
     fn update(&mut self) {
         migrate_to_phase_4(&self.h);
         let conn = read(&self.h);
@@ -568,9 +482,6 @@ impl Flight {
         seen(&self.h, &self.fleetds)
     }
 
-    /// While the detached finish runs, fleetd starts no landing of
-    /// [`TASK`]: its branch is `building`, no bundle exists, the run branch
-    /// does not move, and the task keeps its 1 attempt.
     fn assert_no_landing_while_the_finish_runs(&self) {
         wait_passes(&self.h, &self.fleetds, 3);
         let conn = read(&self.h);
@@ -595,18 +506,12 @@ impl Flight {
         assert_eq!(task.as_deref(), Some("running"), "{seen}");
     }
 
-    /// The detached finish ends by the old path: its steps land the task,
-    /// its run file goes, and its process ends. Then the worker runs the
-    /// old `horch ledger done`.
     fn finish_by_the_old_path(&mut self) {
         old_finish_and_done(&self.h, &self.fleetds);
         detach::clear(&self.run_file);
         self.finish.stop();
     }
 
-    /// After the old path, [`TASK`] is landed 1 time: the run branch holds
-    /// the 1 commit of the task, its task branch is `landed` through 1
-    /// bundle with no candidate commit, and 5 more passes change nothing.
     fn assert_landed_once(&self) {
         wait_for_or(
             "the task branch of T-1 to be landed",
@@ -626,8 +531,6 @@ impl Flight {
             Some("landed"),
             "{seen}"
         );
-        // T-871: a branch lands only through a bundle. Its work is already
-        // on the run branch, so the bundle lands it with no candidate commit.
         let bundles = format!(
             "SELECT COUNT(*) FROM bundles b JOIN bundle_members m ON m.bundle_id = b.id
              WHERE m.branch = '{TREE_BRANCH}' AND b.state = 'landed'"
@@ -678,14 +581,6 @@ fn claimed_attempt_with_detached_finish_lands_once_after_the_update() {
     f.assert_landed_once();
 }
 
-/// The fault points of the old land, after the update. Each one leaves the
-/// rows and the refs as a detached finish that dies there leaves them, and
-/// the stand-in of the finish ends with no result:
-/// - `BeforeLandingRow`: before the commit of the `landing` row of the tree.
-/// - `AfterLandingRow`: after that commit, and before the fast-forward of
-///   the run branch.
-/// - `AfterFastForward`: after the fast-forward, and before the commit of
-///   the `landed` row.
 #[derive(Clone, Copy, Debug)]
 enum Fault {
     BeforeLandingRow,
@@ -694,7 +589,6 @@ enum Fault {
 }
 
 impl Fault {
-    /// Leave the rows and refs of a finish that died at this point.
     fn leave(self, f: &Flight) {
         let conn = read(&f.h);
         if !matches!(self, Fault::BeforeLandingRow) {
@@ -720,10 +614,6 @@ impl Fault {
     }
 }
 
-/// The crash test: a detached finish dies at each fault point of its land
-/// after the update. fleetd starts no landing of the task, and the next
-/// finish by the old path completes the land 1 time. No tip and no work is
-/// lost.
 #[test]
 fn old_finish_that_dies_around_its_land_lands_once_after_the_update() {
     for fault in [
@@ -758,19 +648,11 @@ fn old_finish_that_dies_around_its_land_lands_once_after_the_update() {
             "{fault:?}: the work stays\n{seen}"
         );
         drop(conn);
-        // The next finish by the old path.
         f.finish_by_the_old_path();
         f.assert_landed_once();
     }
 }
 
-/// The rows of the Phase 3 ledger of [`each_run_gets_1_feature_row_and_each_task_branch_a_row`]:
-/// - `r1`, active on `fleet/zeta`: `T-1` done with its tree landed, `T-2`
-///   in its claimed attempt with an open tree, `T-3` with an old abandoned
-///   tree and a newer open tree.
-/// - `r2`, done on `fleet/eta`: `T-4` done with its tree landed.
-/// - `r3`, abandoned on `fleet/theta`: `T-5` with an abandoned tree.
-/// - `r4`, active with no run branch: `T-6` in the shared checkout.
 #[test]
 fn each_run_gets_1_feature_row_and_each_task_branch_a_row() {
     let h = world("p4-release-rows");
@@ -779,8 +661,6 @@ fn each_run_gets_1_feature_row_and_each_task_branch_a_row() {
         git_in(&h, &h.project, &["branch", branch, BASE]);
     }
     let agent = Stand::start();
-    // Each tree: (id, task, branch, run branch, status, state, owner). A
-    // landed tree's commit is on its run branch, as the old land left it.
     let trees = [
         (
             "wt-1",
@@ -876,7 +756,6 @@ fn each_run_gets_1_feature_row_and_each_task_branch_a_row() {
             },
         );
     }
-    // The older tree of T-3 is older by its time.
     conn.execute(
         "UPDATE worktrees SET created_at = '2020-01-01T00:00:00Z' WHERE worktree_id = 'wt-3-old'",
         [],
@@ -884,10 +763,7 @@ fn each_run_gets_1_feature_row_and_each_task_branch_a_row() {
     .unwrap();
     drop(conn);
 
-    // The backfill of Phase 4: 1 feature row for each run with a run
-    // branch, and none for r4 (Q5). The feature id is `F-<run rowid>`.
     migrate_to_phase_4(&h);
-    // The ideas of docs sync get features of their own, after F-0004.
     let features_sql = "SELECT id, name, branch, primary_branch, state FROM features
         WHERE id IN ('F-0001', 'F-0002', 'F-0003', 'F-0004') ORDER BY id";
     let backfilled = rows(&read(&h), features_sql);
@@ -903,8 +779,6 @@ fn each_run_gets_1_feature_row_and_each_task_branch_a_row() {
     start_fleetd(&h, &mut fleetds);
     wait_passes(&h, &fleetds, 3);
 
-    // After the update each run has 1 feature row: the release of Phase 6
-    // gives r4 its feature with no branch, and the rows of Phase 4 stay.
     let conn = read(&h);
     let seen = seen(&h, &fleetds);
     assert_eq!(
@@ -962,8 +836,6 @@ fn each_run_gets_1_feature_row_and_each_task_branch_a_row() {
         shared, 0,
         "a run with no run branch keeps the old path (Q5)\n{seen}"
     );
-    // No tip moved, and no work is lost: each tree that did not land keeps
-    // its commit, and each run branch holds the commit that landed on it.
     for (i, (_, _, branch, _, status, _, _)) in trees.into_iter().enumerate() {
         if status != "landed" {
             assert_eq!(tip(&h, branch), heads[i].1, "{branch}\n{seen}");
@@ -975,14 +847,10 @@ fn each_run_gets_1_feature_row_and_each_task_branch_a_row() {
     assert!(agent.alive(), "the agent of T-2 goes on\n{seen}");
 }
 
-/// The claimed task of [`each_run_gets_1_feature_row_and_each_task_branch_a_row`].
 const TASK_2: &str = "T-2";
 const ATTEMPT_2: &str = "T-2/A1";
 const WORKER_2: &str = "w-claim-2";
 
-/// The live claimed attempt `attempt` of `task` in run `run_id`: its
-/// worker `worker` with the agent `agent`, its lease and its task in
-/// `running`, as the claim of a Phase 3 binary left them.
 fn insert_claimed(
     conn: &Connection,
     run_id: &str,
@@ -1034,10 +902,6 @@ fn insert_claimed(
     .unwrap();
 }
 
-/// Q-C: a run that started before the update in a project with no
-/// `[gates]` gets the dispatch hold and 1 needs-you item. Its task in
-/// flight goes on, its waiting task gets no attempt, and no task is lost or
-/// cancelled.
 #[test]
 fn run_without_gates_holds_dispatch_and_loses_no_task() {
     let h = world("p4-release-no-gates");
@@ -1112,7 +976,10 @@ fn run_without_gates_holds_dispatch_and_loses_no_task() {
         "the task in flight goes on\n{seen}"
     );
     assert!(agent.alive(), "the agent goes on\n{seen}");
-    let o = h.horch(&["ledger", "status"]).output().unwrap();
+    let o = h
+        .horch(&["ledger", "status", "--run", SLUG])
+        .output()
+        .unwrap();
     assert!(
         text(&o).contains("missing fast gate"),
         "horch ledger status names the hold\n{}\n{seen}",

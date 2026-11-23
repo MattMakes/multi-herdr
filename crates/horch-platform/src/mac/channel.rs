@@ -1,7 +1,3 @@
-//! The concern channel for macOS: a Unix socket. `getpeereid` gives the
-//! peer user and `LOCAL_PEERPID` gives the peer process. On a client
-//! socket, `LOCAL_PEERPID` gives the process that made the listener.
-
 use std::io;
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
@@ -28,8 +24,6 @@ pub(crate) fn accept(listener: &Listener) -> io::Result<(Stream, Peer)> {
     Ok((stream, peer))
 }
 
-/// An error of the OS leaves the server process unknown: the fact is not
-/// given, never a guess.
 pub(crate) fn server_pid(stream: &Stream) -> Result<u32, NotSupported> {
     match peer_pid(stream) {
         Ok(pid) if pid != 0 => Ok(pid),

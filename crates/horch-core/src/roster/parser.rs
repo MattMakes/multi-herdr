@@ -1,12 +1,9 @@
-//! Reading one `---` frontmatter file into a [`Teammate`] or a [`Base`].
-
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 
 use super::{Base, Teammate};
 
-/// `*.md` in one directory as `(stem, path)`, sorted, skipping READMEs.
 pub(crate) fn md_files(dir: &Path) -> Result<Vec<(String, PathBuf)>> {
     let mut out = Vec::new();
     for entry in std::fs::read_dir(dir)
@@ -25,15 +22,26 @@ pub(crate) fn md_files(dir: &Path) -> Result<Vec<(String, PathBuf)>> {
     Ok(out)
 }
 
-/// Split `---\n<frontmatter>\n---\n<body>`.
 pub(crate) fn split_frontmatter(text: &str) -> Result<(&str, &str)> {
+    let nl = if text.starts_with("---\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
     let rest = text
-        .strip_prefix("---\n")
+        .strip_prefix(&format!("---{nl}"))
         .context("file does not start with a '---' frontmatter fence")?;
+    let fence = format!("{nl}---{nl}");
     let end = rest
-        .find("\n---\n")
+        .find(&fence)
         .context("frontmatter is not closed by a '---' line")?;
-    Ok((&rest[..end], &rest[end + 5..]))
+    Ok((&rest[..end], &rest[end + fence.len()..]))
+}
+
+fn body_text(body: &str) -> String {
+    body.replace("\r\n", "\n")
+        .trim_end_matches('\n')
+        .to_string()
 }
 
 pub(crate) fn parse_teammate(stem: &str, text: &str) -> Result<Teammate> {
@@ -45,7 +53,7 @@ pub(crate) fn parse_teammate(stem: &str, text: &str) -> Result<Teammate> {
             t.name
         );
     }
-    t.persona = body.trim_end_matches('\n').to_string();
+    t.persona = body_text(body);
     Ok(t)
 }
 
@@ -55,7 +63,7 @@ pub(crate) fn parse_base(stem: &str, text: &str) -> Result<Base> {
     if b.name != stem {
         bail!("name is '{}' but the filename says '{stem}'", b.name);
     }
-    b.body = body.trim_end_matches('\n').to_string();
+    b.body = body_text(body);
     Ok(b)
 }
 
@@ -105,6 +113,35 @@ mod tests {
             .map(|(stem, _)| stem)
             .collect();
         assert_eq!(stems, ["READMEs", "keep"]);
+    }
+
+    #[test]
+    fn split_frontmatter_accepts_crlf_fences() {
+        assert_eq!(
+            split_frontmatter("---\r\nname: a\r\n---\r\nbody\r\n").unwrap(),
+            ("name: a", "body\r\n")
+        );
+    }
+
+    #[test]
+    fn a_crlf_file_parses_to_the_same_teammate_and_base_as_its_lf_form() {
+        let teammates = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../teammates");
+        let lf = std::fs::read_to_string(teammates.join("opus.md"))
+            .unwrap()
+            .replace("\r\n", "\n");
+        let crlf = lf.replace('\n', "\r\n");
+        assert_eq!(
+            parse_teammate("opus", &crlf).unwrap(),
+            parse_teammate("opus", &lf).unwrap()
+        );
+        let lf = std::fs::read_to_string(teammates.join("_base/channel.md"))
+            .unwrap()
+            .replace("\r\n", "\n");
+        let crlf = lf.replace('\n', "\r\n");
+        assert_eq!(
+            parse_base("channel", &crlf).unwrap(),
+            parse_base("channel", &lf).unwrap()
+        );
     }
 
     #[test]

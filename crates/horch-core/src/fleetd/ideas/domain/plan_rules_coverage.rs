@@ -1,17 +1,8 @@
-//! The coverage rule of the plan validator: each requirement has a task and
-//! cites an approved assumption or an answer (FR-3, FM-1, FM-30, I3).
-
 use super::plan::Plan;
 use super::plan_validator::{PlanFacts, Problem};
 
-/// The rule name.
 pub const RULE: &str = "coverage";
 
-/// Each problem of this rule:
-/// - a task covers a requirement that the idea does not have;
-/// - a requirement has no task that covers it;
-/// - a requirement cites nothing, or cites an item that is not an approved
-///   assumption or an answer. A `--direct` idea cites its approved ticket.
 pub fn check(plan: &Plan, facts: &PlanFacts) -> Vec<Problem> {
     let mut out = Vec::new();
     let known = |id: &str| facts.requirements.iter().any(|r| r.id == id);

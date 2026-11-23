@@ -1,19 +1,3 @@
-//! `herdr-install` - installs the latest Herdr CLI.
-//!
-//! The Rust port of <https://herdr.dev/install.sh> and <https://herdr.dev/install.ps1>,
-//! as one binary that needs no shell, no curl, and no PowerShell. It reads the same
-//! release manifests as `herdr update`, so installs and updates agree on what
-//! "latest" means.
-//!
-//! Platform differences, all of them deliberate:
-//!   * macOS and Linux get one binary at `~/.local/bin/herdr` from the stable
-//!     channel.
-//!   * Windows gets the preview channel - the only one that publishes a Windows
-//!     asset while native Windows support is in beta - unpacked with its ConPTY
-//!     runtime into a versioned directory, with `current` and the PATH directory
-//!     pointed at it by junction so an update never overwrites a running
-//!     `herdr.exe`.
-
 mod manifest;
 mod net;
 mod place;
@@ -111,7 +95,6 @@ fn run() -> Result<()> {
     Ok(())
 }
 
-/// The requested channel, or the platform default; Windows has no stable build yet.
 fn resolve_channel(cli: &Cli, target: Target) -> Result<Channel> {
     let channel = cli
         .channel
@@ -146,7 +129,6 @@ fn install(
     }
 }
 
-/// Fetch the manifest and pick this platform's version and asset.
 fn resolve_release(cli: &Cli, channel: Channel, target: Target) -> Result<(String, Asset)> {
     let url = cli
         .manifest_url
@@ -176,13 +158,11 @@ fn download_verified(asset: &Asset) -> Result<Vec<u8>> {
             net::verify_digest(&bytes, expected)?;
             step("checksum verified");
         }
-        // Stable manifests publish no digests; TLS is the integrity guarantee there.
         None => step("no checksum published for this channel; skipping verification"),
     }
     Ok(bytes)
 }
 
-/// Where the binary will end up, for `--dry-run`.
 fn describe_destination(
     target: Target,
     install_dir: Option<&Path>,
@@ -225,7 +205,6 @@ fn win_layout(
     ))
 }
 
-/// Unpack into a versioned directory, then retarget the junctions at it.
 fn install_windows(
     bytes: &[u8],
     format: &Format,
@@ -250,8 +229,6 @@ fn install_windows(
     Ok(layout.visible_bin.join(place::exe_name()))
 }
 
-/// Unpack the package into a fresh staging directory beside the releases and check
-/// that it carries the executable.
 fn stage_package(
     bytes: &[u8],
     format: &Format,
@@ -270,7 +247,6 @@ fn stage_package(
     std::fs::create_dir_all(&staging)?;
 
     match format {
-        // The zip carries herdr.exe plus the app-local ConPTY runtime it needs.
         Format::Zip => place::extract_zip(bytes, &staging),
         Format::Binary => place::place_binary(bytes, &staging.join(place::exe_name())),
     }?;
@@ -284,8 +260,6 @@ fn stage_package(
     Ok(staging)
 }
 
-/// Run the freshly installed binary. A release that cannot report its own version
-/// is broken, and it is better to say so now than at first use.
 fn verify_installed(path: &Path) -> Result<()> {
     match start::command(path).arg("--version").output() {
         Ok(out) if out.status.success() => {
@@ -303,7 +277,6 @@ fn verify_installed(path: &Path) -> Result<()> {
     }
 }
 
-/// Make sure the install directory is reachable, and say what to do if not.
 fn report_path(dir: &Path) {
     if horch_platform::rest::USER_PATH_IN_REGISTRY {
         report_windows_path(dir);
@@ -313,7 +286,6 @@ fn report_path(dir: &Path) {
 }
 
 fn report_windows_path(dir: &Path) {
-    // macOS and Linux have no user PATH in a registry: nothing changes.
     let changed = horch_platform::rest::ensure_user_path(dir, &win::prepend_path_entry)
         .unwrap_or(Ok(false))
         .map_err(anyhow::Error::from);
@@ -432,7 +404,6 @@ mod tests {
         );
     }
 
-    /// A package without the executable must be refused and its staging removed.
     #[test]
     fn stage_package_refuses_a_package_without_the_executable() {
         let tmp = tempfile::tempdir().unwrap();
@@ -491,9 +462,6 @@ mod tests {
         );
     }
 
-    /// SR-7: the version check of the installed binary never gives it a
-    /// forbidden name of this process. The fake binary writes its
-    /// environment to a file, and the control name proves that it does.
     #[cfg(unix)]
     #[test]
     fn the_version_check_never_gives_a_forbidden_name() {

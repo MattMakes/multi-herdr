@@ -1,10 +1,3 @@
-//! Ticket 27 of fleetd-p6: the `idea-lead` persona, the interactive
-//! sub-orchestrator of 1 feature (`docs/specs/fleetd/design.md`, Architecture
-//! and roles, "Sub-orchestrator"; Ideas; Worker profiles and adapters, "Exec
-//! or interactive"). Its frontmatter and its briefing are static text, so
-//! these tests pin them: the roster loads it, it is interactive, its sandbox
-//! denies the operator path (SR-8, FM-32), and its briefing names each phase.
-
 use std::path::Path;
 
 use horch_core::execution::SessionMode;
@@ -16,8 +9,6 @@ use horch_core::roster::{Roster, Teammate};
 use horch_core::runtime::{MapEnv, RuntimeContext};
 use serde_json::Value;
 
-/// The fleet root beside the default ledger `~/.horch/ledger.sqlite3`
-/// (`runtime::paths`, `fleet_root`).
 const FLEET: &str = "~/.horch/fleet";
 
 fn roster() -> Roster {
@@ -30,14 +21,13 @@ fn strings(v: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// A launch environment with a temp home and stub Linux sandbox tools, so
-/// the builder runs on every host.
 fn launch_env(home: &Path) -> LaunchEnv {
     let bin = home.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     for tool in ["bwrap", "socat"] {
         let path = bin.join(tool);
         std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+        #[cfg(unix)]
         std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755))
             .unwrap();
     }
@@ -55,7 +45,6 @@ fn launch_env(home: &Path) -> LaunchEnv {
     LaunchEnv::from_context(&RuntimeContext::from_env(&env).unwrap())
 }
 
-/// The `--settings` that the launch of `t` gives Claude Code.
 fn launched_settings(env: &LaunchEnv, t: &Teammate) -> Value {
     let cmd =
         launch::command_with_skills_in(env, t, Session::Unmanaged, "PROMPT", None, None).unwrap();
@@ -78,7 +67,6 @@ fn idea_lead_loads_from_the_roster() {
     assert_eq!(t.base.as_deref(), Some("fleet-idea-lead"));
     assert_eq!(t.model.as_deref(), Some("opus"));
     assert_eq!(t.effort.as_deref(), Some("medium"));
-    // A fallback launches without the sandbox block, so it names none.
     assert!(t.fallbacks.is_empty(), "{:?}", t.fallbacks);
     assert!(t.no_fallback_reason.is_some());
     assert!(
@@ -117,7 +105,7 @@ fn idea_lead_sandbox_denies_the_operator_path() {
     let fs = &own["filesystem"];
     assert_eq!(
         strings(&fs["allowWrite"]),
-        [ideas.clone()],
+        std::slice::from_ref(&ideas),
         "its idea folders only"
     );
     assert!(
@@ -129,8 +117,6 @@ fn idea_lead_sandbox_denies_the_operator_path() {
         "no write into run/: the request folder and the channel socket"
     );
 
-    // FM-32: the profile denies the approve command and the write of
-    // approval.json.
     assert!(
         t.disallowed_tools
             .iter()
@@ -146,7 +132,6 @@ fn idea_lead_sandbox_denies_the_operator_path() {
         t.disallowed_tools
     );
 
-    // The launch keeps each denial, and opens no socket under run/.
     let home = tempfile::tempdir().unwrap();
     let env = launch_env(home.path());
     let settings = launched_settings(&env, t);
@@ -180,35 +165,29 @@ fn idea_lead_briefing_names_each_phase() {
         assert!(p.contains(&format!("== Phase: {phase} ==")), "{phase}");
     }
     for needle in [
-        // clarifying
         "horch idea note",
         "1 question at a time",
         "assumptions.md",
         "feature: <name>",
         "[open]",
-        // specifying
         "spec.md",
         "requirements.yaml",
         "A<n>",
         "Q<n>",
-        // ticketing
         "plan.yaml",
         "docs/specs/ticket-format.md",
         "horch idea show <id> --in-flight",
         "feature id F-NNNN",
-        // supervising
         "horch idea note <id> --question",
         "replan-<task key>.yaml",
         "HIGH",
         "--dismiss",
-        // each phase
         "Answer the open questions of the feature before you go on with your phase.",
         "Never run horch idea approve",
         "approval.json",
     ] {
         assert!(p.contains(needle), "the briefing does not name {needle:?}");
     }
-    // Project facts reach each sub-orchestrator as they reach each worker.
     let worker = r.require("opus").unwrap();
     let w = prompts::worker_prompt(&r, worker, "w-1", "x", &SessionMode::Fresh(None)).unwrap();
     assert!(w.contains("Project facts:"));

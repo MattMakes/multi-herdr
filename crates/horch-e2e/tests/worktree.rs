@@ -1,5 +1,3 @@
-//! ARC-31 end-to-end tests for worker worktree landing and the done guard.
-
 #![cfg(unix)]
 
 use std::path::Path;
@@ -80,6 +78,11 @@ fn prepare_done(h: &mut Harness) -> String {
     std::fs::write(mailbox.join("orchestrator.id"), &pane).unwrap();
     h.set("HORCH_WORKSPACE_ID", WORKSPACE);
     h.set("HERDR_PANE_ID", pane.clone());
+    h.set(
+        "HORCH_LEDGER_DB",
+        h.state.join("ledger.sqlite3").to_string_lossy(),
+    );
+    h.serve_fleetd();
     SessionLedger::for_project(&h.state, &h.project.to_string_lossy())
         .insert(Record {
             record_id: RECORD.into(),
@@ -142,8 +145,6 @@ fn arc_31_e2e_done_refuses_then_unlanded_reports() {
     assert!(calls.contains("wt/sonnet-1-unit"), "{calls}");
 }
 
-/// FR-7: the pane gets only the mail line, and the report waits in the
-/// orchestrator mail. The texts of that mail, once the line was typed.
 fn reported(h: &Harness) -> String {
     let calls = serde_json::to_string(&h.calls_of("herdr")).unwrap();
     assert!(
@@ -159,7 +160,6 @@ fn reported(h: &Harness) -> String {
         .join("\n")
 }
 
-/// A harness with its own task ledger, for the worktrees the ledger records.
 fn ledger_world(name: &str) -> Harness {
     let mut h = Harness::new(name).with_git();
     let db = h.root.join("ledger.sqlite3");
@@ -169,7 +169,6 @@ fn ledger_world(name: &str) -> Harness {
     h
 }
 
-/// A worktree made by raw `git worktree add`: no claim, no ledger row.
 fn raw_worktree(h: &Harness, name: &str) -> std::path::PathBuf {
     let path = h.project.join(".worktrees").join(name);
     git(
@@ -187,9 +186,6 @@ fn raw_worktree(h: &Harness, name: &str) -> std::path::PathBuf {
     path
 }
 
-/// P27: a worktree whose folder was deleted used to fail the whole scan, so
-/// `horch done` silently reported nothing. The scan now names it and reports
-/// the rest.
 #[test]
 fn arc_31_e2e_list_and_done_survive_a_deleted_worktree_folder() {
     let mut h = worker_world("arc31-deleted-wt");
@@ -218,8 +214,6 @@ fn arc_31_e2e_list_and_done_survive_a_deleted_worktree_folder() {
     assert!(!calls.contains(".worktrees/gone"), "{calls}");
 }
 
-/// P30: the operator's own checkout outside `.worktrees/` is never a fleet
-/// worktree, however dirty.
 #[test]
 fn arc_31_e2e_list_ignores_the_operators_own_worktree() {
     let h = worker_world("arc31-operator-wt");
@@ -249,8 +243,6 @@ fn arc_31_e2e_list_ignores_the_operators_own_worktree() {
     assert!(stderr(&listed).is_empty(), "{}", stderr(&listed));
 }
 
-/// A task-ledger worktree is in the ledger's table, not the claim registry:
-/// without it, every worker's `done` lists its peers' in-flight work.
 #[test]
 fn arc_31_e2e_a_ledger_worktree_is_not_unregistered() {
     let h = ledger_world("arc31-ledger-wt");
@@ -259,41 +251,22 @@ fn arc_31_e2e_a_ledger_worktree_is_not_unregistered() {
     git(&h, &h.project, &["add", "tickets/01-t.md"]);
     git(&h, &h.project, &["commit", "--quiet", "-m", "a ticket"]);
 
-    let mut run = h.horch(&["ledger", "run", "new", "gamma"]);
-    let o = run.output().unwrap();
-    assert!(o.status.success(), "{}", stderr(&o));
-    let mut add = h.horch(&[
-        "ledger",
-        "add",
-        "--file",
-        "tickets/01-t.md",
-        "--primary",
-        "sonnet",
-    ]);
-    let o = add.output().unwrap();
-    assert!(o.status.success(), "{}", stderr(&o));
-    let worker = horch_e2e::bind::bind(&h, "sonnet", None).worker_id;
-
-    let as_worker = |args: &[&str]| {
-        let mut command = h.horch(args);
-        command.env("HORCH_WORKER_ID", &worker);
-        let o = command.output().unwrap();
-        assert!(
-            o.status.success(),
-            "horch {}: {}",
-            args.join(" "),
-            stderr(&o)
-        );
-        stdout(&o)
-    };
-    let made = as_worker(&["ledger", "worktree", "new", "feature"]);
-    let path = made
-        .lines()
-        .find_map(|line| line.strip_prefix("path: "))
-        .unwrap_or_else(|| panic!("no worktree path: {made}"))
-        .to_string();
+    let run = horch_e2e::ledger_seed::seed_run(&h, "gamma", None, "w1:p1");
+    horch_e2e::ledger_seed::seed_task(&h, &run, &h.project.join("tickets/01-t.md"), "sonnet");
+    h.serve_fleetd();
+    let tree = horch_e2e::bind::bind(&h, "sonnet", None)
+        .worktree
+        .expect("a worktree task binds a worktree");
+    let path = tree.path;
     let worktree = std::path::PathBuf::from(&path);
-    // Work the ledger owns is ahead of main, so the scan would report it.
+    horch_e2e::harness::wait_for("the tree of the bind to leave reserved", || {
+        let o = h.run(&["worktrees", "--json"]);
+        let v: serde_json::Value = serde_json::from_slice(&o.stdout).ok()?;
+        let rows = v["worktrees"].as_array().cloned().unwrap_or_default();
+        rows.iter()
+            .any(|r| r["path"].as_str() == Some(path.as_str()) && r["state"] != "reserved")
+            .then_some(())
+    });
     commit_work(&h, &worktree);
 
     let listed = h.run(&["worktree", "list"]);

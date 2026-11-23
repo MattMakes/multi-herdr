@@ -1,22 +1,3 @@
-//! The executor of the `bundle_build` job (ticket 27).
-//!
-//! `docs/specs/fleetd/design.md`, "The bundle", "The kinds of job" and
-//! "fleetd owns the candidate refs". The job reads its bundle row and its
-//! members, builds the candidate with the git gateway of ticket 23 (1 merge
-//! commit for each member, in queue order, Q15), writes
-//! `refs/horch/bundle/<id>` only when it does not exist, and reads it back.
-//! It gives the candidate tip, or the member that conflicts with its files,
-//! in the data of its result. It writes no ledger row: the next pass reads
-//! the result.
-//!
-//! `bundle_build` is an effect job, and a run is safe to repeat: the
-//! candidate tip depends only on the input key, so a ref that an earlier
-//! run wrote with the same tip passes, and a ref at another tip fails. The
-//! job is a git writer of its repository, so it holds the git writer while
-//! it writes the ref (Phase 3 Q12). Each git call follows the fleetd git
-//! rule (Q26): the platform sandbox, and a stop when the project config
-//! sets a key that starts a program, such as a merge driver.
-
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
@@ -36,29 +17,25 @@ use crate::fleetd::worktree_custody::adapters::git::{self as custody_git, CliWor
 use crate::runtime::bins::{git_bin, BinOverrides};
 use crate::runtime::context::ProcessEnv;
 
-/// The state of a bundle that a build serves.
 const BUILDING: &str = "building";
 
-/// What a run of the job built: the data of its result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Build {
-    /// The candidate ref names the candidate tip.
     Candidate {
         candidate_ref: String,
         candidate_tip: String,
     },
-    /// The merge of `member` conflicts on `files`. No ref was written.
-    Conflict { member: String, files: Vec<String> },
+    Conflict {
+        member: String,
+        files: Vec<String>,
+    },
 }
 
-/// The candidate ref of the bundle `bundle`.
 pub fn candidate_ref(bundle: i64) -> String {
     format!("refs/horch/bundle/{bundle}")
 }
 
-/// The input key of a run: the base tip and the tip of each member, in
-/// queue order, with 1 space between 2 tips.
 pub fn input_key(base_tip: &str, member_tips: &[&str]) -> String {
     std::iter::once(base_tip)
         .chain(member_tips.iter().copied())
@@ -66,15 +43,12 @@ pub fn input_key(base_tip: &str, member_tips: &[&str]) -> String {
         .join(" ")
 }
 
-/// The base tip and the member tips of the input key `key`.
 fn read_key(key: &str) -> Option<(&str, Vec<&str>)> {
     let mut tips = key.split(' ');
     let base = tips.next().filter(|t| !t.is_empty())?;
     Some((base, tips.collect()))
 }
 
-/// Runs the job `row`. The subject of the row is the bundle id, and its
-/// repository is the repository of the feature.
 pub fn run(conn: &Connection, row: &JobRow) -> Result<Ran> {
     let Ok(id) = row.subject.parse::<i64>() else {
         return Ok(failed(format!("'{}' is not a bundle id", row.subject)));
@@ -113,9 +87,6 @@ pub fn run(conn: &Connection, row: &JobRow) -> Result<Ran> {
         .unwrap_or_else(|e| failed(format!("bundle {id}: {e:#}"))))
 }
 
-/// The members of the bundle, each with its tip of the input key `key`. An
-/// error text when the key does not hold the base tip `base` and 1 tip for
-/// each name of `names`.
 fn members(key: &str, base: &str, names: &[String]) -> Result<Vec<Member>, String> {
     let (key_base, tips) =
         read_key(key).ok_or_else(|| format!("the input key '{key}' has no base tip"))?;
@@ -135,8 +106,6 @@ fn members(key: &str, base: &str, names: &[String]) -> Result<Vec<Member>, Strin
         .collect())
 }
 
-/// Build the candidate of the bundle `id` on `base`, write its ref
-/// create-only, and read the ref back.
 fn build(
     gw: &dyn IntegrationGitGateway,
     repo: &Path,
@@ -191,7 +160,6 @@ fn ran(passed: bool, verdict: bool, text: String, data: Build) -> Ran {
     }
 }
 
-/// A run that ends `failed` with no verdict and no data.
 fn failed(text: String) -> Ran {
     Outcome {
         passed: false,

@@ -77,9 +77,6 @@ class KitError(ValueError):
     """A kit problem: not JSON, an invalid kit, an unknown preset, no sounded role."""
 
 
-# ---------------------------------------------------------------- helpers
-
-
 def _number(val: Any) -> bool:
     return isinstance(val, numbers.Real) and not isinstance(val, bool) and math.isfinite(float(val))
 
@@ -113,9 +110,6 @@ def _hark_version() -> str:
     import hark
 
     return str(getattr(hark, "__version__", "0.1.0"))
-
-
-# ---------------------------------------------------------------- load and validate
 
 
 def load(kit: Any) -> dict:
@@ -344,9 +338,6 @@ def _stop_down_problems(stop: Any, role_map: dict) -> list[str]:
     return acc
 
 
-# ---------------------------------------------------------------- plan and keys
-
-
 def _file_names(rid: str, rspec: dict) -> list[tuple[str, Any]]:
     stem = rid.replace(".", "-")
     count = rspec.get("takes", 1) if _integer(rspec.get("takes", 1)) else 1
@@ -400,9 +391,6 @@ def take_key(take: dict, sr: int = SR) -> str:
     return digest(doc)
 
 
-# ---------------------------------------------------------------- one take
-
-
 def _render_once(tk: dict, seed: int, entry: dict) -> tuple[np.ndarray, dict, dict]:
     tweaks = tk.get("edits") or {}
     wave, info = bank.render(tk["sound"], seed=seed, dur=tweaks.get("dur"), apex=tweaks.get("apex"),
@@ -436,9 +424,6 @@ def render_take(take: dict) -> tuple[np.ndarray, dict, dict, int]:
             return wave, audit, info, seed
         first = first or (wave, audit, info, seed)
     return first
-
-
-# ---------------------------------------------------------------- render and the lock
 
 
 def _sha1_file(fpath: Path) -> str:
@@ -595,9 +580,6 @@ def _take_record(tk: dict, rspec: dict, old: dict, takes_dir: Path, rate: int, f
     return take_rec
 
 
-# ---------------------------------------------------------------- check
-
-
 def _role_notes(rid: str, rspec: dict | None) -> list[str]:
     if rspec is None:
         return []
@@ -715,9 +697,6 @@ def _audit_roles(doc: dict, acc: str | os.PathLike | None, logger: Callable | No
     return role_map
 
 
-# ---------------------------------------------------------------- audition
-
-
 def audition_dir(doc: dict) -> Path:
     """The default takes folder of an audition under ``HARK_HOME``."""
     home = os.environ.get("HARK_HOME")
@@ -799,9 +778,6 @@ def _write_audition(out_wav: str, mix: np.ndarray, rate: int, listing: list[dict
     return {"summary": summary, "file": file, "index": str(txt).replace(os.sep, "/")}
 
 
-# ---------------------------------------------------------------- presets and init
-
-
 def presets() -> list[str]:
     """The preset names: the sorted stems of the ``.json`` files in the presets folder."""
     return sorted(pv.stem for pv in PRESETS_DIR.glob("*.json"))
@@ -826,9 +802,6 @@ def init(preset: str = "calm", out: str = "audio/kit.json", force: bool = False)
     off = [rkey for rkey, rs in doc["roles"].items() if rs is None]
     summary = f"wrote {out}: preset {preset}, {len(on)} roles sounded, {len(off)} off ({', '.join(off)})"
     return {"summary": summary, "file": str(out).replace(os.sep, "/"), "kit": doc}
-
-
-# ---------------------------------------------------------------- mix helpers (section 6)
 
 
 def _at48(wave: np.ndarray, rate: int) -> np.ndarray:
@@ -982,9 +955,6 @@ def stereo_width(y: np.ndarray, target: float, tol: float = WIDTH_TOL) -> tuple[
     info = {"target": round(goal, 3), "before": round(c0, 3), "measured": round(measured, 3),
             "ok": abs(measured - goal) <= tol}
     return buf, info
-
-
-# ---------------------------------------------------------------- CLI
 
 
 def _emit(result: dict, args: argparse.Namespace, text: str) -> None:

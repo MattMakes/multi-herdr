@@ -1,14 +1,3 @@
-//! The dispatcher loop: each pass moves each idea to its next state when
-//! its files validate, and the ideas of 1 feature are planned 1 at a time
-//! (docs/specs/fleetd/design.md, "Ideas: the dispatcher and
-//! sub-orchestrators": The idea state machine, How many sub-orchestrators;
-//! FR-2, FM-8; docs/tickets/fleetd-p6/26-dispatcher.md).
-//!
-//! Each test makes its own temporary ledger, idea folders and git
-//! repository. No test touches this repository or the live ledger, no test
-//! reads the clock of the machine, and no test starts a process other than
-//! git.
-
 #![cfg(unix)]
 
 use std::os::unix::fs::PermissionsExt;
@@ -41,7 +30,6 @@ use horch_platform::channel::User;
 
 const STAMP: &str = "2026-01-01T00:00:00Z";
 
-/// A ticket in format C1.
 const TICKET: &str = "# 01: Add backoff
 
 <!-- horch-ticket: 1 -->
@@ -93,8 +81,6 @@ fn profile(name: &str, provider: &str, model: &str, fallback: &str) -> RosterPro
     }
 }
 
-// ─── the world of a test ────────────────────────────────────────────────
-
 struct World {
     _dir: tempfile::TempDir,
     root: PathBuf,
@@ -112,7 +98,7 @@ struct World {
 
 fn world() -> World {
     let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().canonicalize().unwrap();
+    let root = horch_platform::path::canonicalize(dir.path()).unwrap();
     let repo = root.join("repo");
     std::fs::create_dir(&repo).unwrap();
     git(&repo, &["init", "-q", "-b", "main"]);
@@ -155,7 +141,6 @@ impl World {
         self.ideas().join(idea)
     }
 
-    /// A new `open` feature with its internal run, and no name.
     fn feature(&mut self) -> String {
         let project = Project {
             root: &self.repo,
@@ -171,7 +156,6 @@ impl World {
             .unwrap()
     }
 
-    /// A new idea of `feature` in `captured`, with its folder.
     fn idea(&mut self, feature: &str) -> String {
         self.ideas_added += 1;
         let id = format!("I-{:04}", self.ideas_added);
@@ -196,7 +180,6 @@ impl World {
         id
     }
 
-    /// Write the file `name` of the folder of `idea`, mode 0600.
     fn write(&self, idea: &str, name: &str, text: &str) {
         let path = self.folder(idea).join(name);
         std::fs::write(&path, text).unwrap();
@@ -207,7 +190,6 @@ impl World {
         let _ = std::fs::remove_file(self.folder(idea).join(name));
     }
 
-    /// A valid assumptions.md of `idea` that names the feature `name`.
     fn assumptions(&self, idea: &str, name: &str) {
         let text = format!(
             "# {idea} assumptions\n\nfeature: {name}\n1. [confirmed] The client retries a failed request.\n"
@@ -215,7 +197,6 @@ impl World {
         self.write(idea, "assumptions.md", &text);
     }
 
-    /// spec.md and requirements.yaml of `idea`; R1 cites `cite`.
     fn spec(&self, idea: &str, cite: &str) {
         self.write(idea, "spec.md", SPEC);
         let reqs = format!(
@@ -224,8 +205,6 @@ impl World {
         self.write(idea, "requirements.yaml", &reqs);
     }
 
-    /// The ticket and plan.yaml of `idea` of `feature` on `branch`; the
-    /// task runs the check `check`, or none when it is empty.
     fn plan(&self, idea: &str, feature: &str, branch: &str, check: &str) {
         self.write(idea, "tickets/01-a.md", TICKET);
         let acceptance = if check.is_empty() {
@@ -246,9 +225,6 @@ impl World {
         )
     }
 
-    /// `horch idea add --direct` of [`TICKET`] in a new feature: the request
-    /// commits the idea in `captured`. The effects after the commit do not
-    /// run here: [`World::effects`] runs them.
     fn direct(&mut self) -> DirectAdded {
         self.ideas_added += 1;
         let gateway = self.gateway();
@@ -276,16 +252,12 @@ impl World {
             .unwrap()
     }
 
-    /// The effects of the request of `added` after its commit: its files
-    /// and the branch of its feature.
     fn effects(&self, added: &DirectAdded) {
         added
             .write(&self.ideas(), self.owner.clone(), &self.gateway())
             .unwrap();
     }
 
-    /// Whether `idea` was in `state` at any time: the ledger has an event
-    /// of a move to it.
     fn was(&self, idea: &str, state: &str) -> bool {
         let n: i64 = self
             .store
@@ -300,7 +272,6 @@ impl World {
         n > 0
     }
 
-    /// 1 pass of the dispatcher.
     fn pass(&mut self) -> PassReport {
         let ideas = self.ideas();
         let gateway = self.gateway();
@@ -341,8 +312,6 @@ impl World {
             .state
     }
 
-    /// The operator approves `idea` (ticket 18 owns the command; the test
-    /// moves the idea through the door).
     fn approve(&mut self, idea: &str) {
         self.store
             .immediate(|tx| {
@@ -374,7 +343,6 @@ impl World {
             .phase_attempts
     }
 
-    /// The number of ideas of `feature` in a planning state.
     fn planning(&self, feature: &str) -> i64 {
         let sql = format!(
             "SELECT COUNT(*) FROM ideas WHERE feature_id = ?1 AND state IN ({})",
@@ -390,8 +358,6 @@ impl World {
             .unwrap()
     }
 }
-
-// ─── the tests ──────────────────────────────────────────────────────────
 
 #[test]
 fn second_idea_of_a_feature_waits_in_captured_until_the_first_leaves_ticketing() {
@@ -419,15 +385,10 @@ fn second_idea_of_a_feature_waits_in_captured_until_the_first_leaves_ticketing()
     w.plan(&first, &f, "fleet/retry-sync", "cargo test");
     w.pass();
     assert_eq!(w.state(&first), "in_progress");
-    // The first idea left ticketing in this pass; the second moves on the
-    // next pass.
     w.pass();
     assert_eq!(w.state(&second), "clarifying");
 }
 
-/// The pass writes idea.md only for a `captured` idea. An idea committed
-/// after that write in a pass stays in `captured` until its idea.md exists,
-/// so it never reaches its sub-orchestrator with no idea.md (FM-8).
 #[test]
 fn an_idea_never_goes_to_clarifying_when_a_pass_runs_before_its_idea_md() {
     let mut w = world();
@@ -450,7 +411,6 @@ fn a_younger_idea_never_passes_an_older_captured_idea_of_its_feature() {
     let f = w.feature();
     let older = w.idea(&f);
     let younger = w.idea(&f);
-    // A budget of 1 row: the cursor gives the younger idea its turn too.
     w.budget = 1;
     for _ in 0..4 {
         w.pass();
@@ -491,9 +451,6 @@ fn a_direct_idea_moves_from_captured_to_ticketing() {
     assert_eq!(w.state(&idea), "ticketing");
 }
 
-/// A pass between the commit of a `--direct` request and its effects: the
-/// idea waits in `captured`, then goes to `ticketing` and gets its planned
-/// tasks. It is never in `clarifying` (ticket 58 of fleetd-build).
 #[test]
 fn a_direct_idea_never_goes_to_clarifying_when_a_pass_runs_before_its_files() {
     let mut w = world();
@@ -511,15 +468,11 @@ fn a_direct_idea_never_goes_to_clarifying_when_a_pass_runs_before_its_files() {
     assert!(!w.was(&idea, "clarifying"), "{idea} was in clarifying");
 }
 
-/// fleetd stops after the commit of a `--direct` request and before its
-/// effects. A new fleetd has a new dispatcher: its passes leave the idea in
-/// `captured` until the effects run again, then move it to `ticketing`.
 #[test]
 fn a_direct_idea_reaches_ticketing_after_a_stop_before_its_files() {
     let mut w = world();
     let added = w.direct();
     let idea = added.idea.file.id.clone();
-    // The stop: the dispatcher of the old fleetd is gone.
     w.dispatcher = Dispatcher::new();
     w.pass();
     w.pass();
@@ -539,11 +492,9 @@ fn clarifying_moves_to_awaiting_approval_only_with_valid_assumptions() {
     w.pass();
     assert_eq!(w.state(&idea), "clarifying");
 
-    // No assumptions.md.
     w.pass();
     assert_eq!(w.state(&idea), "clarifying");
 
-    // An item left [open].
     w.write(
         &idea,
         "assumptions.md",
@@ -553,7 +504,6 @@ fn clarifying_moves_to_awaiting_approval_only_with_valid_assumptions() {
     assert_eq!(w.state(&idea), "clarifying");
     assert_eq!(w.branch(&f), None);
 
-    // A link in place of the file is not read (SR-6).
     w.remove(&idea, "assumptions.md");
     let elsewhere = w.root.join("elsewhere.md");
     std::fs::write(
@@ -565,7 +515,6 @@ fn clarifying_moves_to_awaiting_approval_only_with_valid_assumptions() {
     w.pass();
     assert_eq!(w.state(&idea), "clarifying");
 
-    // A feature name that is not kebab-case is refused, and the idea stays.
     w.remove(&idea, "assumptions.md");
     w.write(
         &idea,
@@ -592,16 +541,13 @@ fn specifying_moves_to_ticketing_only_with_cited_requirements() {
     w.approve(&idea);
     assert_eq!(w.state(&idea), "specifying");
 
-    // No spec.md and no requirements.yaml.
     w.pass();
     assert_eq!(w.state(&idea), "specifying");
 
-    // R1 cites A9, which is not an assumption or an answer.
     w.spec(&idea, "A9");
     w.pass();
     assert_eq!(w.state(&idea), "specifying");
 
-    // spec.md with no `## ` heading.
     w.spec(&idea, "A1");
     w.write(&idea, "spec.md", "# Spec\n\nNo section.\n");
     w.pass();
@@ -625,11 +571,9 @@ fn a_refused_plan_is_validated_again_only_when_a_file_changes() {
     w.pass();
     assert_eq!(w.state(&idea), "ticketing");
 
-    // No plan.yaml: nothing to validate.
     w.pass();
     assert_eq!(w.phase_attempts(&idea), 0);
 
-    // A task with no check is refused 1 time, not on each pass.
     w.plan(&idea, &f, "fleet/retry-sync", "");
     w.pass();
     w.pass();
@@ -642,8 +586,6 @@ fn a_refused_plan_is_validated_again_only_when_a_file_changes() {
     assert_eq!(w.state(&idea), "in_progress");
 }
 
-/// A small fixed-seed generator: the same seed gives the same sequence on
-/// each host.
 struct Rng(u64);
 
 impl Rng {

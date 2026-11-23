@@ -1,13 +1,7 @@
-//! `horch ledger add-map --dry-run` runs the plan validator on a `MAP.md`
-//! or a `plan.yaml` (FR-3, FM-1). The requirements of a map are the ids that
-//! the tables of its `Spec:` file define, by the rule of
-//! `scripts/check-req-coverage.sh`.
-
 use std::path::{Path, PathBuf};
 
 use horch_core::taskledger::map;
 
-/// A ticket in format C1 that covers `covers` (requirement lines).
 fn ticket(title: &str, covers: &str) -> String {
     format!(
         "# {title}\n\n<!-- horch-ticket: 1 -->\n\
@@ -23,8 +17,6 @@ fn ticket(title: &str, covers: &str) -> String {
     )
 }
 
-/// A project in `dir` with the spec `docs/specs/xr.md`, the tickets and the
-/// map `tickets/MAP.md`. Each ticket is `(file stem, text)`.
 fn project(dir: &Path, rows: &str, tickets: &[(&str, String)]) -> PathBuf {
     let specs = dir.join("docs/specs");
     std::fs::create_dir_all(&specs).unwrap();
@@ -114,7 +106,6 @@ fn map_with_a_cycle_is_refused() {
     );
 }
 
-/// A plan.yaml of 2 tasks; `a_after` is the `after:` list of task `a`.
 fn plan_yaml(dir: &Path, a_after: &str, a_kind: &str) -> PathBuf {
     let path = dir.join("plan.yaml");
     std::fs::write(
@@ -160,9 +151,6 @@ fn plan_yaml_runs_the_same_validator() {
     );
 }
 
-/// The ids that the script defines in the fixture spec: it runs in a copy of
-/// the repository layout, with a `cargo` that lists no test, so each id that
-/// it defines is printed as `MISSING <id>:`.
 #[cfg(unix)]
 fn script_ids(spec: &str) -> Vec<String> {
     use std::os::unix::fs::PermissionsExt;

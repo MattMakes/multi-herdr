@@ -1,9 +1,3 @@
-//! `horch smoke` - the port of the `horch1-smoke` and `herdr-fleet-smoke` recipes.
-//!
-//! These are the acceptance tests for the machinery. They spend no LLM tokens and
-//! clean up after themselves on success, leaving the scratch workspace open for
-//! inspection on failure.
-
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
@@ -17,9 +11,9 @@ use horch_core::execution::TilingMode;
 use horch_core::messaging::delivery::TypedLine;
 use horch_core::messaging::mailbox::Mailbox;
 use horch_core::runtime::RuntimeContext;
-use horch_core::workspace::herdr::Herdr;
 use horch_core::workspace::model::{Direction, Layout, NewWorkspace, Rect};
 use horch_core::workspace::paneshell::PaneShell;
+use horch_core::workspace::PaneHost;
 
 use super::doctor;
 use super::spawn::{spawn, SpawnArgs};
@@ -44,7 +38,6 @@ pub fn run(ctx: &RuntimeContext, command: SmokeCommand) -> Result<ExitCode> {
     }
 }
 
-/// Poll `check` every `interval` until it returns true or `attempts` run out.
 fn poll(attempts: u32, interval: Duration, mut check: impl FnMut() -> bool) -> bool {
     for _ in 0..attempts {
         if check() {
@@ -55,20 +48,10 @@ fn poll(attempts: u32, interval: Duration, mut check: impl FnMut() -> bool) -> b
     false
 }
 
-/// A shell command that prints `SMOKE_TEST_42` only when the pane's shell actually
-/// evaluates it.
-///
-/// Matching the arithmetic *result* rather than the sent text is the point:
-/// matching the text alone would false-pass on an input line that was pasted but
-/// never submitted, which is exactly the failure `horch tell` works around.
 fn arithmetic_echo(shell: PaneShell) -> TypedLine {
     TypedLine::smoke_echo(shell)
 }
 
-/// `horch <args>` for a smoke pane, with this process's skill store as
-/// `HORCH_DATA_DIR` and its state folder as `HORCH_STATE_DIR`, as every pane
-/// horch starts has. The pane keeps its shell: the checks type more lines
-/// into it after `horch register` ends.
 fn horch_line(ctx: &RuntimeContext, shell: PaneShell, exe: &Path, args: &[&str]) -> String {
     let data_root = ctx.paths.data_root.to_string_lossy();
     let state_root = ctx.paths.state_root.to_string_lossy();
@@ -79,7 +62,6 @@ fn horch_line(ctx: &RuntimeContext, shell: PaneShell, exe: &Path, args: &[&str])
     shell.command_line_keep_shell(exe, &env, args)
 }
 
-/// A failed smoke check: the lines to print on stderr.
 struct Failure(Vec<String>);
 
 impl Failure {
@@ -87,7 +69,6 @@ impl Failure {
         Self(vec![text])
     }
 
-    /// A headline, one line per complaint, and where the workspace was left.
     fn listed(workspace_id: &str, what: &str, complaints: &[String]) -> Self {
         let mut lines = vec![format!("FAIL: {what}")];
         lines.extend(complaints.iter().map(|c| format!("  - {c}")));
@@ -98,7 +79,6 @@ impl Failure {
     }
 }
 
-/// Why a smoke step stopped: the check failed, or the machinery broke.
 enum Smoke {
     Failed(Failure),
     Error(anyhow::Error),
@@ -118,7 +98,6 @@ impl From<std::io::Error> for Smoke {
 
 type Step<T = ()> = Result<T, Smoke>;
 
-/// Print a failed check, and turn the step into the exit code.
 fn finish(step: Step) -> Result<ExitCode> {
     match step {
         Ok(()) => Ok(ExitCode::SUCCESS),
@@ -130,7 +109,6 @@ fn finish(step: Step) -> Result<ExitCode> {
     }
 }
 
-/// Stop the step with `failure` unless `ok`.
 fn ensure(ok: bool, failure: Failure) -> Step {
     if ok {
         Ok(())
@@ -139,18 +117,13 @@ fn ensure(ok: bool, failure: Failure) -> Step {
     }
 }
 
-/// Stop the step with a listed failure unless `ok`.
 fn check(ok: bool, workspace_id: &str, what: &str, complaints: &[String]) -> Step {
     ensure(ok, Failure::listed(workspace_id, what, complaints))
 }
 
-/// A scratch workspace with its own state folder and project, so a check never
-/// touches a real project ledger.
 struct Scratch {
-    /// This check's own context: the scratch state and project, and the
-    /// scratch workspace. The process environment is left alone.
     ctx: RuntimeContext,
-    herdr: Herdr,
+    herdr: PaneHost,
     exe: PathBuf,
     shell: PaneShell,
     ws: NewWorkspace,
@@ -161,7 +134,7 @@ struct Scratch {
 
 fn scratch_context(ctx: &RuntimeContext, label: &str) -> Result<Scratch> {
     doctor::check(ctx)?;
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
+    let herdr = PaneHost::of(ctx);
     let exe = ctx.bins.exe()?;
     let shell = PaneShell::host();
     let state = tempfile::Builder::new()
@@ -191,9 +164,6 @@ fn scratch_context(ctx: &RuntimeContext, label: &str) -> Result<Scratch> {
 }
 
 impl Scratch {
-    /// Register the root pane as the orchestrator, so a worker's `horch done`
-    /// has a `horch tell` target to report DONE to. `never` is the failure
-    /// when it does not register in time.
     fn register_orchestrator(&self, never: Failure) -> Step {
         let line = horch_line(
             &self.ctx,
@@ -208,15 +178,11 @@ impl Scratch {
         ensure(registered, never)
     }
 
-    /// Spawn the token-free `smoke` teammate into the scratch workspace.
     fn spawn_smoke(&self) -> Result<String> {
         spawn(&self.ctx, smoke_spawn_args(&self.ws.root_pane_id))
     }
 }
 
-/// The spawn of the `smoke` teammate beside `root_pane`. It has no task
-/// text and joins no task-ledger run (TRF-43): the scratch state holds no
-/// run, and the token-free fake never reads a task.
 fn smoke_spawn_args(root_pane: &str) -> SpawnArgs {
     SpawnArgs {
         teammate: Some("smoke".to_string()),
@@ -226,16 +192,9 @@ fn smoke_spawn_args(root_pane: &str) -> SpawnArgs {
         model: None,
         resume: None,
         role: None,
-        // What `horch spawn` does by default: split the calling pane,
-        // which in a fleet is the orchestrator's. Named explicitly
-        // because this check runs outside the workspace it is testing,
-        // where the default would resolve to the checker's own pane in
-        // another workspace.
         from_pane: Some(root_pane.to_string()),
         direction: Direction::Right,
-        // Tiling on, so this check covers the hook `horch spawn` runs.
         tiling: TilingMode::Automatic,
-        // The smoke fake spends nothing; never gate it on usage limits.
         exact: false,
         force: true,
         replaces: None,
@@ -244,15 +203,13 @@ fn smoke_spawn_args(root_pane: &str) -> SpawnArgs {
     }
 }
 
-/// Cheap, self-verifying 2-pane check of the herdr messaging primitives
-/// (send-text + send-keys enter, and the mailbox registry).
 fn messaging(ctx: &RuntimeContext) -> Result<ExitCode> {
     finish(messaging_run(ctx))
 }
 
 fn messaging_run(ctx: &RuntimeContext) -> Step {
     doctor::check(ctx)?;
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
+    let herdr = PaneHost::of(ctx);
     let exe = ctx.bins.exe()?;
     let shell = PaneShell::host();
 
@@ -267,8 +224,6 @@ fn messaging_run(ctx: &RuntimeContext) -> Step {
     verify_delivery(&herdr, &mailbox, shell, &ws.workspace_id, &b)
 }
 
-/// Registration shells out to `herdr pane get`; poll the mailbox rather than
-/// guessing a sleep.
 fn await_registered(mailbox: &Mailbox, workspace_id: &str) -> Step {
     let registered = poll(20, Duration::from_millis(500), || {
         mailbox.pane_for("a").is_some() && mailbox.pane_for("b").is_some()
@@ -283,9 +238,8 @@ fn await_registered(mailbox: &Mailbox, workspace_id: &str) -> Step {
     )
 }
 
-/// Send the arithmetic from `a` to `b` and wait for its result on `b`.
 fn verify_delivery(
-    herdr: &Herdr,
+    herdr: &PaneHost,
     mailbox: &Mailbox,
     shell: PaneShell,
     workspace_id: &str,
@@ -302,8 +256,7 @@ fn verify_delivery(
     Ok(herdr.workspace_close(workspace_id)?)
 }
 
-/// The failure for a pane that never showed the message, with what it shows.
-fn pane_dump(herdr: &Herdr, workspace_id: &str, pane: &str) -> Failure {
+fn pane_dump(herdr: &PaneHost, workspace_id: &str, pane: &str) -> Failure {
     let contents = herdr
         .pane_read(pane, "recent-unwrapped")
         .unwrap_or_else(|e| format!("(could not read pane: {e:#})"));
@@ -317,9 +270,6 @@ fn pane_dump(herdr: &Herdr, workspace_id: &str, pane: &str) -> Failure {
     ])
 }
 
-/// Self-verifying check of the fleet machinery (spawn -> brief -> register ->
-/// ledger add/note/done -> tell -> pane self-close) using a token-free fake agent
-/// in a scratch workspace with an isolated ledger.
 fn fleet(ctx: &RuntimeContext) -> Result<ExitCode> {
     finish(fleet_run(ctx))
 }
@@ -327,8 +277,6 @@ fn fleet(ctx: &RuntimeContext) -> Result<ExitCode> {
 fn fleet_run(ctx: &RuntimeContext) -> Step {
     let sc = scratch_context(ctx, "herdr-fleet smoke")?;
     let id = sc.ws.workspace_id.as_str();
-    // A fake orchestrator (no agent) so the worker's `horch done` has a
-    // `horch tell` target to report DONE to.
     sc.register_orchestrator(Failure::line(format!(
         "FAIL: orchestrator pane never registered. Workspace {id} left open."
     )))?;
@@ -344,7 +292,6 @@ fn fleet_run(ctx: &RuntimeContext) -> Step {
     Ok(sc.herdr.workspace_close(id)?)
 }
 
-/// The worker's session reached done in the ledger, and it closed its own pane.
 fn verify_worker_done(sc: &Scratch, pane: &str) -> Step {
     let id = sc.ws.workspace_id.as_str();
     let ledger = SessionLedger::open_in(&sc.ctx)?;
@@ -357,7 +304,6 @@ fn verify_worker_done(sc: &Scratch, pane: &str) -> Step {
         return Err(Smoke::Failed(Failure(lines)));
     }
 
-    // The worker must have closed its own pane.
     let closed = poll(10, Duration::from_secs(1), || !sc.herdr.pane_exists(pane));
     ensure(
         closed,
@@ -367,12 +313,6 @@ fn verify_worker_done(sc: &Scratch, pane: &str) -> Step {
     )
 }
 
-/// A pane that counts forever and writes the count to a FILE.
-///
-/// The file, not the terminal, is what proves the process survived a move: a pane
-/// that has just been squeezed to a few columns by a deliberately bad split has
-/// nothing readable on screen, and `pane read` would report that as a dead
-/// process.
 fn ticker(shell: PaneShell, path: &Path) -> String {
     let path = path.to_string_lossy();
     match shell {
@@ -385,13 +325,11 @@ fn ticker(shell: PaneShell, path: &Path) -> String {
     }
 }
 
-/// The count a ticker pane has reached, or None while it has not written yet.
 fn ticks(path: &Path) -> Option<u64> {
     std::fs::read_to_string(path).ok()?.trim().parse().ok()
 }
 
-/// Every tab of a workspace, in tab-strip order.
-fn tabs_of(herdr: &Herdr, workspace_id: &str) -> Result<Vec<Layout>> {
+fn tabs_of(herdr: &PaneHost, workspace_id: &str) -> Result<Vec<Layout>> {
     let tabs = herdr.tab_list(workspace_id)?;
     let panes = herdr.pane_list(workspace_id)?;
     let mut out = Vec::new();
@@ -406,8 +344,6 @@ fn tabs_of(herdr: &Herdr, workspace_id: &str) -> Result<Vec<Layout>> {
     Ok(out)
 }
 
-/// One tab split into the orchestrator, the top row and the bottom row, each row
-/// left to right.
 fn rows(layout: &Layout, orchestrator: Option<&str>) -> (Option<Rect>, Vec<Rect>, Vec<Rect>) {
     let area = layout.area;
     let orch = orchestrator.and_then(|id| {
@@ -434,17 +370,10 @@ fn rows(layout: &Layout, orchestrator: Option<&str>) -> (Option<Rect>, Vec<Rect>
     (orch, top, bottom)
 }
 
-/// Whether two coordinates differ by more than the 1 cell herdr rounds by.
 fn off(a: i64, b: i64) -> bool {
     (a - b).abs() > 1
 }
 
-/// Check one tab against the shape the fleet wants, by rectangle rather than by
-/// asking the tiler what it thinks it built. Returns every complaint.
-///
-/// `workers` is how many panes the tab should hold, and the row counts follow:
-/// every column has a top, so `ceil(workers / 2)` columns and the rest bottoms,
-/// with the last bottom spanning the free slot when the count is odd.
 fn tab_complaints(layout: &Layout, orchestrator: Option<&str>, workers: usize) -> Vec<String> {
     let area = layout.area;
     let (orch, top, bottom) = rows(layout, orchestrator);
@@ -453,8 +382,6 @@ fn tab_complaints(layout: &Layout, orchestrator: Option<&str>, workers: usize) -
     match shape_complaint(tab, (top.len(), bottom.len()), workers) {
         Some(shape) => bad.push(shape),
         None => {
-            // Both rows start at the worker area and reach its right edge, with
-            // no gap and no overlap in between.
             for (name, row) in [("top", &top), ("bottom", &bottom)] {
                 bad.extend(row_complaints(tab, area, x0, name, row));
             }
@@ -464,7 +391,6 @@ fn tab_complaints(layout: &Layout, orchestrator: Option<&str>, workers: usize) -
     bad
 }
 
-/// The orchestrator check, and where the worker area starts.
 fn orchestrator_complaints(
     tab: &str,
     area: Rect,
@@ -494,8 +420,6 @@ fn orchestrator_complaints(
     }
 }
 
-/// The complaint when the tab holds the wrong number of workers, or the wrong
-/// number in either row.
 fn shape_complaint(tab: &str, (top, bottom): (usize, usize), workers: usize) -> Option<String> {
     let columns = workers.div_ceil(2);
     if top + bottom != workers {
@@ -513,7 +437,6 @@ fn shape_complaint(tab: &str, (top, bottom): (usize, usize), workers: usize) -> 
     }
 }
 
-/// One row starts at the worker area, reaches its right edge, and has no gap.
 fn row_complaints(tab: &str, area: Rect, x0: i64, name: &str, row: &[Rect]) -> Vec<String> {
     let (Some(first), Some(last)) = (row.first(), row.last()) else {
         return Vec::new();
@@ -540,9 +463,6 @@ fn row_complaints(tab: &str, area: Rect, x0: i64, name: &str, row: &[Rect]) -> V
     bad
 }
 
-/// The bottom row sits under the top row, fills the tab with it, and keeps the
-/// columns of the same index. Columns are filled top before bottom, so only the
-/// last bottom pane may span the free slot.
 fn bottom_complaints(tab: &str, area: Rect, top: &[Rect], bottom: &[Rect]) -> Vec<String> {
     let (Some(t), Some(b)) = (top.first(), bottom.first()) else {
         return Vec::new();
@@ -577,10 +497,8 @@ fn bottom_complaints(tab: &str, area: Rect, top: &[Rect], bottom: &[Rect]) -> Ve
     bad
 }
 
-/// Check the whole workspace, tab by tab. `per_tab` is how many workers each tab
-/// should hold, in tab order.
 fn grid_complaints(
-    herdr: &Herdr,
+    herdr: &PaneHost,
     workspace_id: &str,
     orchestrator: &str,
     per_tab: &[usize],
@@ -602,14 +520,7 @@ fn grid_complaints(
     Ok(bad)
 }
 
-/// Where the operator is looking: the viewed tab, and the pane that tab hands
-/// the keyboard to.
-///
-/// The pair `horch tile` has to leave alone. Before the focus restore landed,
-/// tiling handed the keyboard to the orchestrator pane every time, because the
-/// park phase moves the focused pane out with `--no-focus` and herdr then picks
-/// a pane that stayed.
-fn viewed(herdr: &Herdr, workspace_id: &str) -> Result<(String, String)> {
+fn viewed(herdr: &PaneHost, workspace_id: &str) -> Result<(String, String)> {
     let tab = herdr
         .workspace_list()?
         .into_iter()
@@ -628,15 +539,8 @@ fn viewed(herdr: &Herdr, workspace_id: &str) -> Result<(String, String)> {
     Ok((tab, pane))
 }
 
-/// A worker pane and the file its ticker counts into.
 type Worker = (String, PathBuf);
 
-/// Self-verifying check of `horch tile`: a deliberately bad shape becomes the
-/// canonical grid across two tabs without killing a pane, `horch spawn` lays the
-/// grid out by itself, and a departing worker's hole is filled.
-///
-/// Spends no tokens: the worker panes are shells counting into a file, and the one
-/// real spawn uses the `smoke` teammate, which has no agent.
 fn tile(ctx: &RuntimeContext) -> Result<ExitCode> {
     finish(tile_run(ctx))
 }
@@ -655,13 +559,8 @@ fn tile_run(ctx: &RuntimeContext) -> Step {
     Ok(sc.herdr.workspace_close(&sc.ws.workspace_id)?)
 }
 
-/// Part 1: 7 workers in the worst shape there is - one column of down splits,
-/// so the last of them are squeezed to nothing - and every one of them running.
 fn build_bad_shape(sc: &Scratch, dir: &Path) -> Step<Vec<Worker>> {
     let id = &sc.ws.workspace_id;
-    // The orchestrator must be REGISTERED: the bad shape below leaves no
-    // full-height pane, so the positional guess has nothing to go on and tiling
-    // refuses rather than moving the orchestrator like a worker.
     let never = Failure::listed(id, "the orchestrator pane never registered", &[]);
     sc.register_orchestrator(never)?;
 
@@ -681,7 +580,6 @@ fn build_bad_shape(sc: &Scratch, dir: &Path) -> Step<Vec<Worker>> {
     Ok(workers)
 }
 
-/// The workers whose ticker has not written a count yet.
 fn silent_workers(workers: &[Worker]) -> Vec<String> {
     let silent = workers.iter().filter(|(_, c)| ticks(c).is_none());
     silent
@@ -689,14 +587,12 @@ fn silent_workers(workers: &[Worker]) -> Vec<String> {
         .collect()
 }
 
-/// Split `below` down and start a ticker counting into `counter` in the new pane.
 fn split_worker(sc: &Scratch, below: &str, counter: &Path) -> Result<Worker> {
     let pane = sc.herdr.pane_split(below, Direction::Down)?;
     sc.herdr.pane_run(&pane, &ticker(sc.shell, counter))?;
     Ok((pane, counter.to_path_buf()))
 }
 
-/// Put the keyboard on `watched`, a WORKER on tab `tab1`. `when` says why.
 fn focus_worker(sc: &Scratch, (tab1, watched): (&str, &str), when: &str) -> Step {
     let focused = sc.herdr.pane_focus_walk(tab1, watched)?;
     check(
@@ -707,16 +603,10 @@ fn focus_worker(sc: &Scratch, (tab1, watched): (&str, &str), when: &str) -> Step
     )
 }
 
-/// Tile the bad shape. Returns tab 1 and the worker whose focus the tiler has
-/// to leave alone.
 fn tile_bad_shape(sc: &Scratch, workers: &[Worker]) -> Step<(String, String)> {
     let id = sc.ws.workspace_id.clone();
     let before = counts(workers);
 
-    // Watch a WORKER, not the orchestrator: the orchestrator is the pane the
-    // tiler used to hand the keyboard to, so focusing it would pass either way.
-    // The topmost worker of the single column sorts first, so it lands in slot 1
-    // of tab 1 and is still there afterwards.
     let tab1 = sc.herdr.pane_layout(Some(&sc.ws.root_pane_id))?.tab_id;
     let watched = workers[0].0.clone();
     focus_worker(sc, (&tab1, &watched), "before tiling")?;
@@ -727,8 +617,6 @@ fn tile_bad_shape(sc: &Scratch, workers: &[Worker]) -> Step<(String, String)> {
 
     let (tab_after, pane_after) = viewed_unmoved(sc, (&tab_before, &pane_before))?;
 
-    // 7 workers is tab 1 with 4 in 2x2, then 3 on tab 2: column 1 top, column 1
-    // bottom, column 2 top - so its bottom row is one pane spanning both columns.
     check_grid(sc, &[4, 3], "tiling did not produce the canonical grid")?;
     check_alive(sc, workers, &before)?;
     println!("PASS: a bad shape became the canonical grid over 2 tabs, all 7 panes still running.");
@@ -736,13 +624,10 @@ fn tile_bad_shape(sc: &Scratch, workers: &[Worker]) -> Step<(String, String)> {
     Ok((tab1, watched))
 }
 
-/// The count each worker has reached. All of them have started by now.
 fn counts(workers: &[Worker]) -> Vec<u64> {
     workers.iter().filter_map(|(_, c)| ticks(c)).collect()
 }
 
-/// The watched pane stayed on tab 1, so the viewed tab AND the focused pane
-/// must both be the ones the operator had.
 fn viewed_unmoved(sc: &Scratch, (tab_before, pane_before): (&str, &str)) -> Step<(String, String)> {
     let id = &sc.ws.workspace_id;
     let (tab_after, pane_after) = viewed(&sc.herdr, id)?;
@@ -758,15 +643,12 @@ fn viewed_unmoved(sc: &Scratch, (tab_before, pane_before): (&str, &str)) -> Step
     Ok((tab_after, pane_after))
 }
 
-/// Fail with the grid's complaints unless it holds `per_tab` workers per tab.
 fn check_grid(sc: &Scratch, per_tab: &[usize], what: &str) -> Step {
     let id = &sc.ws.workspace_id;
     let complaints = grid_complaints(&sc.herdr, id, &sc.ws.root_pane_id, per_tab)?;
     check(complaints.is_empty(), id, what, &complaints)
 }
 
-/// Every pane still exists, and every process in it is still counting: a move
-/// must not restart or kill an agent.
 fn check_alive(sc: &Scratch, workers: &[Worker], before: &[u64]) -> Step {
     let mut dead = missing_panes(sc, workers);
     let advanced = poll(20, Duration::from_millis(500), || {
@@ -792,7 +674,6 @@ fn check_alive(sc: &Scratch, workers: &[Worker], before: &[u64]) -> Step {
     )
 }
 
-/// A complaint for each worker pane, and the orchestrator's, that is gone.
 fn missing_panes(sc: &Scratch, workers: &[Worker]) -> Vec<String> {
     let orchestrator = &sc.ws.root_pane_id;
     let mut gone: Vec<String> = workers
@@ -807,9 +688,6 @@ fn missing_panes(sc: &Scratch, workers: &[Worker]) -> Vec<String> {
     gone
 }
 
-/// Part 2: `horch spawn` with no placement flags must lay the grid out itself.
-/// Break the shape first, so a canonical grid afterwards can only be the
-/// spawn's doing. Returns the spawned pane.
 fn spawn_tiles(
     sc: &Scratch,
     dir: &Path,
@@ -819,9 +697,6 @@ fn spawn_tiles(
     println!("Breaking the shape again, then spawning a worker with no placement flags...");
     workers.push(split_worker(sc, &workers[0].0, &dir.join("w8"))?);
 
-    // Focus a worker again, so the spawn's own tiling has a view to put back.
-    // The split above passed `--no-focus`, so this is only here to be explicit
-    // about what the check is watching.
     focus_worker(sc, watched_on, "before spawning")?;
     let spawned = sc.spawn_smoke()?;
     let complaints = grid_after_spawn(sc, &spawned)?;
@@ -835,23 +710,15 @@ fn spawn_tiles(
     Ok(spawned)
 }
 
-/// 9 workers: 4 on tab 1, 5 on tab 2. The spawned pane is the newcomer, so it
-/// takes the last slot - and it may already have closed itself, since the
-/// `smoke` teammate reports done and exits. Either way the 8 counting panes
-/// must be in the grid, which only the spawn's own tiling can have done.
 fn grid_after_spawn(sc: &Scratch, spawned: &str) -> Result<Vec<String>> {
     let (herdr, id, orchestrator) = (&sc.herdr, &sc.ws.workspace_id, &sc.ws.root_pane_id);
     let complaints = grid_complaints(herdr, id, orchestrator, &[4, 5])?;
     if complaints.is_empty() || herdr.pane_exists(spawned) {
         return Ok(complaints);
     }
-    // The fake worker finished during the tiling, so the grid is the one for 8.
     grid_complaints(herdr, id, orchestrator, &[4, 4])
 }
 
-/// The `smoke` teammate closes its own pane, and `horch done` starts a
-/// detached tiler for the hole that leaves. Either tiling must end with the
-/// same pane focused, so poll rather than race the detached one.
 fn check_spawn_view(sc: &Scratch, watched: &str) -> Step {
     let id = &sc.ws.workspace_id;
     let kept = poll(20, Duration::from_millis(500), || {
@@ -869,10 +736,6 @@ fn check_spawn_view(sc: &Scratch, watched: &str) -> Step {
     Ok(())
 }
 
-/// Part 3: a worker leaving frees a slot, and the workers on the overflow tab
-/// move down into it. `horch done` starts a detached child that does this, and
-/// that child may well get there first; the tiler is also run here directly so
-/// the check asserts the end state rather than racing a background process.
 fn refill(sc: &Scratch, workers: &[Worker], spawned: &str) -> Step {
     println!("Closing a worker and filling the hole it leaves...");
     let id = sc.ws.workspace_id.clone();
@@ -885,8 +748,6 @@ fn refill(sc: &Scratch, workers: &[Worker], spawned: &str) -> Step {
         "the smoke worker never closed its own pane",
         &[format!("pane {spawned} is still there")],
     )?;
-    // 8 workers now. Close four of them, leaving 4: they must all fit on tab 1 and
-    // the overflow tab must be gone, with the panes that were on it moved down.
     let survivors = close_first_four(sc, workers)?;
     super::tilecmd::tile(&sc.ctx, None, Some(&id), false, 600)?;
     check_grid(sc, &[4], "the hole a departing worker left was not filled")?;
@@ -897,7 +758,6 @@ fn refill(sc: &Scratch, workers: &[Worker], spawned: &str) -> Step {
     Ok(())
 }
 
-/// Close the first four workers. Returns the others.
 fn close_first_four<'a>(sc: &Scratch, workers: &'a [Worker]) -> Result<&'a [Worker]> {
     let (closing, survivors) = workers.split_at(workers.len().min(4));
     for (pane, _) in closing {
@@ -920,8 +780,6 @@ fn check_survivors(sc: &Scratch, survivors: &[Worker]) -> Step {
     )
 }
 
-/// Exactly one session, finished, having recorded both a progress note and a
-/// completion summary.
 fn smoke_session_done(ledger: &SessionLedger) -> bool {
     ledger
         .read()
@@ -936,8 +794,6 @@ fn session_is_done(record: &Record) -> bool {
         && recorded("done")
 }
 
-/// The stored session records of a failed smoke, under the task ledger file
-/// that holds them.
 fn ledger_dump(store: &ExecutionStore) -> [String; 2] {
     [
         format!("--- session records ({}) ---", store.db().display()),
@@ -952,8 +808,6 @@ mod tests {
     use super::*;
     use horch_core::fleetd::fleet_runtime::adapters::test_fleetd::serve_session_records_at;
 
-    /// A smoke pane is a fresh shell: its `horch` line names the state folder
-    /// the checks read, for each shell, however the parent chose it.
     #[test]
     fn horch_line_carries_the_state_folder() {
         for (variable, root, state) in [
@@ -981,8 +835,6 @@ mod tests {
         }
     }
 
-    /// The arithmetic must be left for the pane's own shell to evaluate, in that
-    /// shell's dialect - never pre-computed here.
     #[test]
     fn arithmetic_echo_is_unevaluated_and_shell_appropriate() {
         for shell in [PaneShell::Posix, PaneShell::PowerShell] {
@@ -1060,7 +912,6 @@ mod tests {
         ledger.done("r1", "finished").unwrap();
         assert!(smoke_session_done(&ledger));
 
-        // A second session means something else spawned into the scratch ledger.
         ledger
             .add(horch_core::execution::records::NewRecord {
                 record_id: "r2",
@@ -1076,8 +927,6 @@ mod tests {
         assert!(!smoke_session_done(&ledger));
     }
 
-    /// A session that finished without ever recording a note means `horch note`
-    /// silently failed, which the check must catch.
     #[test]
     fn a_done_session_without_a_note_fails_the_check() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1112,7 +961,6 @@ mod tests {
         }
     }
 
-    /// A 100x40 tab "t1" holding the given panes.
     fn tab(panes: &[(&str, Rect)]) -> Layout {
         Layout {
             workspace_id: "w".into(),
@@ -1130,7 +978,6 @@ mod tests {
         }
     }
 
-    /// The orchestrator full height on the left, 2x2 workers beside it.
     fn canonical() -> Vec<(&'static str, Rect)> {
         vec![
             ("o", rect(0, 0, 30, 40)),
@@ -1279,8 +1126,6 @@ mod tests {
         assert_eq!(broken.unwrap_err().to_string(), "herdr is gone");
     }
 
-    /// TRF-45: a failed smoke prints the stored session records under the
-    /// task ledger file, and reads no JSON session ledger.
     #[test]
     fn trf_45_ledger_dump_prints_the_stored_session_records() {
         let tmp = tempfile::tempdir().unwrap();

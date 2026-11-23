@@ -1,5 +1,3 @@
-//! Tree checks and the tree digest of a staged skill directory.
-
 use std::fs::{self, DirEntry, FileType, Metadata};
 use std::path::{Path, PathBuf};
 
@@ -11,9 +9,6 @@ pub const MAX_FILES: usize = 512;
 pub const MAX_FILE_BYTES: u64 = 1 << 20;
 pub const MAX_TOTAL_BYTES: u64 = 8 << 20;
 
-/// Reject a path that is absolute, has a `..` or empty component, or is
-/// not `/`-separated text. Used on every path that comes from outside
-/// before it is joined to a directory.
 pub fn check_relative_path(path: &str) -> Result<()> {
     if path.starts_with('/') || path.starts_with('\\') {
         return Err(MarketplaceError::AbsolutePath(PathBuf::from(path)));
@@ -28,8 +23,6 @@ pub fn check_relative_path(path: &str) -> Result<()> {
     }
 }
 
-/// Apply the per-file and total limits to one more file of `bytes`. `total`
-/// grows only when the file passes.
 pub(crate) fn check_limits(path: &str, bytes: u64, count: usize, total: &mut u64) -> Result<()> {
     let new_total = *total + bytes;
     if count > MAX_FILES {
@@ -47,9 +40,6 @@ pub(crate) fn check_limits(path: &str, bytes: u64, count: usize, total: &mut u64
     }
 }
 
-/// Walk `dir` without following links, apply the limits, and return the
-/// tree digest `sha256:<hex>`: sha256 over the sorted lines
-/// `<relative path>\0<hex sha256 of the bytes>\n`.
 pub fn tree_digest(dir: &Path) -> Result<String> {
     let mut files = Vec::new();
     let mut total = 0u64;
@@ -76,24 +66,17 @@ fn walk(dir: &Path, rel: &str, files: &mut Vec<(String, String)>, total: &mut u6
     })
 }
 
-/// The entries of `dir`; an error names `dir`.
 pub(crate) fn read_entries(dir: &Path) -> Result<Vec<DirEntry>> {
     fs::read_dir(dir)
         .and_then(Iterator::collect)
         .map_err(|e| MarketplaceError::io(dir.display(), e))
 }
 
-/// What a skill tree entry is. Links and special files are refused, so
-/// these are the only 2 kinds.
 pub(crate) enum Kind {
     Dir,
     File,
 }
 
-/// The entry rules of a skill tree, shared by the digest walk and the copy:
-/// the name is UTF-8 and clean, and the entry is a directory or a regular
-/// file. Returns the path relative to the tree root, the kind and the
-/// metadata. `rel` is the parent's path with its trailing `/`.
 pub(crate) fn classify(entry: &DirEntry, rel: &str) -> Result<(String, Kind, Metadata)> {
     let os_name = entry.file_name();
     let name = os_name
@@ -135,7 +118,6 @@ pub(crate) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// The first 12 hex characters of a `sha256:<hex>` digest.
 pub(crate) fn digest12(digest: &str) -> &str {
     let hex = digest.strip_prefix("sha256:").unwrap_or(digest);
     &hex[..hex.len().min(12)]
@@ -202,7 +184,6 @@ mod tests {
         ));
         let (r, _) = limits("a", 2, 1, MAX_TOTAL_BYTES - 1);
         assert!(matches!(r, Err(MarketplaceError::TotalTooLarge(n)) if n == MAX_TOTAL_BYTES));
-        // The total limit is exact: reaching it is allowed.
         limits("a", 1, 1, MAX_TOTAL_BYTES - 1).0.unwrap();
     }
 
@@ -215,7 +196,6 @@ mod tests {
         let err = tree_digest(dir.path()).unwrap_err();
         assert!(matches!(err, MarketplaceError::Symlink(p) if p == Path::new("link")));
         fs::remove_file(dir.path().join("link")).unwrap();
-        // A socket file is neither a regular file nor a link.
         let _socket = std::os::unix::net::UnixListener::bind(dir.path().join("sock")).unwrap();
         let err = tree_digest(dir.path()).unwrap_err();
         assert!(matches!(err, MarketplaceError::NotRegularFile(p) if p == Path::new("sock")));

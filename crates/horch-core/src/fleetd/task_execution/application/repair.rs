@@ -1,43 +1,3 @@
-//! The resolver and fix attempts of a task branch (ticket 33).
-//!
-//! `docs/specs/fleetd/design.md`, "Landing a task branch on its feature
-//! branch" (`conflicted`, `gate_failed`; A resolver attempt and a fix
-//! attempt of a task that is `done`), "Leases, not claims" (rule 2), I1
-//! and FM-38.
-//!
-//! fleetd owns `conflicted` and `gate_failed`. A resolver attempt and a fix
-//! attempt are attempts of the task branch: the task stays `done`, and the
-//! branch, not the task, moves.
-//!
-//! - [`start_due`]: part 2 of a pass. Each `conflicted` or `gate_failed`
-//!   branch of a `done` task with no attempt that is not ended, and with no
-//!   repair attempt since it entered its state or a counted failure of its
-//!   last one, gets 1 attempt after the backoff, at most `budget` of them.
-//!   At `max_attempts` of the task it gets no attempt, and 1 needs-you item
-//!   opens (ticket 34). The bind writes 1 worker row, 1 attempt in
-//!   `launching` with `via = push`, the fact of its kind (an event with
-//!   `repair` and `branch` in its data) and the lease of its task, in the
-//!   transaction of the pass, before any pane exists. The attempt takes the
-//!   tree of its task. The task does not move. The launch is ticket 10.
-//! - [`start_section`]: the section of `START.md` of a repair attempt. A
-//!   resolver gets the conflict files of the build of its bundle and the
-//!   `git merge` that shows each conflict in `zdiff3` form; a fix attempt
-//!   gets the output of the failed fast gate. `dispatch::facts` adds it.
-//! - [`observe`]: part 2 of a pass. An accepted `result.json` of the repair
-//!   attempt queues the check of the task as 1 `task_check` job on the tip
-//!   of the branch, and the pass never waits for it. A passed check moves a
-//!   `conflicted` branch to `ready`, and a `gate_failed` branch to
-//!   `verifying`, then `ready`. A failed check, and an attempt that ended
-//!   with no result (a stall, a crash, a lease expiry), move nothing: each
-//!   adds 1 to `repair_attempts` of the branch, 1 time (ticket 34).
-//! - [`requeue`]: `horch task requeue` of the `done` task sets
-//!   `repair_attempts` of its branch to 0, so the next pass starts 1 more
-//!   attempt with no backoff.
-//!
-//! Each step reads the rows again, so a crash before the commit leaves no
-//! row and the next pass binds 1 attempt, and a crash after the commit
-//! leaves an attempt that the next pass gives its files and its launch.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -81,43 +41,27 @@ use crate::taskledger::tasks::{self, Task};
 use crate::taskledger::workers::{self, NewWorker};
 use crate::taskledger::{runs, util};
 
-/// The key of the kind of a repair attempt in the data of its event.
 const REPAIR_KEY: &str = "repair";
 
-/// The cause of the event that records the kind of a repair attempt.
 const REPAIR_CAUSE: &str = "a resolver or fix attempt of a task branch";
 
-/// The cause of the event on a repair attempt that records its counted
-/// failure, with the fleet clock of the count in its data.
 const FAILED_CAUSE: &str = "a resolver or fix attempt failed";
 
-/// The key of the fleet clock of a counted failure in the data of its event.
 const FAILED_AT_KEY: &str = "failed_at";
 
-/// The most lines of the gate output that `START.md` of a fix attempt
-/// shows: its end, where the failure is.
 const OUTPUT_TAIL_LINES: usize = 60;
 
-/// The most bytes of the gate output that `START.md` of a fix attempt
-/// shows.
 const OUTPUT_TAIL_BYTES: usize = 8 * 1024;
 
-/// The kind of the needs-you item of a task branch whose repair attempt
-/// cannot start. Its key is `<kind>:<branch>`.
 pub const REPAIR_START_KIND: &str = "repair_start";
 
-/// The kind of an attempt of a task branch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RepairKind {
-    /// The branch is `conflicted`: the attempt resolves the conflict.
     Resolver,
-    /// The branch is `gate_failed`: the attempt fixes the gate failure.
     Fix,
 }
 
 impl RepairKind {
-    /// The kind of the attempt of a branch in `state`; `None` for a state
-    /// that needs no repair.
     pub fn of(state: LandingState) -> Option<RepairKind> {
         match state {
             LandingState::Conflicted => Some(RepairKind::Resolver),
@@ -139,7 +83,6 @@ impl RepairKind {
             .find(|k| k.as_str() == word)
     }
 
-    /// The landing state of the branch of an attempt of this kind.
     fn state(self) -> LandingState {
         match self {
             RepairKind::Resolver => LandingState::Conflicted,
@@ -148,7 +91,6 @@ impl RepairKind {
     }
 }
 
-/// 1 repair attempt that [`start_due`] bound.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Started {
     pub branch: String,
@@ -163,14 +105,12 @@ fn by_fleetd(text: &str) -> Cause<'_> {
     }
 }
 
-/// 1 branch that waits for a repair, with its task.
 struct Repairing {
     branch: String,
     task_id: String,
     kind: RepairKind,
 }
 
-/// Each `conflicted` or `gate_failed` branch of a `done` task, by name.
 fn repairing(conn: &Connection) -> Result<Vec<Repairing>> {
     let mut out = Vec::new();
     for kind in [RepairKind::Resolver, RepairKind::Fix] {
@@ -188,9 +128,6 @@ fn repairing(conn: &Connection) -> Result<Vec<Repairing>> {
     Ok(out)
 }
 
-/// Whether the `done` task `task_id` has a `conflicted` or `gate_failed`
-/// branch: its resolver or fix attempt holds the lease of the task while
-/// it is live (I1).
 pub fn has_branch_to_repair(conn: &Connection, task_id: &str) -> Result<bool> {
     let states = rows::landing_states_of_task(conn, task_id)?;
     Ok(states
@@ -199,7 +136,6 @@ pub fn has_branch_to_repair(conn: &Connection, task_id: &str) -> Result<bool> {
         .any(|s| LandingState::parse(s).and_then(RepairKind::of).is_some()))
 }
 
-/// Whether `task_id` has an attempt that is not ended.
 fn has_open_attempt(conn: &Connection, task_id: &str) -> Result<bool> {
     let open = conn
         .query_row(
@@ -211,23 +147,17 @@ fn has_open_attempt(conn: &Connection, task_id: &str) -> Result<bool> {
     Ok(open.is_some())
 }
 
-/// The fact of a repair attempt, from the data of its event.
 #[derive(Debug, PartialEq, Eq)]
 struct RepairFact {
     kind: RepairKind,
     branch: String,
-    /// The stamp of the last move of the branch into the state of `kind`
-    /// at the bind. A later move into that state is a new need of repair.
     entered: Option<String>,
 }
 
-/// The stamp of the last move of `branch` into the state of `kind`.
 fn entered(conn: &Connection, branch: &str, kind: RepairKind) -> Result<Option<String>> {
     door::entered_at(conn, Entity::TaskBranch, branch, &[kind.state().as_str()])
 }
 
-/// The newest repair attempt of the task of `r`, when it repairs the
-/// branch of `r` since the last move of the branch into its state.
 fn newest_repair(conn: &Connection, r: &Repairing) -> Result<Option<String>> {
     let newest: Option<String> = conn
         .query_row(
@@ -248,8 +178,6 @@ fn newest_repair(conn: &Connection, r: &Repairing) -> Result<Option<String>> {
     Ok(current.then_some(id))
 }
 
-/// The fact of the repair attempt `attempt_id`; `None` for an attempt of
-/// the work of its task.
 fn repair_fact(conn: &Connection, attempt_id: &str) -> Result<Option<RepairFact>> {
     let data = door::fact_data(
         conn,
@@ -258,10 +186,11 @@ fn repair_fact(conn: &Connection, attempt_id: &str) -> Result<Option<RepairFact>
         EventKind::Note,
         REPAIR_CAUSE,
     )?;
-    let Some(data) = data else {
-        return Ok(None);
-    };
-    let v: serde_json::Value = serde_json::from_str(&data)?;
+    data.as_deref().map_or(Ok(None), parse_fact)
+}
+
+fn parse_fact(data: &str) -> Result<Option<RepairFact>> {
+    let v: serde_json::Value = serde_json::from_str(data)?;
     let kind = v[REPAIR_KEY].as_str().and_then(RepairKind::parse);
     let branch = v["branch"].as_str();
     Ok(kind.zip(branch).map(|(kind, branch)| RepairFact {
@@ -271,32 +200,20 @@ fn repair_fact(conn: &Connection, attempt_id: &str) -> Result<Option<RepairFact>
     }))
 }
 
-/// The kind of the attempt `attempt_id`: `None` for an attempt of the work
-/// of its task.
 pub fn repair_kind(conn: &Connection, attempt_id: &str) -> Result<Option<RepairKind>> {
     Ok(repair_fact(conn, attempt_id)?.map(|f| f.kind))
 }
 
-// ─── the start ──────────────────────────────────────────────────────────
-
-/// Part 2 of a pass, in the open transaction `tx`: bind 1 repair attempt
-/// for each branch that waits for one, at most `budget` of them. Each bind
-/// runs in its own savepoint, so a bind that fails rolls back only its own
-/// rows. After the commit, the caller writes the task files of each attempt
-/// (`dispatch::write_task_files`) and launches it (ticket 10).
 pub fn start_due(tx: &Connection, ctx: &DispatchCtx<'_>, budget: usize) -> Result<Vec<Started>> {
     if tx.is_autocommit() {
         bail!("the repair start writes its rows in 1 open transaction of the ledger");
     }
     let mut out = Vec::new();
     let mut at_limit = BTreeSet::new();
-    // The start items of the branches that wait for a repair and did not
-    // start one in this pass. Each other start item ends.
     let mut waiting = BTreeSet::new();
     for r in repairing(tx)? {
         waiting.insert(start_key(&r.branch));
         let failed_at = match newest_repair(tx, &r)? {
-            // The attempt runs, or its result waits for its check.
             Some(attempt) => match failed_at(tx, &attempt)? {
                 Some(at) => Some(at),
                 None => continue,
@@ -327,9 +244,6 @@ pub fn start_due(tx: &Connection, ctx: &DispatchCtx<'_>, budget: usize) -> Resul
                 waiting.remove(&start_key(&r.branch));
                 out.push(s);
             }
-            // 1 branch that cannot start its attempt never stops the pass
-            // (Three rules, rule 1): its rows roll back, the branch goes
-            // on the needs-you list, and the next pass tries again.
             Err(e) => {
                 tx.execute_batch("ROLLBACK TO repair_bind; RELEASE repair_bind")?;
                 open_start_item(tx, &r, &e)?;
@@ -349,20 +263,14 @@ pub fn start_due(tx: &Connection, ctx: &DispatchCtx<'_>, budget: usize) -> Resul
     Ok(out)
 }
 
-// ─── the limit ──────────────────────────────────────────────────────────
-
-/// `repair_attempts` of the branch `branch`.
 fn repair_attempts(conn: &Connection, branch: &str) -> Result<i64> {
     Ok(rows::branch(conn, branch)?.map_or(0, |b| b.repair_attempts))
 }
 
-/// The key of the needs-you item of `branch` at its repair limit.
 fn start_key(branch: &str) -> String {
     format!("{REPAIR_START_KIND}:{branch}")
 }
 
-/// Open the needs-you item of the branch of `r`, whose repair attempt
-/// cannot start for the cause `e`.
 fn open_start_item(tx: &Connection, r: &Repairing, e: &anyhow::Error) -> Result<()> {
     let text = format!(
         "The {} attempt of the task branch {} cannot start: {e:#}. fleetd tries again on \
@@ -387,8 +295,6 @@ fn limit_key(branch: &str) -> String {
     format!("{REPAIR_LIMIT_KIND}:{branch}")
 }
 
-/// Open the 1 needs-you item of the branch of `r` at its repair limit. A
-/// second open of the same item writes nothing.
 fn open_limit_item(tx: &Connection, r: &Repairing, count: &RepairCount) -> Result<()> {
     let task = tasks::get(tx, &r.task_id)?;
     let text = format!(
@@ -417,8 +323,6 @@ fn open_limit_item(tx: &Connection, r: &Repairing, count: &RepairCount) -> Resul
     )
 }
 
-/// The fleet clock of the counted failure of the repair attempt
-/// `attempt_id`; `None` when no failure of it is counted.
 fn failed_at(conn: &Connection, attempt_id: &str) -> Result<Option<i64>> {
     let data = door::fact_data(
         conn,
@@ -437,9 +341,6 @@ fn failed_at(conn: &Connection, attempt_id: &str) -> Result<Option<i64>> {
         .with_context(|| format!("the failure event of {attempt_id} has no {FAILED_AT_KEY}"))
 }
 
-/// Count 1 failure of the repair attempt `attempt` of the branch of `b` at
-/// fleet clock `clock`: 1 more `repair_attempts` of the branch, and 1 event
-/// on the attempt. An attempt whose failure is counted counts no more.
 fn count_failure(
     tx: &Connection,
     guard: Option<Generation>,
@@ -472,7 +373,6 @@ fn count_failure(
     Ok(())
 }
 
-/// Whether the attempt `attempt_id` ended.
 fn attempt_ended(conn: &Connection, attempt_id: &str) -> Result<bool> {
     let state: String = conn.query_row(
         "SELECT state FROM attempts WHERE id = ?1",
@@ -482,11 +382,6 @@ fn attempt_ended(conn: &Connection, attempt_id: &str) -> Result<bool> {
     Ok(state == AttemptState::Ended.as_str())
 }
 
-/// `horch task requeue` of the `done` task `task` for `reason`, in the open
-/// transaction `tx`: each branch of the task that waits for a repair gets
-/// `repair_attempts` at 0, so the next pass starts 1 more attempt with no
-/// backoff, and its needs-you item resolves. The task stays `done`. A
-/// `done` task with no such branch is not held, and the requeue refuses.
 pub fn requeue(
     tx: &Connection,
     guard: Option<Generation>,
@@ -515,7 +410,6 @@ pub fn requeue(
     tasks::get(tx, &task.task_id)
 }
 
-/// The persona of a repair attempt: the persona of its task.
 fn persona_of(t: &Task) -> String {
     t.claimable_by
         .clone()
@@ -523,10 +417,6 @@ fn persona_of(t: &Task) -> String {
         .unwrap_or_default()
 }
 
-/// Bind the repair attempt of `r`: the worker row, the attempt in
-/// `launching`, the fact of its kind, its tree and the lease of its task.
-/// The task stays `done`. Its attempt count and the floor of the count
-/// rise together, so a repair attempt burns no attempt of the task.
 fn bind(tx: &Connection, ctx: &DispatchCtx<'_>, r: &Repairing) -> Result<Started> {
     let guard = ctx.jobs.guard;
     let task = tasks::get(tx, &r.task_id)?;
@@ -597,7 +487,6 @@ fn bind(tx: &Connection, ctx: &DispatchCtx<'_>, r: &Repairing) -> Result<Started
         &data,
     )?;
     let tree = take_tree(tx, ctx, &task, &worker_id, &attempt)?;
-    // I1: a repair attempt holds the lease of its task while it is live.
     lease::take(
         tx,
         ctx.clock,
@@ -619,8 +508,6 @@ fn bind(tx: &Connection, ctx: &DispatchCtx<'_>, r: &Repairing) -> Result<Started
     })
 }
 
-/// The tree of `task` for its repair attempt `attempt`: the tree of its
-/// earlier attempts. A task with no tree has no branch to repair.
 fn take_tree(
     tx: &Connection,
     ctx: &DispatchCtx<'_>,
@@ -659,18 +546,45 @@ fn take_tree(
     })
 }
 
-// ─── START.md ───────────────────────────────────────────────────────────
-
-/// The section of `START.md` of the attempt `attempt_id` under
-/// `fleet_root`; `None` for an attempt of the work of its task.
 pub fn start_section(
     conn: &Connection,
     fleet_root: &Path,
     attempt_id: &str,
 ) -> Result<Option<String>> {
-    let Some(RepairFact { kind, branch, .. }) = repair_fact(conn, attempt_id)? else {
-        return Ok(None);
-    };
+    match repair_fact(conn, attempt_id)? {
+        Some(fact) => Ok(Some(section_of(conn, fleet_root, attempt_id, fact)?)),
+        None => Ok(None),
+    }
+}
+
+pub fn start_sections<'a>(
+    conn: &Connection,
+    fleet_root: &Path,
+    attempt_ids: impl IntoIterator<Item = &'a str>,
+) -> Result<std::collections::BTreeMap<String, String>> {
+    let data = door::fact_data_of_ids(
+        conn,
+        Entity::Attempt,
+        attempt_ids,
+        EventKind::Note,
+        REPAIR_CAUSE,
+    )?;
+    let mut out = std::collections::BTreeMap::new();
+    for (attempt_id, data) in data {
+        if let Some(fact) = parse_fact(&data)? {
+            let section = section_of(conn, fleet_root, &attempt_id, fact)?;
+            out.insert(attempt_id, section);
+        }
+    }
+    Ok(out)
+}
+
+fn section_of(
+    conn: &Connection,
+    fleet_root: &Path,
+    attempt_id: &str,
+    RepairFact { kind, branch, .. }: RepairFact,
+) -> Result<String> {
     let task_id: String = conn
         .query_row(
             "SELECT task_id FROM attempts WHERE id = ?1",
@@ -699,10 +613,9 @@ pub fn start_section(
             fix_section(&branch, &output, &check)
         }
     };
-    Ok(Some(section))
+    Ok(section)
 }
 
-/// The check of `task`: its own, else the default check of its run.
 fn check_of(conn: &Connection, task: &Task) -> Result<Option<String>> {
     Ok(task
         .land_check
@@ -711,8 +624,6 @@ fn check_of(conn: &Connection, task: &Task) -> Result<Option<String>> {
         .filter(|c| !c.trim().is_empty()))
 }
 
-/// The files of the newest conflict of `branch` in the build of a bundle:
-/// the result of the `bundle_build` job of a dropped bundle that holds it.
 fn conflict_files(conn: &Connection, branch: &str) -> Result<Vec<String>> {
     for (_, id) in rows::bundle_jobs_of_branch(conn, branch, BundleState::Dropped.as_str())? {
         let Some(job) = jobs_store::get(conn, id)? else {
@@ -728,8 +639,6 @@ fn conflict_files(conn: &Connection, branch: &str) -> Result<Vec<String>> {
     Ok(Vec::new())
 }
 
-/// The output of the failed fast gate of `branch`: the text of its job and
-/// the end of its output file under `fleet_root`.
 struct GateOutput {
     text: String,
     path: String,
@@ -760,8 +669,6 @@ fn gate_output(conn: &Connection, fleet_root: &Path, branch: &str) -> Result<Gat
     })
 }
 
-/// The last [`OUTPUT_TAIL_LINES`] lines of `bytes`, at most
-/// [`OUTPUT_TAIL_BYTES`] bytes.
 fn tail_of(bytes: &[u8]) -> String {
     let start = bytes.len().saturating_sub(OUTPUT_TAIL_BYTES);
     let text = String::from_utf8_lossy(&bytes[start..]);
@@ -818,42 +725,26 @@ fn fix_section(branch: &str, output: &GateOutput, check: &str) -> String {
     out
 }
 
-// ─── the result ─────────────────────────────────────────────────────────
-
-/// What [`observe`] reads.
 pub struct Results<'a> {
     pub jobs: &'a JobCtx<'a>,
-    /// The fleet clock of the pass.
     pub clock: FleetSeconds,
-    /// The tip of the task branch of each task, read in part 1 of the pass.
-    /// A task with no tip waits for a later pass.
     pub tips: &'a BTreeMap<String, String>,
-    /// The fleet root of the outboxes.
     pub fleet_root: &'a Path,
 }
 
-/// What 1 [`observe`] did, by branch name.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Report {
-    /// The branches whose check job is queued or running.
     pub queued: Vec<String>,
-    /// The branches that a passed check moved to `ready`.
     pub ready: Vec<String>,
-    /// The branches whose newest repair attempt failed: its result failed
-    /// its check, or it ended with no result. Each failure adds 1 to
-    /// `repair_attempts` of its branch, 1 time.
     pub failed: Vec<String>,
 }
 
-/// What the check of a repair result says.
 enum Checked {
     Waits,
     Passed,
     Failed,
 }
 
-/// Part 2 of a pass, in the open transaction `tx`: act on the result of
-/// the newest repair attempt of each branch that waits for a repair.
 pub fn observe(r: &Results<'_>, tx: &Connection) -> Result<Report> {
     if tx.is_autocommit() {
         bail!("the repair result writes its rows in 1 open transaction of the ledger");
@@ -864,8 +755,6 @@ pub fn observe(r: &Results<'_>, tx: &Connection) -> Result<Report> {
             continue;
         };
         if !has_result(tx, r.fleet_root, &b.task_id, &attempt)? {
-            // An attempt that ended with no result failed: a stall, a
-            // crash, no result or the expiry of its lease.
             if attempt_ended(tx, &attempt)? {
                 count_failure(tx, r.jobs.guard, r.clock, &b, &attempt)?;
                 report.failed.push(b.branch);
@@ -890,7 +779,6 @@ pub fn observe(r: &Results<'_>, tx: &Connection) -> Result<Report> {
     Ok(report)
 }
 
-/// Whether the ingest accepted a `result.json` of the attempt `attempt`.
 fn has_result(conn: &Connection, fleet_root: &Path, task_id: &str, attempt: &str) -> Result<bool> {
     let a = AttemptRef {
         task_id: task_id.to_string(),
@@ -907,9 +795,6 @@ fn has_result(conn: &Connection, fleet_root: &Path, task_id: &str, attempt: &str
     Ok(found.is_some())
 }
 
-/// The check of the task `task_id` on `tip`: its `task_check` job, queued
-/// when it has no run. A task whose ticket says `**Check:** none` passes,
-/// and a task with no check fails.
 fn check(r: &Results<'_>, tx: &Connection, task_id: &str, tip: &str) -> Result<Checked> {
     let task = tasks::get(tx, task_id)?;
     let Some(check) = check_of(tx, &task)? else {
@@ -937,8 +822,6 @@ fn check(r: &Results<'_>, tx: &Connection, task_id: &str, tip: &str) -> Result<C
     Ok(Checked::Waits)
 }
 
-/// The check of the repair result of `attempt` passed: a resolver moves
-/// its branch to `ready`, and a fix moves it to `verifying`, then `ready`.
 fn ready(r: &Results<'_>, tx: &Connection, b: &Repairing, attempt: &str) -> Result<()> {
     let why = format!(
         "the check of the result of the {} attempt {attempt} passed",

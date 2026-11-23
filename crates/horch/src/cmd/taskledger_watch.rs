@@ -1,14 +1,3 @@
-//! `horch ledger watch`: fleetd does the watch of each run
-//! (`docs/specs/fleetd/design.md`, "Migration plan" item 3;
-//! `docs/tickets/fleetd-p1/MAP.md`, Q11).
-//!
-//! - `horch ledger watch --once [--force] [--json]` runs 1 pass of fleetd
-//!   in the foreground when no fleetd holds the fleetd lock, and prints the
-//!   checks of the run as before Phase 1. When a fleetd holds the lock, it
-//!   runs no pass, stops nothing, and says so in 1 line.
-//! - `horch ledger watch` with no `--once` says that fleetd does the watch,
-//!   and runs the check of `horch fleetd check`.
-
 use std::process::ExitCode;
 
 use anyhow::Result;
@@ -24,16 +13,10 @@ use super::fleetd::{self, Once};
 use super::taskledger_wake;
 use crate::output;
 
-/// The line of `horch ledger watch` with no `--once`.
 const FLEETD_WATCHES: &str = "fleetd does the watch of each run: it checks the workers, reaps the dead and wakes the orchestrator.";
 
-/// The effects of the watchdog duties of the pass of fleetd on this machine
-/// (ticket 22): the delivery of the wakes and the cleanup retry. `horch
-/// fleetd` (ticket 23) gives them to `WatchdogDuties`, with
-/// `HerdrObserver`.
 pub struct LiveEffects<'a> {
     pub ctx: &'a RuntimeContext,
-    /// The writer of fleetd: these effects run in the fleetd process.
     pub writer: &'a LedgerWriter,
 }
 
@@ -51,7 +34,6 @@ impl DutyEffects for LiveEffects<'_> {
             Ok(s) => s,
             Err(e) => return eprintln!("horch fleetd: the wake delivery failed: {e:#}"),
         };
-        // 1 push budget for the wakes of this pass (#67, #177).
         let _budget = horch_core::messaging::delivery::start_push_budget(
             horch_core::messaging::delivery::done_push_budget(&self.ctx.settings.faults),
         );
@@ -67,7 +49,6 @@ impl DutyEffects for LiveEffects<'_> {
     }
 }
 
-/// `horch ledger watch`.
 pub fn watch(
     ctx: &RuntimeContext,
     run: &Run,
@@ -80,15 +61,12 @@ pub fn watch(
         return Ok(ExitCode::SUCCESS);
     }
     output::println(FLEETD_WATCHES);
-    // `HORCH_NO_WATCHDOG=1`: no check and no start (MAP.md, Q17).
     if !ctx.settings.no_watchdog {
         output::println(&fleetd::describe(&fleetd::run_check(ctx)?));
     }
     Ok(ExitCode::SUCCESS)
 }
 
-/// The report of `watch --once` for `run`: the checks of 1 pass of fleetd,
-/// or the line that a fleetd holds the lock.
 fn once_report(ctx: &RuntimeContext, run: &Run, force: bool, as_json: bool) -> Result<String> {
     let checked = match fleetd::watch_once(ctx, force)? {
         Once::Ran(checked) => checked,
@@ -107,7 +85,6 @@ fn once_report(ctx: &RuntimeContext, run: &Run, force: bool, as_json: bool) -> R
     report(&checked, as_json)
 }
 
-/// The checks of a pass: JSON, or 1 line per checked worker.
 fn report(checked: &[watchdog::Checked], as_json: bool) -> Result<String> {
     if as_json {
         return Ok(serde_json::to_string_pretty(checked)?);
@@ -133,19 +110,21 @@ fn report(checked: &[watchdog::Checked], as_json: bool) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use horch_core::fleetd::fleet_runtime::adapters::watchdog_duties::HerdrObserver as Live;
     use horch_core::taskledger::runs::{self, NewRun};
     use horch_core::taskledger::schema::run_idea;
     use horch_core::taskledger::util;
+    #[cfg(unix)]
     use horch_core::taskledger::watchdog::{Observation, Observer};
     use horch_core::taskledger::workers::{self, NewWorker, Worker};
     use horch_core::taskledger::Store;
-    use horch_core::workspace::herdr::Herdr;
+    #[cfg(unix)]
+    use horch_core::workspace::PaneHost;
     use std::path::Path;
+    #[cfg(unix)]
     use std::time::{Duration, UNIX_EPOCH};
 
-    /// A worker row of a new run in `dir`. The tests set the fields `observe`
-    /// reads and leave the others as the ledger made them.
     fn worker(dir: &Path) -> Worker {
         let mut store = Store::open(&dir.join("ledger.sqlite3")).unwrap();
         let new_run = NewRun {
@@ -155,7 +134,6 @@ mod tests {
         let run = store
             .immediate(|tx| {
                 let run = runs::create(tx, dir, &new_run)?;
-                // FR-12: a task needs an idea in flight of the feature of its run.
                 horch_core::taskledger::schema::run_idea(
                     tx,
                     &run.run_id,
@@ -176,12 +154,9 @@ mod tests {
         workers::find(store.conn(), &id).unwrap().unwrap()
     }
 
-    /// A herdr that answers by pane: `p1` has a status, a change count and a
-    /// screen; `p2` has a screen but no status; `p3` has a status but no
-    /// screen; any other pane fails both.
-    fn herdr(dir: &Path) -> Herdr {
+    #[cfg(unix)]
+    fn herdr(dir: &Path) -> PaneHost {
         let bin = dir.join("herdr");
-        // macOS scans a new executable at its first exec: warm it.
         let warm = crate::test_support::write_warmed(
             &bin,
             "#!/bin/sh\n\
@@ -196,9 +171,10 @@ mod tests {
             &["warm"],
         );
         assert!(warm.status.success());
-        Herdr::with_bin(bin)
+        PaneHost::herdr_bin(bin)
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_agent_is_alive_when_its_pid_runs_with_the_recorded_start_time() {
         let dir = tempfile::tempdir().unwrap();
@@ -214,7 +190,6 @@ mod tests {
         assert!(alive(&w), "the pid and its start time match");
         w.agent_started = Some(start + 1);
         assert!(!alive(&w), "the pid runs, but it started at another time");
-        // An old record has no start time: the pid alone counts.
         w.agent_started = None;
         assert!(alive(&w), "the pid runs");
         w.agent_pid = Some(2_000_000_000);
@@ -225,6 +200,7 @@ mod tests {
         assert!(!alive(&w), "no pid");
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_pane_and_the_screen_are_read_apart_and_only_for_a_worker_with_a_pane() {
         let dir = tempfile::tempdir().unwrap();
@@ -267,6 +243,7 @@ mod tests {
         assert_eq!(on(&mut w, None), Observation::default());
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_transcript_gives_its_size_and_the_time_it_was_written() {
         let dir = tempfile::tempdir().unwrap();
@@ -304,8 +281,6 @@ mod tests {
         assert_eq!(live.observe(&w), Observation::default());
     }
 
-    /// A fleet in `dir` for `horch ledger watch --once`: a ledger with 1 run
-    /// and 1 working worker, and a herdr that is not there. Returns the context and the run.
     fn once_fleet(dir: &Path) -> (horch_core::runtime::RuntimeContext, runs::Run, String) {
         use horch_core::runtime::{MapEnv, RuntimeContext};
         use horch_core::taskledger::model::Actor;
@@ -326,14 +301,12 @@ mod tests {
         let (run, worker) = store
             .immediate(|tx| {
                 let run = runs::create(tx, dir, &new_run)?;
-                // FR-12: a task needs an idea in flight of the feature of its run.
                 horch_core::taskledger::schema::run_idea(
                     tx,
                     &run.run_id,
                     &horch_core::taskledger::util::now(),
                     true,
                 )?;
-                // No git repository: the task works in the shared checkout.
                 let mut a = NewTask::work("a", "a.md", "dev");
                 a.worktree_mode = horch_core::taskledger::model::WorktreeMode::Shared;
                 let task = tasks::add(tx, &run, &a, Actor::Orchestrator)?.task_id;
@@ -342,10 +315,6 @@ mod tests {
                     persona: "dev".into(),
                     ..Default::default()
                 };
-                // This test is the live agent of the worker. fleetd binds
-                // the task to a live attempt that owns it (FR-5), and the
-                // fleet clock of 1 pass stays within the stall_after_s of
-                // the bind, so no pass stops it.
                 let me = std::process::id();
                 let started = horch_core::procid::start_time(me);
                 let agent = horch_core::fleetd::task_execution::domain::task::Recorded {
@@ -379,8 +348,6 @@ mod tests {
             assert!(checked[0][field].is_string(), "{field}: {json}");
         }
         assert!(checked[0]["round"].is_i64(), "{json}");
-        // It was a pass of fleetd: it took a generation and wrote the
-        // heartbeat of the pass.
         let generation: i64 = Store::open(&ctx.paths.ledger_db)
             .unwrap()
             .conn()
@@ -397,7 +364,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (ctx, run, worker) = once_fleet(dir.path());
         let mut store = Store::open(&ctx.paths.ledger_db).unwrap();
-        // This test is the fleetd that holds the lock.
         let held = fleetd_row::start(&ctx.paths.fleet_root, &mut store)
             .unwrap()
             .expect("the fleetd lock");
@@ -410,8 +376,6 @@ mod tests {
                 std::process::id()
             )
         );
-        // No second pass: the generation of the holder stays, no heartbeat
-        // is written, and the worker is not checked or reaped.
         let generation: i64 = store
             .conn()
             .query_row("SELECT generation FROM fleetd", [], |r| r.get(0))
@@ -422,11 +386,6 @@ mod tests {
         assert_eq!(after.status, before.status);
     }
 
-    /// `horch ledger watch --once` runs the Phase 4 pass of fleetd: its 1
-    /// pass binds the ready task of a run to a push attempt
-    /// (`docs/tickets/fleetd-p4/46-pass-wiring-dispatch-and-verifier.md`).
-    /// The run has no orchestrator pane, so its spawn waits: the bind is the
-    /// fact that this test reads.
     #[test]
     fn watch_once_runs_the_phase4_pass() {
         use horch_core::runtime::{MapEnv, RuntimeContext};
@@ -460,13 +419,20 @@ mod tests {
             "a",
         ]);
         let db = dir.join("ledger.sqlite3");
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let failing_job_host = bin.join("horch");
+        std::fs::write(&failing_job_host, "#!/bin/sh\nexit 1\n").unwrap();
+        horch_platform::fs::make_executable(&failing_job_host).unwrap();
+        let path = std::env::var("PATH").unwrap_or_default();
         let env = MapEnv::new(dir)
+            .with_exe(bin.join("horch-test"))
+            .with("PATH", &path)
             .with("HORCH_STATE_DIR", dir.join("state").to_str().unwrap())
             .with("HORCH_DATA_DIR", dir.join("data").to_str().unwrap())
             .with("HORCH_LEDGER_DB", db.to_str().unwrap())
             .with("HORCH_HERDR_BIN", dir.join("no-herdr").to_str().unwrap());
         let ctx = RuntimeContext::from_env(&env).unwrap();
-        // The load of the build host does not hold dispatch in this test.
         let root = &ctx.paths.fleet_root;
         std::fs::create_dir_all(root).unwrap();
         std::fs::write(
@@ -483,8 +449,6 @@ mod tests {
         let (run, task) = store
             .immediate(|tx| {
                 let run = runs::create(tx, &project, &new_run)?;
-                // A task needs an idea in flight of the feature of its run
-                // (FR-12).
                 run_idea(tx, &run.run_id, &util::now(), true)?;
                 let mut t = NewTask::work("a", "a.md", "dev");
                 t.worktree_mode = WorktreeMode::Shared;
@@ -495,8 +459,8 @@ mod tests {
 
         super::once_report(&ctx, &run, true, true).unwrap();
 
-        // A host with no check sandbox holds the persona (SR-4).
-        if horch_platform::sandbox::host_problem(None).is_some() {
+        let path = std::env::var_os("PATH");
+        if horch_platform::sandbox::host_problem(path.as_deref()).is_some() {
             let status: String = store
                 .conn()
                 .query_row(
@@ -508,15 +472,20 @@ mod tests {
             assert_eq!(status, "ready", "no check sandbox: no bind");
             return;
         }
-        let (status, via): (String, String) = store
+        let (status, not_before, via, outcome): (String, Option<i64>, String, String) = store
             .conn()
             .query_row(
-                "SELECT t.status, a.via FROM tasks t JOIN attempts a ON a.task_id = t.task_id
+                "SELECT t.status, t.not_before, a.via, a.outcome
+                 FROM tasks t JOIN attempts a ON a.task_id = t.task_id
                  WHERE t.task_id = ?1",
                 [&task],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .unwrap();
-        assert_eq!((status.as_str(), via.as_str()), ("leased", "push"));
+        assert_eq!(
+            (status.as_str(), via.as_str(), outcome.as_str()),
+            ("ready", "push", "crashed")
+        );
+        assert!(not_before.is_some(), "no backoff after the crashed attempt");
     }
 }

@@ -1,9 +1,3 @@
-//! The awake clock: it does not count sleep, and 2 processes of 1 boot can
-//! compare their readings (design, "One fleet clock for each timer"; PL-5).
-//!
-//! The test of 2 processes starts this test binary again as a child. The
-//! env var `READER_ENV` makes the test `reader` print 1 reading.
-
 use horch_platform::awake::{self, AwakeInstant};
 use std::process::Command;
 use std::time::Duration;
@@ -11,8 +5,6 @@ use std::time::Duration;
 const READER_ENV: &str = "HORCH_PLATFORM_TEST_AWAKE_READER";
 const READING: &str = "HORCH-PLATFORM-TEST-READING";
 
-/// The child mode: print 1 reading as `READING <boot_id> <awake_ms>`. Not a
-/// test of its own: it returns at once when the env var is not set.
 #[test]
 fn reader() {
     if std::env::var_os(READER_ENV).is_none() {
@@ -38,7 +30,6 @@ fn awake_clock_moves_forward() {
     assert!(!first.boot_id.is_empty());
     assert_eq!(first.boot_id, second.boot_id);
     let elapsed = second.elapsed_since(&first).expect("1 boot");
-    // Each reading drops its part of a millisecond.
     assert!(elapsed >= Duration::from_millis(49), "{elapsed:?}");
     assert!(elapsed < Duration::from_secs(10), "{elapsed:?}");
 }
@@ -99,9 +90,6 @@ fn an_earlier_reading_gives_no_time() {
     assert_eq!(first.elapsed_since(&second), None);
 }
 
-/// Windows: `boot_id` is the boot time in whole seconds since the Unix
-/// epoch, from the system time minus `GetTickCount64`. It is in the
-/// past.
 #[cfg(windows)]
 #[test]
 fn windows_boot_id_is_the_boot_time_in_seconds() {
@@ -113,12 +101,9 @@ fn windows_boot_id_is_the_boot_time_in_seconds() {
         .as_secs();
 
     assert!(boot <= wall, "boot {boot} after now {wall}");
-    // 2017-01-01: no CI machine booted before it.
     assert!(boot > 1_483_228_800, "boot {boot}");
 }
 
-/// Windows: `awake_ms` comes from `QueryUnbiasedInterruptTime`, so it is
-/// at most the time since boot.
 #[cfg(windows)]
 #[test]
 fn windows_awake_ms_is_at_most_the_time_since_boot() {
@@ -129,6 +114,5 @@ fn windows_awake_ms_is_at_most_the_time_since_boot() {
         .unwrap()
         .as_secs();
 
-    // 1 s for the rounding of the boot time.
     assert!(now.awake_ms / 1000 <= wall - boot + 1);
 }

@@ -68,7 +68,7 @@ def escape(text: str) -> str:
             out.extend(unit)
             used += size
             continue
-        if len(unit) > 1:  # a tag run: keep what fits, then close it
+        if len(unit) > 1:
             close = unit[-1]
             if used + len(unit[0]) + len(close) <= room:
                 out.append(unit[0])

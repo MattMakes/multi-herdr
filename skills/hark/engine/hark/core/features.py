@@ -57,9 +57,6 @@ def _signal():
     return scipy.signal
 
 
-# ---------------------------------------------------------------- envelope
-
-
 def _centred_bounds(n: int, w2: int) -> tuple[np.ndarray, np.ndarray]:
     """[a, b) of the window around each 1 ms centre 48 k + 24, clipped to [0, n]."""
     centres = 48 * np.arange((n + 47) // 48) + 24
@@ -102,9 +99,6 @@ def envelope_times(m: np.ndarray) -> dict:
     attack = float(np.argmax(rise >= 0.9 * rise.max())) if rise.size else None
     ip = int(np.argmax(e10))
     return {"attack_at": i0 / 1000, "peak_at": ip / 1000, "attack_ms": attack, "decay_ms": _decay_ms(e10, ip)}
-
-
-# ---------------------------------------------------------------- levels and loudness
 
 
 def _as_stereo(x: np.ndarray) -> np.ndarray:
@@ -233,9 +227,6 @@ def _loudness(x: np.ndarray, dur: float) -> dict:
     return {**_lufs_field(x, dur), **_short_term_field(x, dur), **_lra_field(x, dur)}
 
 
-# ---------------------------------------------------------------- time domain
-
-
 def _rms(v: np.ndarray) -> float:
     return float(np.sqrt(np.mean(v * v)))
 
@@ -273,9 +264,6 @@ def _envelope(m: np.ndarray) -> dict:
     env = envelope_times(m)
     whole = {k: (None if env[k] is None else int(round(env[k]))) for k in ("attack_ms", "decay_ms")}
     return {"attack_at": _r(env["attack_at"], 3), "peak_at": _r(env["peak_at"], 3), **whole}
-
-
-# ---------------------------------------------------------------- spectrum
 
 
 def _welch(m: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -347,9 +335,6 @@ def brightness_hz(m: np.ndarray, sr: int = 48000) -> int | None:
         return None
     f, mag = _stft_mag(m, sr)
     return _median_centroid(f, _active_frames(mag))
-
-
-# ---------------------------------------------------------------- librosa features
 
 
 def _to22(m: np.ndarray, sr: int) -> np.ndarray:
@@ -447,9 +432,6 @@ def _music(y22: np.ndarray, m: np.ndarray) -> dict:
     return out
 
 
-# ---------------------------------------------------------------- measure
-
-
 def _num(v: float | None) -> str:
     return "?" if v is None else f"{v:g}"
 
@@ -517,9 +499,6 @@ def measure(src: Any, music: bool = False, start: float | None = None, end: floa
     return result
 
 
-# ---------------------------------------------------------------- summary
-
-
 def _silent_line(name: str, r: dict) -> str:
     what = "digitally silent" if r.get("digital_silence_frac", 0) >= 0.999 else "near-silent"
     return (f"{name}: {r['duration']:.3f} s, {what} (peak {r['peak_dbfs']:.0f} dBFS): nothing to measure; "
@@ -567,9 +546,6 @@ def summary_line(name: str, r: dict) -> str:
     clipped = f"{r['clipped_samples']} clipped samples" if r.get("clipped_samples") else None
     parts = [head, _loud_part(r), _envelope_part(r), clipped, _music_part(r), _bands_part(r)]
     return "; ".join(p for p in parts if p) + "."
-
-
-# ---------------------------------------------------------------- CLI
 
 
 def _measure_file(path: str, args: argparse.Namespace) -> dict:

@@ -1,12 +1,3 @@
-//! The handlers of the worker kinds: `worker_stop` and the records of 1
-//! spawn of fleetd (docs/tickets/fleetd-p5/19-handlers-worker.md; RR-5,
-//! RR-8). Ticket 48 of fleetd-p6 retires `spawn`, `worker_reap`,
-//! `worker_new`, `worker_pid`, `orchestrator_claim` and
-//! `orchestrator_stop`.
-//!
-//! Each test sends its request through `requests::handle` to a temp ledger
-//! at generation 1 and checks the rows that the command of today writes.
-
 #![cfg(unix)]
 
 use std::path::{Path, PathBuf};
@@ -66,11 +57,9 @@ fn git(dir: &Path, args: &[&str]) {
     assert!(o.status.success(), "git {}", args.join(" "));
 }
 
-/// A git repo with the run branch, a ledger at generation 1 with 1 active
-/// run, and the handlers of this module.
 fn world() -> World {
     let tmp = tempfile::tempdir().unwrap();
-    let top = tmp.path().canonicalize().unwrap();
+    let top = horch_platform::path::canonicalize(tmp.path()).unwrap();
     let root: PathBuf = top.join("repo");
     std::fs::create_dir_all(&root).unwrap();
     git(&root, &["init", "--quiet", "-b", "main"]);
@@ -98,7 +87,6 @@ fn world() -> World {
         },
     )
     .unwrap();
-    // FR-12: a task needs an idea in flight of the feature of its run.
     horch_core::taskledger::schema::run_idea(
         &conn,
         &run.run_id,
@@ -121,9 +109,6 @@ fn world() -> World {
 }
 
 impl World {
-    /// The bind of `task` to 1 push attempt in `launching` of a new
-    /// `spawning` worker, as the dispatch of fleetd does it. Gives its
-    /// worker.
     fn bind(&mut self, task: &str) -> String {
         let tx = self.conn.transaction().unwrap();
         let config = FleetConfig::default();
@@ -180,7 +165,6 @@ impl World {
         .outcome
     }
 
-    /// Send 1 new request and give its result; a refusal fails the test.
     fn send(&mut self, kind: Kind, payload: Value) -> Value {
         let req = self.request(kind, payload);
         match self.send_request(&req) {
@@ -212,8 +196,6 @@ impl World {
             .unwrap()
     }
 
-    /// A worker row of the run with the agent `pid`, as a spawn of today
-    /// leaves it.
     fn worker(&self, task: Option<&str>) -> String {
         let id = workers::insert(
             &self.conn,
@@ -243,7 +225,6 @@ impl World {
         id
     }
 
-    /// The rows that an effect of a request changes, as 1 text.
     fn rows(&self) -> String {
         let mut out = String::new();
         for sql in [
@@ -348,10 +329,6 @@ fn each_kind_twice_with_1_request_id_has_1_effect() {
     }
 }
 
-// ─── the records of 1 spawn (ticket 23 of fleetd-p5) ────────────────────
-
-/// A worker row of another run, so a payload that names it with run `r1`
-/// is refused.
 fn worker_of_other_run(w: &World) -> String {
     let root = std::path::PathBuf::from(&w.run.project_root);
     let other = runs::create(
@@ -363,7 +340,6 @@ fn worker_of_other_run(w: &World) -> String {
         },
     )
     .unwrap();
-    // FR-12: a task needs an idea in flight of the feature of its run.
     horch_core::taskledger::schema::run_idea(
         &w.conn,
         &other.run_id,
@@ -381,53 +357,6 @@ fn worker_of_other_run(w: &World) -> String {
         },
     )
     .unwrap()
-}
-
-#[test]
-fn spawn_adopt_adopts_a_restart_row_once() {
-    let mut w = world();
-    let task = w.add("T", WorktreeMode::Shared);
-    let wid = w.bind(&task);
-    w.conn
-        .execute(
-            "UPDATE workers SET target_task_id = ?2 WHERE worker_id = ?1",
-            params![wid, task],
-        )
-        .unwrap();
-    let payload = json!({
-        "run_id": w.run.run_id, "worker_id": wid, "persona": "opus",
-        "target_task_id": task, "spawn_pid": "4242",
-    });
-    let out = w.send(Kind::SpawnAdopt, payload.clone());
-    assert_eq!(out["worker_id"], json!(wid));
-    let data: String = w
-        .conn
-        .query_row(
-            "SELECT data_json FROM events WHERE entity_id = ?1 AND cause = 'adopted_by_spawn'",
-            [&wid],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert!(data.contains("4242"), "{data}");
-    let why = w.refused(Kind::SpawnAdopt, payload);
-    assert!(why.contains("another spawn adopted the row"), "{why}");
-    let why = w.refused(
-        Kind::SpawnAdopt,
-        json!({
-            "run_id": w.run.run_id, "worker_id": wid, "persona": "codex",
-            "target_task_id": task, "spawn_pid": "1",
-        }),
-    );
-    assert!(why.contains("not a row of persona codex"), "{why}");
-    let other = worker_of_other_run(&w);
-    let why = w.refused(
-        Kind::SpawnAdopt,
-        json!({
-            "run_id": w.run.run_id, "worker_id": other, "persona": "opus",
-            "target_task_id": task, "spawn_pid": "1",
-        }),
-    );
-    assert!(why.contains("not a row of run r1"), "{why}");
 }
 
 #[test]
@@ -471,13 +400,8 @@ fn worker_launched_records_the_pane_and_the_launch() {
             "harness": "claude", "model": "m1", "effort": "high",
         }),
     );
-    let row: (
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-    ) = w
+    type Cols = Option<String>;
+    let row: (Cols, Cols, Cols, Cols, Cols) = w
         .conn
         .query_row(
             "SELECT pane_id, role, harness, model, effort FROM workers WHERE worker_id = ?1",
@@ -535,4 +459,59 @@ fn worker_launch_failed_ends_an_unclaimed_row() {
     );
     assert!(why.contains("is not a worker of run"), "{why}");
     assert_eq!(workers::get(&w.conn, &other).unwrap().status, "spawning");
+}
+
+#[test]
+fn worker_launch_failed_of_a_push_attempt_ends_it_crashed_and_queues_the_task() {
+    let mut w = world();
+    let task = w.add("T", WorktreeMode::Shared);
+    let wid = w.bind(&task);
+    let attempt = format!("{task}/A1");
+    w.send(
+        Kind::WorkerLaunchFailed,
+        json!({ "run_id": w.run.run_id, "worker_id": wid, "reason": "no record matches 'x'" }),
+    );
+    assert_eq!(workers::get(&w.conn, &wid).unwrap().status, "launch_failed");
+    let (state, outcome): (String, Option<String>) = w
+        .conn
+        .query_row(
+            "SELECT state, outcome FROM attempts WHERE id = ?1",
+            [&attempt],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (state.as_str(), outcome.as_deref()),
+        ("ended", Some("crashed")),
+        "{}",
+        w.rows()
+    );
+    let t = tasks::get(&w.conn, &task).unwrap();
+    assert_eq!(
+        (t.status.as_str(), t.attempts),
+        ("ready", 1),
+        "{}",
+        w.rows()
+    );
+    assert_eq!(t.current_worker_id, None, "{}", w.rows());
+
+    w.send(
+        Kind::WorkerLaunchFailed,
+        json!({ "run_id": w.run.run_id, "worker_id": wid, "reason": "again" }),
+    );
+    let ended: i64 = w
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM attempts WHERE task_id = ?1 AND state = 'ended'",
+            [&task],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(ended, 1, "{}", w.rows());
+    assert_eq!(
+        tasks::get(&w.conn, &task).unwrap().attempts,
+        1,
+        "{}",
+        w.rows()
+    );
 }

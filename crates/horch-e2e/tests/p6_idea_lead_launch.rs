@@ -1,23 +1,3 @@
-//! The e2e tests of the launch of an idea-lead sub-orchestrator (T-890;
-//! `docs/specs/fleetd/design.md`: FR-2, FR-7, I7).
-//!
-//! Each test makes its own ledger, fleet root and git project in a temp
-//! folder, and runs a test `horch fleetd` with the fake herdr and the fake
-//! agents. `horch idea add` captures 1 idea. The dispatcher gives it a
-//! feature, and fleetd starts 1 idea-lead attempt through the launch path
-//! of each other attempt: `horch spawn idea-lead --attempt <id>`.
-//!
-//! A test selects the fake idea-lead as it selects the fake agent of a
-//! worker: the persona `idea-lead` has the agent `claude`, and the `claude`
-//! on the `PATH` of the harness is `fake-claude`. `HORCH_FAKE_SCENARIO`
-//! names its keys. Each test waits for an event, never for a time.
-//!
-//! The pane rule is the same for each launch of fleetd: in Phase 6 no run
-//! has an orchestrator pane, so a launch with no recorded pane splits the
-//! first pane of the herdr workspace whose label is the project folder
-//! name. [`a_task_attempt_of_a_run_with_no_orchestrator_pane_reaches_live`]
-//! proves it for a push attempt of a task.
-
 #![cfg(unix)]
 
 use std::path::PathBuf;
@@ -30,10 +10,8 @@ use horch_core::taskledger::{schema, Store};
 use horch_e2e::harness::{fixtures, wait_for_or, Harness};
 use serde_json::Value;
 
-/// The `fleet.toml` of each test: 1 pass each second.
 const FLEET_TOML: &str = "pass_period_s = 1\n";
 
-/// The text of the idea of each test.
 const IDEA_TEXT: &str = "Show the queue length in the status bar";
 
 fn text(o: &Output) -> String {
@@ -45,9 +23,6 @@ fn text(o: &Output) -> String {
     )
 }
 
-/// A fleet with a test fleetd and 1 idea that `horch idea add` captured.
-/// With `workspace`, herdr has a workspace with the label of the project
-/// folder, as `horch fleet` makes it.
 struct World {
     h: Harness,
 }
@@ -60,13 +35,8 @@ impl World {
         w
     }
 
-    /// The fleet of [`World::new`] with no idea: `seed` writes rows before
-    /// fleetd starts.
     fn fleet(name: &str, workspace: bool, seed: impl FnOnce(&Harness)) -> World {
         let mut h = Harness::new(name).with_git();
-        // The ledger and the fleet root are outside the state folder. The
-        // launch gives the pane worker FLEET_ROOT, so it finds the operator
-        // token and the channel of this fleetd.
         let fleet = h.root.join("fleet");
         std::fs::create_dir_all(&fleet).unwrap();
         std::fs::write(fleet.join("fleet.toml"), FLEET_TOML).unwrap();
@@ -81,7 +51,6 @@ impl World {
             "HORCH_QUOTA_FILE",
             fixtures().join("quota/all-ok.json").to_string_lossy(),
         );
-        // `exec`: each pane runs its command. `stay`: the fake agent stays.
         h.set("HORCH_FAKE_SCENARIO", "exec,stay");
         if workspace {
             h.fleet_workspace();
@@ -95,8 +64,6 @@ impl World {
         self.h.fleet_root()
     }
 
-    /// The name of the project folder: the label that `horch fleet` gives
-    /// its herdr workspace.
     fn project_label(&self) -> String {
         self.h
             .project
@@ -106,7 +73,6 @@ impl World {
             .into_owned()
     }
 
-    /// Rows of 1 text column of the ledger.
     fn rows(&self, sql: &str) -> Vec<String> {
         let conn = rusqlite::Connection::open(self.h.ledger_db()).unwrap();
         let mut stmt = conn.prepare(sql).unwrap();
@@ -116,8 +82,6 @@ impl World {
             .collect()
     }
 
-    /// What a failed wait shows: the argv of each fake call, the output of
-    /// fleetd, the log of its launches and the rows of the attempts.
     fn diagnostics(&self) -> String {
         let mut calls: Vec<String> = self
             .h
@@ -143,7 +107,6 @@ impl World {
     }
 }
 
-/// The argv of the call of the fake `claude` whose argv holds `needle`.
 fn claude_call(w: &World, needle: &str) -> Vec<String> {
     wait_for_or(
         "the fake idea-lead to start",
@@ -162,15 +125,10 @@ fn claude_call(w: &World, needle: &str) -> Vec<String> {
     )
 }
 
-/// fleetd starts the fake idea-lead of the new idea in the herdr workspace
-/// of the project. Its launch argument names the idea, its phase and its
-/// idea folder, and the attempt has no task.
 #[test]
 fn fleetd_starts_the_fake_idea_lead_of_a_new_idea() {
     let w = World::new("p6-lead", true);
 
-    // The pass can add other ideas (a profile drift), so the test finds
-    // its idea by the text of its idea.md.
     let idea = wait_for_or(
         "the idea file of the new idea",
         || {
@@ -192,14 +150,10 @@ fn fleetd_starts_the_fake_idea_lead_of_a_new_idea() {
     assert!(brief.contains("phase clarifying"), "{brief}");
     let word = folder.display().to_string();
     assert!(brief.split_whitespace().any(|w| w == word), "{brief}");
-    // The idea-lead persona ran: its profile denies the approve command.
     assert!(
         argv.iter().any(|a| a.contains("Bash(horch idea approve*)")),
         "{argv:?}"
     );
-    // The first attempt of the idea is its idea-lead attempt. The launched
-    // `horch spawn` exits after the pane opens, so a later pass can end the
-    // attempt and start the next one (T-892 owns the process of a launch).
     let attempts = w.rows(&format!(
         "SELECT id FROM attempts WHERE task_id IS NULL AND idea_id = '{idea}' ORDER BY rowid"
     ));
@@ -211,8 +165,6 @@ fn fleetd_starts_the_fake_idea_lead_of_a_new_idea() {
     );
 }
 
-/// With no recorded pane and no herdr workspace with the label of the
-/// project folder, the launch fails with a clear text and starts no agent.
 #[test]
 fn an_idea_lead_with_no_pane_and_no_project_workspace_does_not_start() {
     let w = World::new("p6-nopane", false);
@@ -241,8 +193,6 @@ fn an_idea_lead_with_no_pane_and_no_project_workspace_does_not_start() {
     );
 }
 
-/// The project declares its gates and commits the file, so no hold of a
-/// missing fast gate stops the dispatch (Phase 4, Q-C).
 fn declare_gates(h: &Harness) {
     std::fs::write(
         h.project.join("fleet.toml"),
@@ -258,9 +208,6 @@ fn declare_gates(h: &Harness) {
     }
 }
 
-/// The run `r1` with its idea in flight (FR-12) and 1 queued task of the
-/// persona `opus`. The run has no orchestrator and no pane, as each run of
-/// Phase 6.
 fn seed_task(h: &Harness) {
     declare_gates(h);
     let ticket = "# T0\nDo the work of T0.\n";
@@ -287,10 +234,6 @@ fn seed_task(h: &Harness) {
     tasks::add(conn, &run, &new, Actor::Orchestrator).unwrap();
 }
 
-/// A push attempt of a task of a run with no orchestrator pane launches in
-/// the herdr workspace of the project, and reaches `live`. The ledger and
-/// the fleet root are outside the state folder, so the pane worker finds
-/// the operator token only through the FLEET_ROOT of the launch.
 #[test]
 fn a_task_attempt_of_a_run_with_no_orchestrator_pane_reaches_live() {
     let w = World::fleet("p6-push", true, seed_task);

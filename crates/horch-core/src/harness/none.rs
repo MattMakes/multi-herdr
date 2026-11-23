@@ -1,6 +1,3 @@
-//! `agent: none`: the smoke teammate, which exercises the machinery and
-//! launches no CLI.
-
 use horch_platform::start::Command;
 use std::path::Path;
 
@@ -18,7 +15,6 @@ impl Harness for NoAgent {
         HarnessKind::None
     }
 
-    /// Nothing is launched, so no field can fail to take effect.
     fn validate(&self, _t: &Teammate) -> Vec<&'static str> {
         Vec::new()
     }
@@ -40,9 +36,6 @@ impl Harness for NoAgent {
     }
 }
 
-/// The operator boundary of `agent: none` (SR-8): it launches no process,
-/// so no process of it can read the token, connect to the command channel
-/// or write into the request folder. It holds on each OS.
 pub fn operator_boundary(
     _teammate: &Teammate,
     _fleet_root: &Path,

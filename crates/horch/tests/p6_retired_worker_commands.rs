@@ -1,19 +1,6 @@
-//! The worker request kinds are retired (ticket 48 of fleetd-p6; REQUIRED
-//! item 2): `spawn`, `worker_new`, `worker_pid`, `worker_reap`,
-//! `orchestrator_claim`, `orchestrator_stop` and `task_unblock`. Each old
-//! command exits 1, writes nothing and prints the line of the table "Old
-//! flow and new" of `docs/tickets/fleetd-p6/MAP.md`. fleetd refuses a
-//! request file of a retired kind with the reason `retired kind: <new
-//! command>`. `worker_stop` and `task_fallback` stay (Q1 of MAP.md), and
-//! the internal spawn of fleetd (`horch spawn --attempt`) sends no `spawn`
-//! request.
-//!
-//! Each test uses only temporary folders: the development `horch` gets its
-//! own home, data, state, ledger and fleet root, and the watchdog is off.
-//! The tests are unix only: the request folder and socket checks are unix
-//! checks.
-
 #![cfg(unix)]
+
+mod support;
 
 use std::fs::{self, OpenOptions, Permissions};
 use std::io::Write;
@@ -46,22 +33,15 @@ use rusqlite::{params, Connection};
 use serde_json::json;
 use tempfile::TempDir;
 
-/// The new action of `horch spawn` and of `horch ledger spawn`.
 const SPAWN: &str = "fleetd launches each attempt. To pair with a persona, plan its task with an interactive persona";
-/// The new action of `horch ledger worker new` and `worker pid`.
 const RECORDS: &str = "fleetd records each attempt at its launch";
-/// The new action of `horch ledger reap`.
 const REAP: &str =
     r#"fleetd stops an orphan worker. To stop 1 worker: horch ledger stop <worker> "<reason>""#;
-/// The new action of `horch ledger unblock`.
 const UNBLOCK: &str = "Queue the task again: horch task requeue <task>";
-/// The new action of the orchestrator claim of `horch fleet start`.
 const CLAIM: &str = "horch fleet start starts fleetd and herdr with no orchestrator, and fleetd starts 1 sub-orchestrator for each feature";
-/// The new action of `horch fleet stop`.
 const FLEET_STOP: &str = r#"No orchestrator runs, so there is none to stop. fleetd and the herdr server stay under the service manager of the OS. To stop 1 worker: horch ledger stop <worker> "<reason>""#;
 
-/// Each kind that this ticket retires and its new action.
-const RETIRED_KINDS: [(&str, &str); 7] = [
+const RETIRED_KINDS: [(&str, &str); 8] = [
     ("spawn", SPAWN),
     ("worker_new", RECORDS),
     ("worker_pid", RECORDS),
@@ -69,9 +49,9 @@ const RETIRED_KINDS: [(&str, &str); 7] = [
     ("orchestrator_claim", CLAIM),
     ("orchestrator_stop", FLEET_STOP),
     ("task_unblock", UNBLOCK),
+    ("spawn_adopt", RECORDS),
 ];
 
-/// The 16 operator kinds of the design ("Each request kind has a class").
 const DESIGN_OPERATOR: [&str; 16] = [
     "idea_add",
     "idea_amend",
@@ -91,10 +71,8 @@ const DESIGN_OPERATOR: [&str; 16] = [
     "ledger_dismiss",
 ];
 
-/// The worker kinds of the design: files of an attempt or of an idea.
 const DESIGN_WORKER: [&str; 4] = ["progress", "result", "ask", "idea_note"];
 
-/// The kinds that MAP.md keeps (Q1).
 const KEPT: [&str; 7] = [
     "worker_stop",
     "task_fallback",
@@ -105,12 +83,7 @@ const KEPT: [&str; 7] = [
     "worktree_triage",
 ];
 
-/// The kinds that MAP.md does not name and that no ticket of Phase 6
-/// retires: the records of the internal spawn of fleetd (`--attempt` and
-/// the restart on a fallback), and the last direct writers of the CLI
-/// (T-885).
 const RECORDS_OF_TODAY: [&str; 8] = [
-    "spawn_adopt",
     "spawn_gate_note",
     "worker_launched",
     "worker_launch_failed",
@@ -118,6 +91,7 @@ const RECORDS_OF_TODAY: [&str; 8] = [
     "worker_done",
     "run_adopt",
     "question_answer",
+    "session_records",
 ];
 
 struct Out {
@@ -126,19 +100,13 @@ struct Out {
     err: String,
 }
 
-/// A project folder, the folders of `horch`, a ledger with the `fleetd`
-/// row of this process and the operator token. With [`World::up`], this
-/// process serves the channel as fleetd.
 struct World {
     server: Option<ChannelServer>,
-    // Dropped after the server: the server holds a socket in this folder.
     dir: TempDir,
 }
 
 impl World {
-    /// The ledger and the token, and no server: fleetd is down.
     fn down() -> World {
-        // A short folder: `sun_path` holds about 104 bytes on macOS.
         let dir = tempfile::Builder::new()
             .prefix("rw")
             .permissions(Permissions::from_mode(0o700))
@@ -161,16 +129,21 @@ impl World {
         w
     }
 
-    /// [`World::down`], then the channel served by this process with the
-    /// task and worker handlers.
     fn up() -> World {
         let mut w = World::down();
+        let handlers = w.handlers();
+        w.server =
+            Some(ChannelServer::start(&w.fleet(), w.conn(), Generation(1), handlers).unwrap());
+        w
+    }
+
+    fn handlers(&self) -> Handlers {
         let mut handlers = Handlers::new();
         handlers_task::register(
             &mut handlers,
             TaskHandlers {
                 config: Arc::new(FleetConfig::default()),
-                evidence_root: w.root().join("evidence"),
+                evidence_root: self.root().join("evidence"),
             },
         );
         handlers_worker::register(
@@ -179,13 +152,11 @@ impl World {
                 guard: Generation(1),
             },
         );
-        w.server =
-            Some(ChannelServer::start(&w.fleet(), w.conn(), Generation(1), handlers).unwrap());
-        w
+        handlers
     }
 
     fn root(&self) -> PathBuf {
-        self.dir.path().canonicalize().unwrap()
+        horch_platform::path::canonicalize(self.dir.path()).unwrap()
     }
 
     fn project(&self) -> PathBuf {
@@ -207,7 +178,6 @@ impl World {
         conn
     }
 
-    /// The development `horch` with only the temporary folders.
     fn horch(&self, args: &[&str]) -> Out {
         let root = self.root();
         let out = Command::new(env!("CARGO_BIN_EXE_horch"))
@@ -224,6 +194,10 @@ impl World {
             .env("FLEET_ROOT", self.fleet())
             .env("HORCH_WORKSPACE_ID", "w1")
             .env("HORCH_NO_WATCHDOG", "1")
+            .env(
+                "HORCH_MACHINE_FILE",
+                support::fleetd::healthy_machine_file(&root),
+            )
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .output()
             .unwrap();
@@ -234,8 +208,6 @@ impl World {
         }
     }
 
-    /// `args` exits 1, prints `<command> is retired. <instead>`, and
-    /// sends no request: no `requests` row and no request file.
     fn assert_retired(&self, args: &[&str], command: &str, instead: &str) {
         let o = self.horch(args);
         let line = format!("{command} is retired. {instead}");
@@ -253,7 +225,6 @@ impl World {
         assert_eq!(self.request_kinds(), Vec::<String>::new(), "{args:?}");
     }
 
-    /// The kind of each `requests` row and of each request file.
     fn request_kinds(&self) -> Vec<String> {
         let conn = self.conn();
         let mut stmt = conn.prepare("SELECT kind FROM requests").unwrap();
@@ -272,7 +243,6 @@ impl World {
         kinds
     }
 
-    /// The `requests` rows: kind and state, in the order of receipt.
     fn requests(&self) -> Vec<(String, String)> {
         let conn = self.conn();
         let mut stmt = conn
@@ -284,7 +254,6 @@ impl World {
             .unwrap()
     }
 
-    /// A run `r1` of the project with its idea in flight (FR-12).
     fn run(&self) -> Run {
         let conn = self.conn();
         let run = runs::create(
@@ -302,7 +271,6 @@ impl World {
         run
     }
 
-    /// A task of `run` for `primary`, with `fallback`. Gives its id.
     fn task(&self, run: &Run, primary: &str, fallback: Option<&str>) -> String {
         let mut t = NewTask::work("alpha", "docs/alpha.md", primary);
         t.fallback = fallback.map(str::to_string);
@@ -312,8 +280,6 @@ impl World {
             .task_id
     }
 
-    /// A worker row of `run` for `persona` with the role `role`, in
-    /// `spawning`. Gives its id.
     fn worker(&self, run: &Run, persona: &str, role: &str) -> String {
         workers::insert(
             &self.conn(),
@@ -342,7 +308,6 @@ impl Drop for World {
     }
 }
 
-/// The start time of this test process.
 fn this_start() -> i64 {
     let start = horch_platform::process::start_time(std::process::id())
         .expect("the start time of the test");
@@ -391,7 +356,11 @@ fn kind_catalog_is_the_table_of_the_design_and_the_kept_kinds() {
             format!("retired kind: {instead}")
         );
     }
-    assert_eq!(RETIRED.len(), 14, "MAP.md retires 14 kinds");
+    assert_eq!(
+        RETIRED.len(),
+        15,
+        "MAP.md retires 14 kinds, and T-302 retires spawn_adopt"
+    );
 }
 
 #[test]
@@ -400,7 +369,6 @@ fn spawn_is_retired_and_names_the_launch_of_fleetd() {
     w.assert_retired(&["spawn", "opus"], "horch spawn", SPAWN);
     let run = w.run();
     let target = w.task(&run, "opus", None);
-    // `horch ledger spawn`: a spawn in a ledger run, with a claim target.
     let o = w.horch(&[
         "spawn",
         "opus",
@@ -540,10 +508,6 @@ fn ledger_fallback_still_moves_a_task() {
     );
 }
 
-/// The internal spawn of fleetd for a reviewer task that the review script
-/// queued: `horch spawn <persona> --attempt <id>` opens the pane of the
-/// attempt that fleetd bound. It is not refused, and it sends no `spawn`
-/// request: it writes the task files of the attempt and binds nothing.
 #[test]
 fn fleetd_review_spawn_does_not_use_the_spawn_kind() {
     let w = World::down();
@@ -603,8 +567,6 @@ fn fleetd_review_spawn_does_not_use_the_spawn_kind() {
     );
 }
 
-/// A request file of an old client, written before the update: fleetd
-/// rejects it with the new action, runs no handler and writes no row.
 #[test]
 fn retired_worker_kind_request_file_is_refused_with_the_new_action() {
     let w = World::down();
@@ -661,4 +623,117 @@ fn retired_worker_kind_request_file_is_refused_with_the_new_action() {
         );
     }
     assert_eq!(w.requests(), Vec::<(String, String)>::new());
+}
+
+#[test]
+fn spawn_adopt_request_file_is_refused_as_retired_and_changes_no_row() {
+    let w = World::down();
+    let run = w.run();
+    let task = w.task(&run, "opus", None);
+    let worker = w.worker(&run, "opus", "opus-1");
+    let conn = w.conn();
+    conn.execute(
+        "UPDATE workers SET target_task_id = ?2, attempt = 1 WHERE worker_id = ?1",
+        params![worker, task],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO attempts (id, task_id, worker_id, state, via, started_at)
+         VALUES (?1, ?2, ?3, 'launching', 'push', ?4)",
+        params![format!("{task}/A1"), task, worker, util::now()],
+    )
+    .unwrap();
+    let rows = |c: &Connection| -> (i64, String, String) {
+        c.query_row(
+            "SELECT (SELECT COUNT(*) FROM events WHERE entity != 'needs_you'),
+                    (SELECT status || '|' || IFNULL(agent_pid, '') FROM workers WHERE worker_id = ?1),
+                    (SELECT state FROM attempts WHERE worker_id = ?1)",
+            [&worker],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap()
+    };
+    let before = rows(&conn);
+    let fleet = w.fleet();
+    let token = token_file::ensure(&fleet).unwrap();
+    let dir = requests_dir(&fleet);
+    fs::create_dir_all(&dir).unwrap();
+    fs::set_permissions(&dir, Permissions::from_mode(0o700)).unwrap();
+    let id = "5b1d2c3e-4f50-4a61-8b72-9c0d1e2f3a4b";
+    let line = json!({
+        "request_id": id,
+        "kind": "spawn_adopt",
+        "payload": {
+            "run_id": run.run_id, "worker_id": worker, "persona": "opus",
+            "target_task_id": task, "spawn_pid": "4242",
+        },
+        "token": token.text(),
+    });
+    let path = dir.join(format!("{id}.json"));
+    write_0600(&path, &format!("{line}\n"));
+    let owner = User::current().unwrap();
+    let spool = Spool {
+        fleet_root: &fleet,
+        owner: &owner,
+        token: Some(&token),
+        max_bytes: 64 * 1024,
+        guard: Generation(1),
+    };
+    let start = Instant::now();
+    let mut now = move || start;
+    let mut clock = ScanClock {
+        deadline: Deadline::pass(start, 3600),
+        now: &mut now,
+        stamp: "2026-11-20T00:00:00Z",
+    };
+    let mut scan_conn = w.conn();
+    let outcome = scan(
+        &mut scan_conn,
+        &spool,
+        &mut Cursor::new("2026-11-20T00:00:00Z"),
+        &mut clock,
+        &w.handlers(),
+    )
+    .unwrap();
+    let ScanOutcome::Read(read) = outcome else {
+        panic!("expected a scan of the folder, got {outcome:?}");
+    };
+    let [fact] = read.facts.as_slice() else {
+        panic!("expected 1 fact, got {:?}", read.facts);
+    };
+    let reason = format!("retired kind: {RECORDS}");
+    assert_eq!(fact.handled, Handled::Rejected(reason.clone()));
+    assert_eq!(w.requests(), Vec::<(String, String)>::new());
+    let ingested: (String, String) = conn
+        .query_row(
+            "SELECT outcome, reason FROM ingested WHERE path = ?1",
+            [path.display().to_string()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(ingested, ("rejected".to_string(), reason));
+    let adopted: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM events WHERE cause = 'adopted_by_spawn'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(adopted, 0, "no handler adopted the row");
+    let item: (String, String, String) = conn
+        .query_row(
+            "SELECT kind, entity, state FROM needs_you WHERE entity_id = ?1",
+            [path.display().to_string()],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        item,
+        (
+            "request_file_rejected".to_string(),
+            "request_file".to_string(),
+            "open".to_string()
+        )
+    );
+    assert_eq!(rows(&conn), before, "the refusal changes no row");
 }

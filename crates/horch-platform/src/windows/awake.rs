@@ -1,12 +1,8 @@
-//! The concern awake for Windows.
-
 use std::io;
 use std::time::{SystemTime, UNIX_EPOCH};
 use windows_sys::Win32::System::SystemInformation::GetTickCount64;
 use windows_sys::Win32::System::WindowsProgramming::QueryUnbiasedInterruptTime;
 
-/// `QueryUnbiasedInterruptTime` counts in units of 100 ns and does not
-/// count the time asleep or in hibernation.
 pub(crate) fn awake_ms() -> io::Result<u64> {
     let mut units = 0u64;
     // SAFETY: `units` is a valid, writable `u64` that lives for the call.
@@ -16,9 +12,6 @@ pub(crate) fn awake_ms() -> io::Result<u64> {
     Ok(units / 10_000)
 }
 
-/// The boot time in whole seconds since the Unix epoch: the system time
-/// minus `GetTickCount64`, the milliseconds since boot with the time
-/// asleep. The rounding to 1 s hides the small gap between the 2 reads.
 pub(crate) fn boot_id() -> io::Result<String> {
     // SAFETY: `GetTickCount64` takes no argument and touches no memory of
     // this process.

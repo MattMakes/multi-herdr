@@ -1,24 +1,13 @@
-//! The operator task and worker commands of `horch ledger` send 1 request
-//! to fleetd and write no row themselves (RR-5, FM-24; ticket 22 of
-//! fleetd-p5).
-//!
-//! Each test runs the development `horch` with temporary
-//! `HORCH_DATA_DIR`, `HORCH_STATE_DIR`, `HORCH_LEDGER_DB` and fleet root,
-//! and the watchdog off. The test process plays fleetd: it writes the
-//! `fleetd` row with its own PID and start time, makes the operator token,
-//! and serves the channel in-process with the handlers of the run, task,
-//! worker and custody kinds.
-//!
-//! The tests are unix only: the socket path must be short.
-
 #![cfg(unix)]
 
+use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
 use horch_core::fleetd::fleet_runtime::adapters::channel_server::ChannelServer;
+use horch_core::fleetd::fleet_runtime::adapters::request_wire::{parse_reply, Outcome, Request};
 use horch_core::fleetd::fleet_runtime::adapters::token_file;
 use horch_core::fleetd::fleet_runtime::application::handlers_custody::{self, Custody};
 use horch_core::fleetd::fleet_runtime::application::handlers_run;
@@ -27,8 +16,11 @@ use horch_core::fleetd::fleet_runtime::application::handlers_worker::{self, Work
 use horch_core::fleetd::fleet_runtime::application::requests::Handlers;
 use horch_core::fleetd::fleet_runtime::domain::config::FleetConfig;
 use horch_core::fleetd::fleet_runtime::domain::ledger::Generation;
+use horch_core::fleetd::fleet_runtime::domain::requests::{Kind, RequestId};
 use horch_core::fleetd::integration::application::commands::RefTips;
-use horch_core::taskledger::model::WorkerKind;
+use horch_core::taskledger::model::{Actor, WorkerKind};
+use horch_core::taskledger::runs::{self, NewRun};
+use horch_core::taskledger::tasks::{self, NewTask};
 use horch_core::taskledger::workers::{self, NewWorker};
 use horch_core::taskledger::{util, Store};
 use rusqlite::{params, Connection};
@@ -43,16 +35,26 @@ struct Out {
     err: String,
 }
 
-struct NoRefs;
+struct HeadOnly;
 
-impl RefTips for NoRefs {
-    fn tip(&self, _repo: &Path, _name: &str) -> anyhow::Result<Option<String>> {
-        Ok(None)
+impl RefTips for HeadOnly {
+    fn tip(&self, repo: &Path, name: &str) -> anyhow::Result<Option<String>> {
+        if name != "HEAD" {
+            return Ok(None);
+        }
+        let out = Command::new("git")
+            .args(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"])
+            .current_dir(repo)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()?;
+        Ok(out
+            .status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string()))
     }
 }
 
-/// A fleet in temporary folders. With [`World::up`], the test process
-/// serves the channel as fleetd.
 struct World {
     _tmp: tempfile::TempDir,
     root: PathBuf,
@@ -60,16 +62,13 @@ struct World {
 }
 
 impl World {
-    /// The ledger, the `fleetd` row of this process and the token, and no
-    /// server: fleetd is down.
     fn down() -> World {
-        // A short folder: `sun_path` holds about 104 bytes on macOS.
         let tmp = tempfile::Builder::new()
             .prefix("rt")
             .permissions(std::fs::Permissions::from_mode(0o700))
             .tempdir_in("/tmp")
             .unwrap();
-        let root = tmp.path().canonicalize().unwrap();
+        let root = horch_platform::path::canonicalize(tmp.path()).unwrap();
         for dir in ["home", "fleet", "proj"] {
             std::fs::create_dir_all(root.join(dir)).unwrap();
         }
@@ -91,7 +90,6 @@ impl World {
         w
     }
 
-    /// [`World::down`], then the channel served by this process.
     fn up() -> World {
         let mut w = World::down();
         let mut handlers = Handlers::new();
@@ -114,7 +112,7 @@ impl World {
             Arc::new(Custody {
                 guard: Generation(1),
                 config: FleetConfig::default(),
-                refs: Box::new(NoRefs),
+                refs: Box::new(HeadOnly),
             }),
         );
         let conn = Connection::open(w.ledger()).unwrap();
@@ -128,7 +126,6 @@ impl World {
         self.root.join("ledger.sqlite3")
     }
 
-    /// The evidence folder that the command and the handlers read.
     fn evidence(&self) -> PathBuf {
         self.root.join("evidence")
     }
@@ -141,7 +138,6 @@ impl World {
         self.root.join("proj")
     }
 
-    /// `horch` with `args` and the extra environment `env`.
     fn horch_with(&self, args: &[&str], env: &[(&str, &str)]) -> Out {
         let root = &self.root;
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_horch"));
@@ -171,7 +167,6 @@ impl World {
         }
     }
 
-    /// `horch` with `args` and `env`, which must exit 0.
     fn ok_with(&self, args: &[&str], env: &[(&str, &str)]) -> Out {
         let o = self.horch_with(args, env);
         assert_eq!(
@@ -201,7 +196,6 @@ impl World {
         self.conn().query_row(sql, [], |r| r.get(0)).unwrap()
     }
 
-    /// The kind and state of each `requests` row, in the order of receipt.
     fn requests(&self) -> Vec<(String, String)> {
         let conn = self.conn();
         let mut stmt = conn
@@ -213,16 +207,58 @@ impl World {
             .unwrap()
     }
 
-    /// A run `r1` with the task T-1 of [`TICKET`].
-    fn run_with_task(&self) {
-        std::fs::write(self.proj().join("t1.md"), TICKET).unwrap();
-        self.ok(&["ledger", "run", "new", "r1"]);
-        self.ok(&["ledger", "add", "--file", "t1.md", "--primary", "dev"]);
+    fn run(&self, base: Option<&str>) -> String {
+        let mut store = Store::open(&self.ledger()).unwrap();
+        store
+            .immediate(|tx| {
+                let new = NewRun {
+                    slug: "r1".into(),
+                    base_branch: base.map(Into::into),
+                    ..Default::default()
+                };
+                let run = runs::create(tx, &self.proj(), &new)?;
+                horch_core::taskledger::schema::run_idea(tx, &run.run_id, &util::now(), true)?;
+                Ok(run.run_id)
+            })
+            .unwrap()
     }
 
-    /// A worker of the run that holds T-1 and has a live attempt whose
-    /// wrapper is this test process: each `horch` that this test starts is
-    /// in that attempt.
+    fn raw_request_refusal(&self, kind: Kind, payload: serde_json::Value) -> String {
+        let serde_json::Value::Object(payload) = payload else {
+            panic!("a payload is an object");
+        };
+        let token = token_file::read(&self.fleet()).unwrap();
+        let request = Request {
+            request_id: RequestId::parse("raw-in-attempt").unwrap(),
+            kind,
+            payload,
+            token: Some(token.text().to_string()),
+        };
+        let stream =
+            std::os::unix::net::UnixStream::connect(self.fleet().join("run/fleetd.sock")).unwrap();
+        (&stream).write_all(request.to_line().as_bytes()).unwrap();
+        let mut reply = String::new();
+        BufReader::new(&stream).read_line(&mut reply).unwrap();
+        match parse_reply(reply.as_bytes(), 1 << 20).unwrap().outcome {
+            Outcome::Refused(reason) => reason,
+            Outcome::Applied(result) => panic!("fleetd applied {kind:?}: {result}"),
+        }
+    }
+
+    fn run_with_task(&self) {
+        let run_id = self.run(None);
+        let mut store = Store::open(&self.ledger()).unwrap();
+        store
+            .immediate(|tx| {
+                let run = runs::get(tx, &run_id)?;
+                let mut new = NewTask::work("Alpha task", "t1.md", "dev");
+                new.ticket_snapshot = Some(TICKET.to_string());
+                tasks::add(tx, &run, &new, Actor::Orchestrator)?;
+                Ok(())
+            })
+            .unwrap();
+    }
+
     fn attempt_of_this_process(&self) {
         let conn = self.conn();
         let run: String = conn
@@ -258,7 +294,6 @@ impl Drop for World {
     }
 }
 
-/// The start time of this test process.
 fn this_start() -> i64 {
     let start = horch_platform::process::start_time(std::process::id())
         .expect("the start time of the test");
@@ -287,7 +322,6 @@ fn git(dir: &Path, args: &[&str]) {
     );
 }
 
-/// The value of the line `<key>: <value>` of `out`.
 fn line_value(out: &str, key: &str) -> String {
     out.lines()
         .find_map(|l| l.strip_prefix(&format!("{key}: ")))
@@ -304,7 +338,6 @@ fn requeue_cancel_and_waive_send_their_kinds() {
     assert!(o.out.contains("T-1 is queued again."), "{}", o.out);
     assert_eq!(w.one("SELECT status FROM tasks WHERE seq = 1"), "ready");
 
-    // Round 1 of the code sweep of T-1, whose report names F1.
     let task_id = w.one("SELECT task_id FROM tasks WHERE seq = 1");
     let round = w.evidence().join(&task_id).join("round-1");
     std::fs::create_dir_all(&round).unwrap();
@@ -327,17 +360,10 @@ fn requeue_cancel_and_waive_send_their_kinds() {
     assert_eq!(w.one("SELECT status FROM tasks WHERE seq = 1"), "cancelled");
     assert_eq!(
         w.requests(),
-        applied(&[
-            "run_new",
-            "task_add",
-            "task_requeue",
-            "ledger_waive",
-            "task_cancel"
-        ])
+        applied(&["task_requeue", "ledger_waive", "task_cancel"])
     );
 }
 
-/// A worker can set `HORCH_ROLE`; fleetd knows the worker by its process.
 #[test]
 fn worker_that_sets_horch_role_orchestrator_is_refused_by_fleetd() {
     let w = World::up();
@@ -348,10 +374,25 @@ fn worker_that_sets_horch_role_orchestrator_is_refused_by_fleetd() {
         &[("HORCH_ROLE", "orchestrator")],
     );
     assert_eq!(o.code, 1, "stdout:\n{}\nstderr:\n{}", o.out, o.err);
-    assert!(o.err.contains("refused: "), "{}", o.err);
+    assert!(
+        o.err.contains("refused inside a fleet attempt")
+            && o.err.contains("fleet process of attempt a1"),
+        "{}",
+        o.err
+    );
+    assert!(w.requests().is_empty(), "{:?}", w.requests());
+
+    let reason = w.raw_request_refusal(
+        Kind::TaskCancel,
+        serde_json::json!({ "task": "T-1", "reason": "mine now" }),
+    );
+    assert!(
+        reason.contains("the peer process is a fleet process of attempt a1"),
+        "{reason}"
+    );
     assert_eq!(
-        w.requests().last().unwrap(),
-        &("task_cancel".to_string(), "refused".to_string())
+        w.requests(),
+        vec![("task_cancel".to_string(), "refused".to_string())]
     );
     assert_ne!(w.one("SELECT status FROM tasks WHERE seq = 1"), "cancelled");
 }
@@ -363,11 +404,27 @@ fn worker_that_removes_horch_role_is_refused_by_fleetd() {
     w.attempt_of_this_process();
     let o = w.horch_with(&["ledger", "requeue", "T-1", "again"], &[]);
     assert_eq!(o.code, 1, "stdout:\n{}\nstderr:\n{}", o.out, o.err);
-    assert!(o.err.contains("refused: "), "{}", o.err);
-    assert_eq!(
-        w.requests().last().unwrap(),
-        &("task_requeue".to_string(), "refused".to_string())
+    assert!(
+        o.err.contains("refused inside a fleet attempt")
+            && o.err.contains("fleet process of attempt a1"),
+        "{}",
+        o.err
     );
+    assert!(w.requests().is_empty(), "{:?}", w.requests());
+
+    let reason = w.raw_request_refusal(
+        Kind::TaskRequeue,
+        serde_json::json!({ "task": "T-1", "reason": "again" }),
+    );
+    assert!(
+        reason.contains("the peer process is a fleet process of attempt a1"),
+        "{reason}"
+    );
+    assert_eq!(
+        w.requests(),
+        vec![("task_requeue".to_string(), "refused".to_string())]
+    );
+    assert_eq!(w.one("SELECT status FROM tasks WHERE seq = 1"), "ready");
 }
 
 #[test]
@@ -380,23 +437,23 @@ fn worktree_drop_sends_worktree_drop() {
     std::fs::write(proj.join("t1.md"), TICKET).unwrap();
     git(&proj, &["add", "t1.md"]);
     git(&proj, &["commit", "-q", "-m", "first"]);
-    w.ok(&["ledger", "run", "new", "r1"]);
-    let id = w.ok(&[
-        "ledger",
-        "worker",
-        "new",
-        "--persona",
-        "dev",
-        "--role",
-        "dev-1",
-    ]);
-    let id = id.out.trim().to_string();
+    let run_id = w.run(Some("main"));
+    let id = workers::insert(
+        &w.conn(),
+        &NewWorker {
+            run_id,
+            kind: Some(WorkerKind::Worker),
+            persona: "dev".into(),
+            role: Some("dev-1".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
     let env = [("HORCH_WORKER_ID", id.as_str())];
 
     let o = w.ok_with(&["ledger", "worktree", "scratch", "try"], &env);
     let path = line_value(&o.out, "path");
     let branch = line_value(&o.out, "branch");
-    // The `worktree_add` job of the scratch tree, as the job process runs it.
     git(
         &proj,
         &["worktree", "add", "-q", "-b", &branch, &path, "main"],
@@ -418,7 +475,7 @@ fn worktree_drop_sends_worktree_drop() {
     assert_eq!(w.one("SELECT status FROM worktrees"), "abandoned");
     assert_eq!(
         w.requests(),
-        applied(&["run_new", "worker_new", "worktree_scratch", "worktree_drop"])
+        applied(&["worktree_scratch", "worktree_drop"])
     );
 }
 

@@ -1,15 +1,3 @@
-//! Stacks: a trial merge of 2 features that conflicts puts the younger
-//! feature on the older one, 1 time, with 1 resolver task that lands on the
-//! younger feature (docs/specs/fleetd/design.md, "Between features", "Stack
-//! on evidence" and "Starting values"; ddd/08-code/integration/design.md,
-//! `StackPlanner`, `StackFeature` and `OpenResolverTask`;
-//! docs/tickets/fleetd-p6/37-stacks.md).
-//!
-//! Each test makes its own temporary ledger and git repository. No test
-//! touches this repository or the live ledger. No test starts a process:
-//! a test plays the job process of a trial merge with `run_job` of this
-//! process.
-
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -42,10 +30,8 @@ use horch_core::taskledger::Store;
 use horch_marketplace::git::scrub_repo_env;
 use rusqlite::{Connection, TransactionBehavior};
 
-/// A work budget of trial merges that no test reaches.
 const WIDE: usize = 100;
 
-/// The profile of a resolver task in these tests.
 const RESOLVER_PROFILE: &str = "opus-hardening";
 
 struct World {
@@ -58,7 +44,7 @@ struct World {
 
 fn world() -> World {
     let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().canonicalize().unwrap();
+    let root = horch_platform::path::canonicalize(dir.path()).unwrap();
     let repo = root.join("repo");
     std::fs::create_dir(&repo).unwrap();
     git(&repo, &["init", "-q", "-b", "main"]);
@@ -94,7 +80,6 @@ impl SandboxProfiles for NoProfiles {
     }
 }
 
-/// 1 task of a feature, as a test plans it.
 struct Work<'a> {
     key: &'a str,
     check: &'a str,
@@ -109,7 +94,6 @@ impl World {
         }
     }
 
-    /// The git of a pass: it only reads the repository.
     fn reader(&self) -> CliWorktreeGit {
         CliWorktreeGit::new("git", self.root.join("fleet"))
             .reading(std::slice::from_ref(&self.repo))
@@ -132,9 +116,6 @@ impl World {
         git(&self.repo, &["rev-parse", rev])
     }
 
-    /// A new `open` feature with its internal run and the branch
-    /// `fleet/<id>` made from `main`, and 1 commit on it that writes
-    /// `files`. Returns the feature id.
     fn feature(&self, files: &[(&str, &str)]) -> String {
         let project = Project {
             root: &self.repo,
@@ -151,7 +132,6 @@ impl World {
         id
     }
 
-    /// Set `created_at` of the feature `id`.
     fn feature_created(&self, id: &str, at: &str) {
         self.conn
             .execute(
@@ -161,8 +141,6 @@ impl World {
             .unwrap();
     }
 
-    /// The idea `id` of `feature` in `state`, made at `at`, with the
-    /// requirements `reqs`.
     fn idea(&self, feature: &str, id: &str, state: &str, at: &str, reqs: &[(&str, &str)]) {
         self.write(|tx| {
             let new = NewIdea {
@@ -187,7 +165,6 @@ impl World {
             .unwrap();
     }
 
-    /// The tasks `work` of the idea `idea` in the run of `feature`.
     fn tasks(&self, feature: &str, idea: &str, work: &[Work<'_>]) {
         let run = runs::of_feature(&self.conn, feature).unwrap().unwrap();
         let planned: Vec<PlannedTask> = work
@@ -211,8 +188,6 @@ impl World {
         });
     }
 
-    /// Write `files` on `branch` in 1 commit, with no checkout. Returns the
-    /// new tip.
     fn commit_on(&self, branch: &str, files: &[(&str, &str)]) -> String {
         let index = self.root.join("scratch-index");
         let env = [("GIT_INDEX_FILE", index.to_str().unwrap())];
@@ -248,8 +223,6 @@ impl World {
         out
     }
 
-    /// The trial merges of today's tips: queue them, play each job, and
-    /// record each verdict.
     fn trial_merge(&mut self) {
         let git = CliTrialMergeGit::new(self.reader());
         let tip = self.tip("main");
@@ -268,8 +241,6 @@ impl World {
         self.write(|tx| trial_merges::record_ended(&self.ctx(), tx).unwrap());
     }
 
-    /// Play the job process of the run `id`: it starts, runs and writes
-    /// its result.
     fn run_job(&mut self, id: i64) {
         let me = std::process::id();
         self.write(|tx| {
@@ -303,12 +274,11 @@ impl World {
             config: &config,
             needs_you: &NeedsYouList,
         };
-        let written = jobs::run_job(&ctx, &mut self.conn, id, me, &checks).unwrap();
+        let written = jobs::run_job(&ctx, &self.conn, id, me, &checks).unwrap();
         assert!(written.is_some(), "the job process wrote its result");
         jobs::end_from_files(&ctx, &mut self.conn).unwrap();
     }
 
-    /// 1 pass of the stacks.
     fn stack(&self) -> Vec<Outcome> {
         let git = CliStackGit::new(self.reader());
         let s = self.stacking();
@@ -323,8 +293,6 @@ impl World {
             .stacked_on
     }
 
-    /// The tasks of the run of `feature` that are not `fixtures`, as
-    /// (task id, idea id, ticket snapshot), in order.
     fn resolvers(&self, feature: &str) -> Vec<Resolver> {
         let run = runs::of_feature(&self.conn, feature).unwrap().unwrap();
         let mut stmt = self
@@ -379,13 +347,10 @@ impl Resolver {
     }
 }
 
-/// `lines` lines of the text `word`.
 fn lines(word: &str, lines: usize) -> String {
     (0..lines).map(|i| format!("{word} {i}\n")).collect()
 }
 
-/// 2 features that change `a.txt` in 2 ways, each with 1 idea in flight,
-/// 1 requirement and 1 task with its unit tests. The first is the older.
 fn two_conflicting(w: &World) -> (String, String) {
     let older = w.feature(&[("a.txt", "older\n")]);
     let younger = w.feature(&[("a.txt", "younger\n")]);
@@ -423,8 +388,6 @@ fn two_conflicting(w: &World) -> (String, String) {
     );
     (older, younger)
 }
-
-// ─── tests ──────────────────────────────────────────────────────────────
 
 #[test]
 fn given_2_features_touching_1_file_when_trial_merge_then_younger_stacked_and_1_resolver_task() {
@@ -475,7 +438,6 @@ fn given_2_features_touching_1_file_when_trial_merge_then_younger_stacked_and_1_
     );
 
     let ticket = r.ticket();
-    // The conflict in zdiff3 form: the 2 sides and the base.
     for part in [
         "<<<<<<<", "|||||||", "=======", ">>>>>>>", "older", "younger", "`a.txt`",
     ] {
@@ -484,7 +446,6 @@ fn given_2_features_touching_1_file_when_trial_merge_then_younger_stacked_and_1_
             "the ticket holds {part:?}:\n{ticket}"
         );
     }
-    // The requirements and the unit tests of both features.
     for part in [
         "Older writes a.",
         "Younger writes a.",
@@ -518,8 +479,6 @@ fn given_2_features_touching_1_file_when_trial_merge_then_younger_stacked_and_1_
 fn conflicting_features_stack_younger_on_older_once() {
     let mut w = world();
     let (first, second) = two_conflicting(&w);
-    // The feature with the lower id is the younger one: the order is the
-    // time each feature was made.
     w.feature_created(&first, "2026-11-03T10:00:00Z");
     let (older, younger) = (second, first);
 
@@ -531,7 +490,6 @@ fn conflicting_features_stack_younger_on_older_once() {
         "{outcomes:?}"
     );
 
-    // The same conflict in the next pass: no 2nd edge, no 2nd task.
     let again = w.stack();
     assert!(
         again
@@ -540,7 +498,6 @@ fn conflicting_features_stack_younger_on_older_once() {
         "{again:?}"
     );
 
-    // New tips that still conflict: the edge stays, and no 2nd task.
     w.commit_on(
         &format!("fleet/{}", younger.to_lowercase()),
         &[("a.txt", "younger 2\n")],
@@ -570,7 +527,6 @@ fn resolver_task_belongs_to_an_idea_of_the_younger_feature() {
     let younger = w.feature(&[("a.txt", "younger\n")]);
     w.feature_created(&older, "2026-11-01T10:00:00Z");
     w.feature_created(&younger, "2026-11-02T10:00:00Z");
-    // The older feature has the youngest idea of all: it is not a choice.
     w.idea(
         &older,
         "I-older",
@@ -592,8 +548,6 @@ fn resolver_task_belongs_to_an_idea_of_the_younger_feature() {
         "2026-11-03T10:00:00Z",
         &[],
     );
-    // Not in flight: an idea that waits for its gate, a parked idea and a
-    // cancelled idea.
     w.idea(
         &younger,
         "I-integrating",
@@ -657,8 +611,6 @@ fn resolver_task_waits_when_the_younger_feature_has_no_idea_in_flight() {
 #[test]
 fn large_conflict_is_split_by_file() {
     let mut w = world();
-    // 2 files are in the limit of files, but their conflict has more than
-    // 100 changed lines.
     let older = w.feature(&[
         ("a.txt", &lines("older a", 30)),
         ("b.txt", &lines("older b", 30)),
@@ -727,8 +679,6 @@ fn small_conflict_of_2_files_is_1_resolver_task() {
         serde_json::json!(["a.txt", "b.txt"])
     );
 }
-
-// ─── git ────────────────────────────────────────────────────────────────
 
 fn git_cmd(dir: &Path, args: &[&str]) -> Command {
     let mut cmd = Command::new("git");

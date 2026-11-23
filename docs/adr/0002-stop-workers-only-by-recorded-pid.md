@@ -14,3 +14,7 @@ reuses the number.
 - Processes an agent starts are not tracked one by one; the exact pane
   close ends them with the agent.
 - Windows needs its own creation-time check before this holds there.
+- Scripts follow the same rule. The live checks in `scripts/live/` and the
+  video scripts in `skills/video-*/scripts/` stop only a pid they read from
+  their own child, and a stuck Chrome loses its helpers through
+  `pkill -P <its pid>`, never through a name.

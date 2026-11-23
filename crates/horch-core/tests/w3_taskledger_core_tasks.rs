@@ -1,7 +1,3 @@
-//! `tasks::waits` and `tasks::add_many` (#90). The queue's rule clauses
-//! have their own tests in `taskledger_queue.rs`; these pin the 1 test per
-//! `Wait` kind.
-
 use std::path::Path;
 
 use horch_core::taskledger::model::{Actor, TaskKind, WorktreeMode};
@@ -24,7 +20,6 @@ fn ledger() -> (tempfile::TempDir, Store, Run) {
                     ..Default::default()
                 },
             )?;
-            // FR-12: a task needs an idea in flight of the feature of its run.
             horch_core::taskledger::schema::run_idea(
                 tx,
                 &run.run_id,
@@ -234,7 +229,6 @@ fn add_many_queues_in_dependency_order_and_returns_them_by_seq() {
     let out = s
         .immediate(|tx| tasks::add_many(tx, &run, &items, Actor::Orchestrator))
         .unwrap();
-    // The blocker is inserted first, so it gets seq 1.
     let titles: Vec<_> = out.iter().map(|t| (t.seq, t.title.as_str())).collect();
     assert_eq!(titles, vec![(1, "early"), (2, "late")]);
     let text: String = s
@@ -259,8 +253,6 @@ fn task_count(store: &Store) -> i64 {
         .unwrap()
 }
 
-/// Each check of `add` refuses alone, with its own message, and writes
-/// nothing; a task that passes them all is still taken.
 #[test]
 fn add_refuses_a_missing_title_ticket_or_primary_and_a_fallback_equal_to_it() {
     let (_d, mut s, run) = ledger();
@@ -299,7 +291,6 @@ fn unblock_refuses_a_blocker_the_task_does_not_wait_for() {
     let a = add(&mut s, &run, "a", |_| {});
     let b = add(&mut s, &run, "b", |t| t.blocked_by = vec!["T-1".into()]);
 
-    // T-2 waits for T-1, not the other way round.
     let err = tasks::unblock(s.conn(), &a, &b).unwrap_err().to_string();
     assert_eq!(err, "T-1 does not wait for T-2");
     assert_eq!(b.status, "pending");
@@ -351,7 +342,6 @@ fn cancel_and_requeue_take_only_the_states_they_are_for() {
     let (_d, mut s, run) = ledger();
     let t = add(&mut s, &run, "t", |_| {});
 
-    // A queued task that nobody holds is not requeued: there is nothing to undo.
     let err = tasks::requeue_by_operator(s.conn(), &t, "again")
         .unwrap_err()
         .to_string();
@@ -366,7 +356,6 @@ fn cancel_and_requeue_take_only_the_states_they_are_for() {
         .to_string();
     assert_eq!(err, "T-1 is already cancelled");
 
-    // `cancelled` is terminal (MAP.md, Q22): the door refuses the requeue.
     let err = s
         .immediate(|tx| tasks::requeue_by_operator(tx, &cancelled, "again"))
         .unwrap_err()

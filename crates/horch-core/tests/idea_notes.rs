@@ -1,16 +1,3 @@
-//! horch idea note (ticket 25 of fleetd-p6): the sub-orchestrator records
-//! each question and answer as 1 file of its idea folder, and fleetd
-//! ingests each file 1 time.
-//!
-//! `docs/specs/fleetd/design.md`, "Ideas" (The interview; How a worker's
-//! question is resolved, step 4), "Workspace layout and file protocol"
-//! (protocol rules 1, 5 and 7), A35; FM-31, RR-12, SR-6.
-//!
-//! Each test uses a temp ledger and a temp fleet root. The process chain is
-//! a fake: no test reads a real process.
-//!
-//! Unix only: the protected file reader refuses each file on Windows, where
-//! the platform gives no mode.
 #![cfg(unix)]
 
 use std::collections::HashMap;
@@ -33,14 +20,11 @@ const IDEA: &str = "I-0007";
 const OTHER_IDEA: &str = "I-0008";
 const AT: &str = "2026-11-18T12:00:00Z";
 
-/// The PID of the worker command in each test, and of its parent chain:
-/// command -> agent -> wrapper -> 1.
 const COMMAND: u32 = 300;
 const AGENT: u32 = 200;
 const WRAPPER: u32 = 100;
 const WRAPPER_START: u64 = 5;
 
-/// A fake process table: the parent and the start time of each PID.
 struct Chain {
     parent: HashMap<u32, u32>,
     start: HashMap<u32, u64>,
@@ -67,8 +51,6 @@ impl ProcessFacts for Chain {
     }
 }
 
-/// A temp ledger with the schema of today and a fleet root with the folder
-/// of [`IDEA`].
 struct World {
     _temp: tempfile::TempDir,
     ideas: PathBuf,
@@ -81,6 +63,12 @@ fn world() -> World {
     let mut conn = Connection::open(temp.path().join("ledger.sqlite3")).unwrap();
     schema::migrate_to(&mut conn, schema::VERSION).unwrap();
     conn.execute_batch("PRAGMA foreign_keys = OFF").unwrap();
+    conn.execute(
+        "INSERT INTO ideas (id, feature_id, state, priority, created_at, updated_at)
+         VALUES (?1, 'F-0001', 'clarifying', 0, ?2, ?2)",
+        params![IDEA, AT],
+    )
+    .unwrap();
     IdeaFolder::create(&ideas, IDEA, owner()).unwrap();
     World {
         _temp: temp,
@@ -94,8 +82,6 @@ fn owner() -> User {
 }
 
 impl World {
-    /// Record the live attempt `id` of `task` or of `idea`, whose wrapper
-    /// is [`WRAPPER`].
     fn live(&self, id: &str, task: Option<&str>, idea: Option<&str>) {
         self.conn
             .execute(
@@ -113,14 +99,12 @@ impl World {
             .unwrap();
     }
 
-    /// Record the live sub-orchestrator attempt of [`IDEA`].
     fn sub_orchestrator(&self) -> String {
         let id = format!("{IDEA}/A1");
         self.live(&id, None, Some(IDEA));
         id
     }
 
-    /// The writer of the worker command [`COMMAND`] for `idea`.
     fn writer(&self, idea: &str) -> anyhow::Result<NoteWriter> {
         NoteWriter::of_process(COMMAND, &self.ideas, idea, &self.conn, &chain())
     }
@@ -129,7 +113,6 @@ impl World {
         self.ideas.join(idea).join(NOTES)
     }
 
-    /// Part 1 and part 2 of 1 pass, in 1 committed transaction.
     fn pass(&mut self) -> Report {
         let reads = self.read();
         let tx = self.conn.transaction().unwrap();
@@ -142,7 +125,23 @@ impl World {
         notes_ingest::read(&self.conn, &self.ideas, &[IDEA.to_string()], &owner()).unwrap()
     }
 
-    /// The `ingested` row of `path`: its outcome and its reason.
+    fn idea_notes(&self) -> Vec<(String, serde_json::Value)> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT cause, data_json FROM events
+                 WHERE entity = 'idea' AND entity_id = ?1 AND kind = 'note' ORDER BY event_id",
+            )
+            .unwrap();
+        stmt.query_map([IDEA], |r| {
+            let data: String = r.get(1)?;
+            Ok((r.get(0)?, serde_json::from_str(&data).unwrap()))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
+    }
+
     fn ingested(&self, path: &Path) -> (String, Option<String>) {
         self.conn
             .query_row(
@@ -180,7 +179,6 @@ fn answer_body() -> NoteBody {
     }
 }
 
-/// Write `json` as note `n` of `idea` with mode 0600, as a raw writer can.
 fn write_raw(w: &World, idea: &str, n: u32, json: &serde_json::Value) -> PathBuf {
     let dir = w.notes(idea);
     fs::create_dir_all(&dir).unwrap();
@@ -198,7 +196,6 @@ fn sub_orchestrator_answer_arrives_as_an_idea_note_file() {
 
     let path = w.writer(IDEA).unwrap().write(answer_body()).unwrap();
 
-    // 1 file in notes/ of its idea, mode 0600 in a folder of mode 0700.
     assert_eq!(path, w.notes(IDEA).join("1.json"));
     let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode(&path), 0o600);
@@ -210,11 +207,9 @@ fn sub_orchestrator_answer_arrives_as_an_idea_note_file() {
     assert_eq!(file["question"], "T-0007-03/A1/Q1");
     assert_eq!(file["case"], "covered");
     assert_eq!(file["cite"], "assumptions.md:2");
-    // The command writes no ledger row and no request (A35).
     assert_eq!(w.count("ingested"), 0);
     assert_eq!(w.count("requests"), 0);
 
-    // fleetd passes the answer on 1 time.
     let first = w.pass();
     let expected = Note {
         idea: IDEA.into(),
@@ -227,7 +222,6 @@ fn sub_orchestrator_answer_arrives_as_an_idea_note_file() {
     assert_eq!(w.ingested(&path).0, "accepted");
     let second = w.pass();
     assert!(second.answers.is_empty(), "{second:?}");
-    // An answer note does not touch interview.md.
     assert!(!w.ideas.join(IDEA).join("interview.md").exists());
 }
 
@@ -245,8 +239,6 @@ fn interview_note_appends_to_interview_md_once() {
         .unwrap();
     assert_eq!(second, w.notes(IDEA).join("2.json"));
 
-    // A pass whose transaction does not commit: the next pass must not
-    // append the same answers again.
     let reads = w.read();
     {
         let tx = w.conn.transaction().unwrap();
@@ -284,7 +276,6 @@ fn note_of_another_idea_is_rejected() {
             "text": "No.",
         }),
     );
-    // A note of the right idea, from an attempt of another idea.
     w.live("I-0008/A1", None, Some(OTHER_IDEA));
     let foreign = write_raw(
         &w,
@@ -309,7 +300,6 @@ fn note_of_another_idea_is_rejected() {
     assert_eq!(outcome, "rejected");
     assert!(reason.unwrap().contains("I-0008/A1"));
     assert!(!w.ideas.join(IDEA).join("interview.md").exists());
-    // A rejected path is not read again.
     assert!(w.read().iter().all(|r| r.notes.is_empty()));
 }
 
@@ -317,7 +307,6 @@ fn note_of_another_idea_is_rejected() {
 fn note_that_is_a_symlink_is_rejected() {
     let mut w = world();
     let attempt = w.sub_orchestrator();
-    // A valid note outside notes/, and a link to it in notes/.
     let target = write_raw(
         &w,
         IDEA,
@@ -347,22 +336,152 @@ fn note_that_is_a_symlink_is_rejected() {
 fn idea_note_outside_a_sub_orchestrator_attempt_is_refused() {
     let w = world();
 
-    // No live attempt in the parent chain.
     let none = w.writer(IDEA).unwrap_err().to_string();
     assert!(none.contains(NO_LIVE_ATTEMPT), "{none}");
 
-    // The attempt in the chain is a task attempt, not a sub-orchestrator.
     w.live("T-0007-03/A1", Some("T-0007-03"), None);
     let task = w.writer(IDEA).unwrap_err().to_string();
     assert!(task.contains(NOT_THE_SUB_ORCHESTRATOR), "{task}");
     w.conn.execute("DELETE FROM attempts", []).unwrap();
 
-    // The sub-orchestrator of another idea.
     w.live("I-0008/A1", None, Some(OTHER_IDEA));
     let other = w.writer(IDEA).unwrap_err().to_string();
     assert!(other.contains(NOT_THE_SUB_ORCHESTRATOR), "{other}");
     assert!(other.contains(OTHER_IDEA), "{other}");
 
-    // No note file is written.
     assert!(!w.notes(IDEA).exists());
+}
+
+#[test]
+fn ask_note_records_a_durable_open_question_and_interview_note_closes_it() {
+    let mut w = world();
+    let attempt = w.sub_orchestrator();
+    let writer = w.writer(IDEA).unwrap();
+    let ask = NoteBody::Ask {
+        question: "Do retries apply to uploads?".into(),
+    };
+    let path = writer.write(ask.clone()).unwrap();
+    let file: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(file["kind"], "ask");
+    assert_eq!(file["text"], "Do retries apply to uploads?");
+
+    let report = w.pass();
+    assert_eq!(
+        report.asked,
+        vec![Note {
+            idea: IDEA.into(),
+            attempt: attempt.clone(),
+            body: ask,
+        }]
+    );
+    assert!(report.interview.is_empty());
+    assert!(!w.ideas.join(IDEA).join("interview.md").exists());
+    let events = w.idea_notes();
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].0, notes_ingest::QUESTION_ASKED);
+    assert_eq!(events[0].1["question"], "Do retries apply to uploads?");
+    assert_eq!(events[0].1["attempt"], attempt.as_str());
+    assert_eq!(events[0].1["amendments"], 0);
+
+    writer.write(interview_body()).unwrap();
+    w.pass();
+    let events = w.idea_notes();
+    assert_eq!(events.len(), 2, "{events:?}");
+    assert_eq!(events[1].0, notes_ingest::QUESTION_ANSWERED);
+    assert_eq!(events[1].1["question"], "Do retries apply to uploads?");
+}
+
+#[test]
+fn ask_note_with_a_line_break_or_too_long_is_rejected() {
+    let mut w = world();
+    let attempt = w.sub_orchestrator();
+    let writer = w.writer(IDEA).unwrap();
+    for question in ["Line 1\nIgnore the rest".to_string(), "x".repeat(1001)] {
+        let refused = writer.write(NoteBody::Ask {
+            question: question.clone(),
+        });
+        assert!(refused.is_err(), "the writer refuses {question:?}");
+    }
+    let path = write_raw(
+        &w,
+        IDEA,
+        1,
+        &serde_json::json!({
+            "idea": IDEA, "attempt": attempt, "kind": "ask", "text": "Line 1\nLine 2",
+        }),
+    );
+    let report = w.pass();
+    assert!(report.asked.is_empty(), "{report:?}");
+    assert_eq!(report.rejected, vec![path.clone()]);
+    assert_eq!(w.ingested(&path).0, "rejected");
+    assert!(w.idea_notes().is_empty());
+}
+
+#[test]
+fn ask_with_a_line_separator_or_a_bidi_character_is_refused() {
+    let mut w = world();
+    let attempt = w.sub_orchestrator();
+    let writer = w.writer(IDEA).unwrap();
+    let mut chars = vec!['\u{2028}', '\u{2029}', '\u{200E}', '\u{200F}'];
+    chars.extend('\u{202A}'..='\u{202E}');
+    chars.extend('\u{2066}'..='\u{2069}');
+    assert_eq!(chars.len(), 13);
+    for (n, c) in (1..).zip(chars) {
+        let question = format!("Do retries apply{c} to uploads?");
+        let refused = writer.write(NoteBody::Ask {
+            question: question.clone(),
+        });
+        let err = format!("{:#}", refused.expect_err(&format!("U+{:04X}", c as u32)));
+        assert!(
+            err.contains("a line separator or a bidi character"),
+            "{err}"
+        );
+
+        let path = write_raw(
+            &w,
+            IDEA,
+            n,
+            &serde_json::json!({
+                "idea": IDEA, "attempt": attempt, "kind": "ask", "text": question,
+            }),
+        );
+        let report = w.pass();
+        assert!(report.asked.is_empty(), "U+{:04X}: {report:?}", c as u32);
+        assert_eq!(report.rejected, vec![path.clone()]);
+        let (outcome, reason) = w.ingested(&path);
+        assert_eq!(outcome, "rejected");
+        let reason = reason.unwrap_or_default();
+        assert!(
+            reason.contains("a line separator or a bidi character"),
+            "U+{:04X}: {reason}",
+            c as u32
+        );
+    }
+    assert!(w.idea_notes().is_empty(), "no question row is written");
+}
+
+#[test]
+fn ask_note_with_unreadable_amendments_is_rejected_and_the_pass_goes_on() {
+    let mut w = world();
+    w.sub_orchestrator();
+    let writer = w.writer(IDEA).unwrap();
+    let amendments = w.ideas.join(IDEA).join("amendments");
+    fs::remove_dir_all(&amendments).unwrap();
+    fs::write(&amendments, "not a folder").unwrap();
+    let ask = writer
+        .write(NoteBody::Ask {
+            question: "Do retries apply to uploads?".into(),
+        })
+        .unwrap();
+    let answer = writer.write(answer_body()).unwrap();
+
+    let report = w.pass();
+    assert!(report.asked.is_empty(), "{report:?}");
+    assert_eq!(report.rejected, vec![ask.clone()]);
+    let (outcome, reason) = w.ingested(&ask);
+    assert_eq!(outcome, "rejected");
+    assert!(reason.unwrap().contains("amendments"));
+    assert_eq!(report.answers.len(), 1, "the other note is ingested");
+    assert_eq!(w.ingested(&answer).0, "accepted");
+    assert!(w.idea_notes().is_empty());
 }

@@ -1,12 +1,3 @@
-//! The pane of a fleet orchestrator sends no request (FM-16), and `horch
-//! sessions` opens the ledger read-only (RR-5, FM-24; ticket 24 of
-//! fleetd-p5). Ticket 48 of fleetd-p6 retires `horch fleet stop`.
-//!
-//! Each test runs the development binary with its own ledger, state, data
-//! and fleet folders, and the watchdog off. The fleetd of a test is the
-//! channel server of ticket 13 in a thread of the test process, with the
-//! handlers of ticket 19: the `fleetd` row names the test process.
-
 #![cfg(unix)]
 
 use std::os::unix::fs::PermissionsExt;
@@ -27,11 +18,7 @@ const PATH: &str = "/usr/bin:/bin";
 const WORKSPACE: &str = "w1";
 const PANE: &str = "p1";
 
-/// A project, a ledger with 1 active run, a fleet root with its token, a
-/// fake herdr, and (after [`World::fleetd`]) a fleetd that serves the
-/// channel.
 struct World {
-    // The server drops first: its stop needs the folders of `_tmp`.
     server: Option<ChannelServer>,
     _tmp: tempfile::TempDir,
     root: PathBuf,
@@ -40,12 +27,11 @@ struct World {
 
 impl World {
     fn new() -> World {
-        // A short folder: `sun_path` holds about 104 bytes on macOS.
         let tmp = tempfile::Builder::new()
             .prefix("rr")
             .tempdir_in("/tmp")
             .unwrap();
-        let root = tmp.path().canonicalize().unwrap();
+        let root = horch_platform::path::canonicalize(tmp.path()).unwrap();
         for dir in ["proj", "home", "state", "data"] {
             std::fs::create_dir_all(root.join(dir)).unwrap();
         }
@@ -92,8 +78,6 @@ impl World {
         Connection::open(self.db()).unwrap()
     }
 
-    /// Start the fleetd of this test: the `fleetd` row names this process at
-    /// generation 1, and the channel server applies the worker kinds.
     fn fleetd(&mut self) {
         let pid = std::process::id();
         let start = horch_platform::process::start_time(pid).unwrap();
@@ -116,7 +100,6 @@ impl World {
             Some(ChannelServer::start(&self.fleet(), conn, Generation(1), handlers).unwrap());
     }
 
-    /// `horch <args>` in the project, with `extra` env.
     fn horch(&self, args: &[&str], extra: &[(&str, &Path)]) -> (i32, String, String) {
         let root = &self.root;
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_horch"));
@@ -145,7 +128,6 @@ impl World {
         )
     }
 
-    /// The kind and state of each `requests` row, oldest first.
     fn requests(&self) -> Vec<(String, String)> {
         let conn = self.ledger();
         let mut stmt = conn
@@ -168,8 +150,6 @@ impl World {
     }
 }
 
-/// FM-16 (ticket 45 of fleetd-p6): the pane of a fleet orchestrator is
-/// refused before it sends the `orchestrator_claim` request.
 #[test]
 fn fleet_orchestrator_pane_sends_no_orchestrator_claim() {
     let mut w = World::new();
@@ -209,8 +189,6 @@ fn sessions_opens_the_ledger_read_only() {
         )
         .unwrap();
     }
-    // A writable open sets the WAL journal mode again; a read-only open
-    // cannot.
     {
         let conn = w.ledger();
         let mode: String = conn

@@ -1,19 +1,3 @@
-//! fleetd reads the wrapper files of an attempt, `heartbeat.json`,
-//! `exit.json` and `session.json`, and writes the rows that the wrapper
-//! wrote before (docs/tickets/fleetd-p5/31-ingest-wrapper-files.md).
-//!
-//! `docs/specs/fleetd/design.md`, "Workspace layout and file protocol",
-//! protocol rules 2 and 7; RR-5, RR-8 and SR-6.
-//!
-//! - `heartbeat.json` is a snapshot: fleetd uses it only when its `seq` is
-//!   higher than the last `seq` it used for the attempt.
-//! - `exit.json` and `session.json` are messages: ingested 1 time, by path
-//!   and hash.
-//!
-//! The wrapper writer of ticket 30 writes the files. Each test has its own
-//! temporary ledger and fleet root, and gives the time and the fleet clock.
-//! The process facts come through a seam, except in the stop test, which
-//! stops 2 real child processes of the test.
 #![cfg(unix)]
 
 use std::collections::BTreeMap;
@@ -26,6 +10,7 @@ use std::time::Duration;
 use horch_core::execution::legacy::STATUS_WORKING;
 use horch_core::execution::records::{NewRecord, SessionLedger};
 use horch_core::execution::{ExecutionStatus, FailureKind};
+use horch_core::fleetd::fleet_runtime::adapters::effects::{self, LaunchRecord};
 use horch_core::fleetd::fleet_runtime::domain::clock::FleetSeconds;
 use horch_core::fleetd::task_execution::adapters::attempt_files::{
     self, Found, OsProcesses, ProcessFacts, WrapperRead,
@@ -46,7 +31,6 @@ const T1: &str = "2026-11-18T10:00:00Z";
 const T2: &str = "2026-11-18T10:00:10Z";
 const HEARTBEAT_MAX_BYTES: u64 = 4096;
 
-/// A ledger with 1 worker and its live attempt, and a fleet root.
 struct World {
     _tmp: tempfile::TempDir,
     store: Store,
@@ -72,7 +56,6 @@ impl World {
                         ..Default::default()
                     },
                 )?;
-                // FR-12: a task needs an idea in flight of the feature of its run.
                 horch_core::taskledger::schema::run_idea(
                     tx,
                     &run.run_id,
@@ -117,7 +100,6 @@ impl World {
         }
     }
 
-    /// The writer of the wrapper of the attempt (ticket 30).
     fn files(&self) -> AttemptFiles {
         AttemptFiles::new(&self.fleet_root, self.attempt.clone())
     }
@@ -126,7 +108,6 @@ impl World {
         self.files().dir().to_path_buf()
     }
 
-    /// Part 1 of a pass: read the wrapper files of the attempt.
     fn read(&self) -> WrapperRead {
         let owner = User::current().unwrap();
         let mut reads = attempt_files::read(
@@ -141,7 +122,6 @@ impl World {
         reads.pop().unwrap()
     }
 
-    /// Part 2 of a pass: apply `read` in 1 transaction at time `at`.
     fn ingest(&mut self, read: &WrapperRead, at: &str, procs: &dyn ProcessFacts) {
         let reads = std::slice::from_ref(read);
         self.store
@@ -149,22 +129,25 @@ impl World {
             .unwrap();
     }
 
-    /// Read and apply the wrapper files at time `at`.
+    fn ingest_report(&mut self, at: &str, procs: &dyn ProcessFacts) -> attempt_files::Report {
+        let read = self.read();
+        let reads = std::slice::from_ref(&read);
+        self.store
+            .immediate(|tx| attempt_files::ingest(tx, None, reads, FleetSeconds(100), at, procs))
+            .unwrap()
+    }
+
     fn pass(&mut self, at: &str, procs: &dyn ProcessFacts) {
         let read = self.read();
         self.ingest(&read, at, procs);
     }
 
-    /// The session records of the project `/r`, in the ledger file of the
-    /// world, read as stored: no worker row is laid over them.
     fn sessions(&self) -> SessionLedger {
-        // The world is fleetd here: it writes with the writer of fleetd.
         SessionLedger::for_project(self._tmp.path(), "/r").with_writer(std::sync::Arc::new(
             horch_core::taskledger::store::LedgerWriter::fleetd(),
         ))
     }
 
-    /// A live session record `record` of the worker, as the launch writes it.
     fn add_record(&self, record: &str) {
         self.sessions()
             .add(NewRecord {
@@ -199,8 +182,6 @@ impl World {
         self.store.conn().query_row(sql, [], |r| r.get(0)).unwrap()
     }
 
-    /// Write `bytes` as `name` of the attempt folder, as the wrapper does:
-    /// mode 0600, then a rename.
     fn write_raw(&self, name: &str, bytes: &[u8]) {
         let dir = self.dir();
         std::fs::DirBuilder::new()
@@ -220,7 +201,6 @@ impl World {
         std::fs::rename(&tmp, dir.join(name)).unwrap();
     }
 
-    /// A heartbeat of the attempt, in the shape of the wrapper.
     fn heartbeat_json(&self, seq: u64, pid: u32, agent_state: &str) -> serde_json::Value {
         serde_json::json!({
             "task": self.attempt.task_id,
@@ -238,12 +218,10 @@ impl World {
     }
 }
 
-/// The process facts of the test: each PID with its start time and parent.
 #[derive(Default)]
 struct FakeProcesses(BTreeMap<u32, (u64, Option<u32>)>);
 
 impl FakeProcesses {
-    /// An agent 5004242 (start 77), a child of the wrapper 5004241 (start 66).
     fn agent() -> FakeProcesses {
         let mut p = FakeProcesses::default();
         p.0.insert(5004241, (66, Some(1)));
@@ -292,12 +270,10 @@ fn heartbeat_with_a_higher_seq_renews_the_checkin() {
     w.pass(T2, &procs);
     assert_eq!(w.worker_row().last_checkin_at.as_deref(), Some(T2));
     assert_eq!(w.heartbeat_seq(), Some(2));
-    // A snapshot is not a message: it has no `ingested` row.
     assert_eq!(w.count("SELECT count(*) FROM ingested"), 0);
     let active_at = "SELECT count(*) FROM attempts WHERE active_at = 100";
     assert_eq!(w.count(active_at), 0, "no output, no activity");
 
-    // Output of the agent after the last checkin is activity.
     let mut hb = w.heartbeat_json(3, 5004242, "working");
     hb["last_output_at"] = "2026-11-18T10:00:15Z".into();
     w.write_raw(HEARTBEAT_JSON, hb.to_string().as_bytes());
@@ -318,11 +294,9 @@ fn heartbeat_with_an_old_seq_is_not_used() {
     w.pass(T1, &procs);
     assert_eq!(w.heartbeat_seq(), Some(5));
 
-    // The same seq, read again in the next pass, renews nothing.
     w.pass(T2, &procs);
     assert_eq!(w.worker_row().last_checkin_at.as_deref(), Some(T1));
 
-    // A lower seq with another agent is not used either.
     procs.0.insert(5004243, (88, Some(5004241)));
     w.write_raw(
         HEARTBEAT_JSON,
@@ -361,7 +335,6 @@ fn heartbeat_over_4_kib_is_rejected() {
         w.count("SELECT count(*) FROM ingested WHERE outcome = 'rejected'"),
         1
     );
-    // The rejected path is not read again.
     assert!(w.read().heartbeat.is_none());
 }
 
@@ -376,7 +349,6 @@ fn exit_json_settles_the_attempt_once() {
         Some(Found::Valid { .. })
     ));
     w.ingest(&read, T1, &procs);
-    // The same read applied 2 times, and a new read: 1 effect.
     w.ingest(&read, T2, &procs);
     w.pass(T2, &procs);
 
@@ -422,9 +394,6 @@ fn session_json_writes_the_session_record_once() {
     );
 }
 
-/// The record id of `session.json` is a claim of a file in the task
-/// folder: an id of another form, or longer than 64 bytes, rejects the file
-/// and writes no column of the worker row.
 #[test]
 fn session_json_with_a_bad_record_id_is_rejected() {
     for bad in ["r 1", "../r-1", "", &"r".repeat(65)] {
@@ -451,10 +420,6 @@ fn session_json_with_a_bad_record_id_is_rejected() {
     }
 }
 
-/// The ingest of `exit.json` ends the session record of the attempt in the
-/// same transaction as the worker row: the record leaves `working` and
-/// holds the exit state. `session.json` of the same pass names the record.
-/// A second ingest of the same file changes nothing.
 #[test]
 fn exit_json_ends_the_session_record_of_the_attempt() {
     let mut w = World::new();
@@ -489,10 +454,6 @@ fn exit_json_ends_the_session_record_of_the_attempt() {
     assert_eq!(w.sessions().store().stored_json().unwrap(), stored);
 }
 
-/// Rule: an exit whose worker has no session record in this ledger file
-/// ends only the worker row. Here `session.json` names the record `r-9`,
-/// which the ledger does not hold (a moved state dir keeps its records in
-/// another file). The ingest succeeds and writes no session record.
 #[test]
 fn exit_json_with_no_session_record_ends_only_the_worker_row() {
     let mut w = World::new();
@@ -510,11 +471,6 @@ fn exit_json_with_no_session_record_ends_only_the_worker_row() {
     assert_eq!(w.count("SELECT count(*) FROM session_records"), 0);
 }
 
-/// Rule: a crash writes no `exit.json`, so no ingest ends the stored
-/// record. The pass sees that the process is gone and ends the attempt
-/// and the worker row (`EndAttempt`). A reader with the task ledger
-/// overlay, as `horch sessions`, shows the record ended from the worker
-/// row. The stored record keeps what the launch wrote.
 #[test]
 fn crash_with_no_exit_json_ends_the_record_through_the_worker_row() {
     let mut w = World::new();
@@ -580,14 +536,11 @@ fn idempotent_agent_status_changed() {
         )
     };
     let before = snapshot(&w);
-    // The same snapshot again, applied and read, changes nothing.
     w.ingest(&read, T2, &procs);
     w.pass(T2, &procs);
     assert_eq!(snapshot(&w), before);
 }
 
-/// A heartbeat whose agent is not a child of the recorded wrapper, while
-/// that wrapper runs, does not move the PIDs that a stop uses.
 #[test]
 fn heartbeat_pid_outside_the_recorded_wrapper_is_not_used() {
     let mut w = World::new();
@@ -607,11 +560,9 @@ fn heartbeat_pid_outside_the_recorded_wrapper_is_not_used() {
     let row = w.worker_row();
     assert_eq!(row.agent_pid, Some(5004242));
     assert_eq!(row.supervisor_pid, Some(5004241));
-    // The wrapper still beats: the checkin moves.
     assert_eq!(row.last_checkin_at.as_deref(), Some(T2));
 }
 
-/// No pane: the stop test closes no pane.
 struct NoPanes;
 
 impl Panes for NoPanes {
@@ -624,9 +575,6 @@ impl Panes for NoPanes {
     }
 }
 
-/// `horch ledger stop` stops a spawned worker by the PIDs that fleetd took
-/// from its `heartbeat.json`: a wrapper `sh` and its agent `sleep`. The
-/// wrapper outlives its agent, so only its stop ends it.
 #[test]
 fn horch_ledger_stop_stops_a_spawned_worker_by_the_ingested_pid() {
     let mut w = World::new();
@@ -642,7 +590,6 @@ fn horch_ledger_stop_stops_a_spawned_worker_by_the_ingested_pid() {
         .unwrap();
     let agent_pid: u32 = line.trim().parse().unwrap();
     let agent_start = horch_core::procid::start_time(agent_pid).unwrap();
-    // Reap the wrapper as soon as it ends, so its stop sees no zombie.
     let reaper = std::thread::spawn(move || wrapper.wait().unwrap());
 
     w.files().write_heartbeat(&agent_facts(agent_pid)).unwrap();
@@ -684,4 +631,132 @@ fn horch_ledger_stop_stops_a_spawned_worker_by_the_ingested_pid() {
         "{report:?}"
     );
     assert_eq!(w.worker_row().status().unwrap(), WorkerStatus::Stopped);
+}
+
+const WRAPPER: (u32, u64) = (5004241, 66);
+
+impl World {
+    fn launched(&self) {
+        self.launching();
+        effects::write_launch(
+            &self.fleet_root,
+            &LaunchRecord {
+                attempt: self.attempt.attempt_id.clone(),
+                launched_at: FleetSeconds(90),
+                process: None,
+            },
+        )
+        .unwrap();
+    }
+
+    fn launching(&self) {
+        self.store
+            .conn()
+            .execute(
+                "UPDATE attempts SET state = 'launching' WHERE id = ?1",
+                [&self.attempt.attempt_id],
+            )
+            .unwrap();
+    }
+
+    fn wrapper_only(&self, seq: u64, wrapper: u32) {
+        let mut hb = self.heartbeat_json(seq, 0, "starting");
+        hb["pid"] = serde_json::Value::Null;
+        hb["proc_state"] = serde_json::Value::Null;
+        hb["wrapper"] = wrapper.into();
+        self.write_raw(HEARTBEAT_JSON, hb.to_string().as_bytes());
+    }
+
+    fn supervisor(&self) -> (Option<i64>, Option<i64>) {
+        let row = self.worker_row();
+        (row.supervisor_pid, row.supervisor_started)
+    }
+}
+
+fn recorded(p: (u32, u64)) -> (Option<i64>, Option<i64>) {
+    (Some(i64::from(p.0)), Some(p.1 as i64))
+}
+
+#[test]
+fn wrapper_only_heartbeat_of_a_launched_attempt_records_its_wrapper() {
+    let mut w = World::new();
+    w.launched();
+    let me = std::process::id();
+    let mut procs = FakeProcesses::default();
+    procs.0.insert(me, (55, Some(1)));
+    procs.0.insert(WRAPPER.0, (WRAPPER.1, Some(1)));
+    w.files().write_heartbeat(&AgentFacts::new(None)).unwrap();
+    let written: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(w.dir().join(HEARTBEAT_JSON)).unwrap()).unwrap();
+    assert_eq!(written["pid"], serde_json::Value::Null, "{written}");
+    assert_eq!(written["wrapper"], me, "{written}");
+    let report = w.ingest_report(T1, &procs);
+    assert_eq!(w.supervisor(), (None, None), "fleetd is never a wrapper");
+    assert!(report.wrappers.is_empty(), "{report:?}");
+
+    w.wrapper_only(2, WRAPPER.0);
+    let report = w.ingest_report(T2, &procs);
+    assert_eq!(w.supervisor(), recorded(WRAPPER));
+    assert_eq!(w.worker_row().agent_pid, None);
+    assert_eq!(
+        report.wrappers.get(&w.attempt.attempt_id).map(|r| r.pid),
+        Some(WRAPPER.0),
+        "{report:?}"
+    );
+}
+
+#[test]
+fn wrapper_only_heartbeat_does_not_replace_a_recorded_wrapper_that_runs() {
+    let mut w = World::new();
+    w.launched();
+    let mut procs = FakeProcesses::default();
+    procs.0.insert(WRAPPER.0, (WRAPPER.1, Some(1)));
+    procs.0.insert(5004243, (88, Some(1)));
+    w.wrapper_only(1, WRAPPER.0);
+    w.pass(T1, &procs);
+    assert_eq!(w.supervisor(), recorded(WRAPPER));
+
+    w.wrapper_only(2, 5004243);
+    let report = w.ingest_report(T2, &procs);
+    assert_eq!(w.supervisor(), recorded(WRAPPER));
+    assert!(report.wrappers.is_empty(), "{report:?}");
+}
+
+#[test]
+fn wrapper_only_heartbeat_of_an_attempt_with_no_launch_is_not_used() {
+    let mut w = World::new();
+    w.launching();
+    let mut procs = FakeProcesses::default();
+    procs.0.insert(WRAPPER.0, (WRAPPER.1, Some(1)));
+    w.wrapper_only(1, WRAPPER.0);
+    let report = w.ingest_report(T1, &procs);
+    assert_eq!(w.supervisor(), (None, None));
+    assert!(report.wrappers.is_empty(), "{report:?}");
+}
+
+#[test]
+fn heartbeat_of_an_unknown_attempt_is_refused() {
+    let mut w = World::new();
+    let unknown = AttemptRef {
+        task_id: w.attempt.task_id.clone(),
+        attempt_id: format!("{}/A9", w.attempt.task_id),
+    };
+    w.attempt = unknown.clone();
+    w.launched();
+    let mut procs = FakeProcesses::default();
+    procs.0.insert(WRAPPER.0, (WRAPPER.1, Some(1)));
+    let mut hb = w.heartbeat_json(1, 0, "starting");
+    hb["attempt"] = "A9".into();
+    hb["pid"] = serde_json::Value::Null;
+    hb["wrapper"] = WRAPPER.0.into();
+    w.write_raw(HEARTBEAT_JSON, hb.to_string().as_bytes());
+    let report = w.ingest_report(T1, &procs);
+    assert!(
+        report.checkins.is_empty() && report.wrappers.is_empty(),
+        "{report:?}"
+    );
+    assert_eq!(
+        w.count("SELECT count(*) FROM workers WHERE supervisor_pid IS NOT NULL"),
+        0
+    );
 }

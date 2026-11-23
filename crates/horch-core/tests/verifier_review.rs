@@ -1,18 +1,3 @@
-//! The review steps after the check of a push attempt
-//! (docs/tickets/fleetd-p4/20-review-steps-carry-over.md): the verifier runs
-//! the steps of the run's verification profile that come before `land`,
-//! with today's code of `taskledger::finish`, and a code kind moves to
-//! `done` only after them (docs/specs/fleetd/design.md, "Done for each kind
-//! of task", D6, RR-18; preservation-04 rows F1, F2, F5, F12;
-//! preservation-05 row V-14).
-//!
-//! Each test uses a temp git repository, a temp ledger and a temp fleet
-//! root. A pass is part 2 (the verifier, in 1 transaction) and part 3 (the
-//! review steps, after the commit). A `task_check` job ends through its
-//! row, as the job process ends it; the complexity-sweep job runs its
-//! executor in the test process. No test reads the load, the limits or the
-//! clock of this machine: the fleet clock is a fact of the test. The fake
-//! analyser is a shell script, so the tests run on Unix only.
 #![cfg(unix)]
 
 #[path = "common/test_jobs.rs"]
@@ -53,13 +38,10 @@ use StepName::{CodeSweep, ComplexitySweep, Recheck};
 
 const RUN_BRANCH: &str = "fleet/r1";
 
-/// No finding.
 const NONE: &str = "## Critical\n- none\n## Important\n- none\n## Minor\n- none\n";
-/// 1 Important finding.
 const IMPORTANT: &str =
     "## Critical\n- none\n## Important\n- lib.ts:1 off by one. Fix: <=\n## Minor\n- none\n";
 
-/// The reviewer prompts of the code-sweep skill.
 const REVIEWERS: &[&str] = &[
     "bug-hunter",
     "vulnerability-scanner",
@@ -92,7 +74,6 @@ fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&o.stdout).trim().to_string()
 }
 
-/// Write `file` in `dir`, commit it, and give the new HEAD.
 fn commit(dir: &Path, file: &str, body: &str) -> String {
     std::fs::write(dir.join(file), body).unwrap();
     git(dir, &["add", file]);
@@ -100,17 +81,22 @@ fn commit(dir: &Path, file: &str, body: &str) -> String {
     git(dir, &["rev-parse", "HEAD"])
 }
 
-/// The policy of rung 6 of each task: the design defaults.
 fn policy(_: &Task) -> Policy {
     Policy::default()
 }
 
-/// No worker of a test has a sandbox profile.
-struct NoProfiles;
+struct TestProfile;
 
-impl SandboxProfiles for NoProfiles {
-    fn check_launch(&self, _: &Worker, _: &Path, _: &str) -> Result<Option<LaunchSpec>> {
-        Ok(None)
+impl SandboxProfiles for TestProfile {
+    fn check_launch(&self, _: &Worker, dir: &Path, check: &str) -> Result<Option<LaunchSpec>> {
+        Ok(Some(LaunchSpec {
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), check.into()],
+            cwd: Some(dir.to_path_buf()),
+            env_rule: Default::default(),
+            detach: false,
+            output: None,
+        }))
     }
 }
 
@@ -124,11 +110,9 @@ struct World {
 }
 
 impl World {
-    /// A git repository with the run branch, and 1 run with the steps of
-    /// `profile`. The analyser of the complexity-sweep finds nothing.
     fn new(profile: VerifyProfile) -> World {
         let tmp = tempfile::tempdir().unwrap();
-        let top = tmp.path().canonicalize().unwrap();
+        let top = horch_platform::path::canonicalize(tmp.path()).unwrap();
         let root = top.join("repo");
         std::fs::create_dir_all(&root).unwrap();
         git(&root, &["init", "--quiet", "-b", "main"]);
@@ -156,7 +140,6 @@ impl World {
                         ..Default::default()
                     },
                 )?;
-                // FR-12: a task needs an idea in flight of the feature of its run.
                 horch_core::taskledger::schema::run_idea(
                     tx,
                     &run.run_id,
@@ -174,7 +157,6 @@ impl World {
         let tools = Tools {
             git: Git::new("git"),
             gh: top.join("gh"),
-            // The analyser is `cli.js`: `node` runs it, and `/bin/sh` is node.
             node: "/bin/sh".into(),
             complexity_cli: Some(top.join("cli.js")),
             code_sweep_dir: Some(sweep),
@@ -197,10 +179,9 @@ impl World {
     }
 
     fn top(&self) -> PathBuf {
-        self.tmp.path().canonicalize().unwrap()
+        horch_platform::path::canonicalize(self.tmp.path()).unwrap()
     }
 
-    /// The script of the analyser of the complexity-sweep.
     fn analyser(&self, body: &str) {
         std::fs::write(self.top().join("cli.js"), format!("{body}\n")).unwrap();
     }
@@ -209,9 +190,6 @@ impl World {
         self.store.conn()
     }
 
-    /// A task of the code kind `feature` with the check `true` and the
-    /// review mode `mode`, claimed by a worker, with its worktree and 1
-    /// commit of `lib.ts`. Its attempt is a push attempt in `verifying`.
     fn task(&mut self, mode: ReviewMode) -> String {
         let mut t = NewTask::work("feature", "t.md", "opus");
         t.land_check = Some("true".into());
@@ -249,7 +227,6 @@ impl World {
         task
     }
 
-    /// The attempt of `worker` on `task` is a push attempt in `verifying`.
     fn push_attempt(&self, task: &str, worker: &str) {
         let n: i64 = self
             .conn()
@@ -274,8 +251,6 @@ impl World {
             .unwrap();
     }
 
-    /// The next attempt of `task`, which the review requeued: a new worker,
-    /// 1 more attempt, in the same worktree.
     fn next_attempt(&self, task: &str) -> String {
         assert_eq!(self.status(task), "ready");
         let worker = workers::insert(
@@ -308,8 +283,6 @@ impl World {
         )
     }
 
-    /// 1 pass: part 2, the verifier in 1 transaction; part 3, the review
-    /// steps after the commit. The tips are the HEADs of the worktrees.
     fn pass(&mut self) -> Vec<(String, Reviewed)> {
         let mut tips = BTreeMap::new();
         for t in tasks::of_run(self.conn(), &self.run.run_id).unwrap() {
@@ -338,7 +311,6 @@ impl World {
         verifier::review(&r, &mut self.store, report.passed).unwrap()
     }
 
-    /// The `task_check` rows of `task`, oldest first.
     fn jobs_of(&self, task: &str) -> Vec<jobs_store::JobRow> {
         let mut stmt = self
             .conn()
@@ -361,8 +333,6 @@ impl World {
             .expect("a queued task_check run")
     }
 
-    /// The job process of the queued check or recheck of `task` ends
-    /// `passed` or `failed`, with a verdict.
     fn end_check(&self, task: &str, passed: bool) {
         let row = self.queued(task);
         assert!(!review::is_complexity_key(&row.input_key));
@@ -376,9 +346,6 @@ impl World {
             .unwrap();
     }
 
-    /// The job process of the queued complexity-sweep of `task`: its
-    /// executor runs in this process as `horch job run` runs it, then its
-    /// result file ends the row, as the pass ends it.
     fn run_complexity(&self, task: &str) {
         let row = self.queued(task);
         assert!(
@@ -387,7 +354,7 @@ impl World {
             row.input_key
         );
         let me = std::process::id();
-        let mut conn = Connection::open(&self.ledger).unwrap();
+        let conn = Connection::open(&self.ledger).unwrap();
         conn.execute(
             "UPDATE jobs SET state = 'running', pid = ?2, started_at = ?3 WHERE id = ?1",
             params![row.id, me, util::now()],
@@ -400,10 +367,10 @@ impl World {
         };
         let checks = CheckRunner {
             host: &Launcher,
-            profiles: &NoProfiles,
+            profiles: &TestProfile,
             sweep: Some(&self.tools),
         };
-        let o = jobs::run_job(&ctx, &mut conn, row.id, me, &checks)
+        let o = jobs::run_job(&ctx, &conn, row.id, me, &checks)
             .unwrap()
             .expect("the job process wrote its result");
         let file = job_result_file::path(&self.top().join("fleet"), row.id, row.run);
@@ -424,7 +391,6 @@ impl World {
         self.conn().query_row(sql, [task], |r| r.get(0)).unwrap()
     }
 
-    /// The attempts used since the last operator requeue.
     fn used(&self, task: &str) -> i64 {
         self.number(
             "SELECT attempts - attempt_floor FROM tasks WHERE task_id = ?1",
@@ -436,7 +402,6 @@ impl World {
         self.number("SELECT fix_rounds FROM tasks WHERE task_id = ?1", task)
     }
 
-    /// The review tasks of `task`: (id, title, findings file, status).
     fn reviews(&self, task: &str) -> Vec<(String, String, String, String)> {
         let mut stmt = self
             .conn()
@@ -451,8 +416,6 @@ impl World {
             .collect()
     }
 
-    /// Each open review of `task` is in, with the findings `body` of its
-    /// reviewer.
     fn reviews_in(&self, task: &str, body: impl Fn(&str) -> &'static str) {
         for (id, title, file, status) in self.reviews(task) {
             if status == "done" || status == "cancelled" {
@@ -472,7 +435,6 @@ impl World {
             .unwrap();
     }
 
-    /// The step rows of the newest worker of `task`: (name, status).
     fn steps(&self, task: &str) -> Vec<(String, String)> {
         let worker = tasks::get(self.conn(), task).unwrap().current_worker_id;
         let worker = worker.unwrap_or_else(|| {
@@ -491,8 +453,6 @@ impl World {
             .collect()
     }
 
-    /// Passes, the check and the job steps, until the review of `task`
-    /// stops on something else than a job: gives that.
     fn review_until_settled(&mut self, task: &str) -> Reviewed {
         for _ in 0..10 {
             let out = self.pass();
@@ -516,20 +476,15 @@ fn step_of(steps: &[(String, String)], name: StepName) -> &str {
 fn light_profile_runs_check_and_complexity_sweep_then_done() {
     let mut w = World::new(VerifyProfile::Light);
     let t = w.task(ReviewMode::Light);
-    // Pass 1: the check job; the review waits for its verdict.
     assert!(w.pass().is_empty());
     w.end_check(&t, true);
-    // Pass 2: the check passed; the complexity-sweep is a job, and the pass
-    // does not wait for it.
     assert_eq!(w.pass(), [(t.clone(), Reviewed::Waiting(ComplexitySweep))]);
     assert_eq!(w.status(&t), "verifying");
     assert_eq!(step_of(&w.steps(&t), ComplexitySweep), "running");
-    // The job runs today's complexity-sweep in the job process.
     w.run_complexity(&t);
     let job = w.jobs_of(&t).pop().unwrap();
     assert_eq!(job.state, State::Passed);
     assert!(review::is_complexity_key(&job.input_key));
-    // Pass 3: each step passed: done.
     assert_eq!(w.pass(), [(t.clone(), Reviewed::Done)]);
     assert_eq!(w.status(&t), "done");
     let steps = w.steps(&t);
@@ -538,7 +493,6 @@ fn light_profile_runs_check_and_complexity_sweep_then_done() {
         w.reviews(&t).is_empty(),
         "the light profile has no code-sweep"
     );
-    // 2 job runs only: the check and the complexity-sweep.
     assert_eq!(w.jobs_of(&t).len(), 2);
 }
 
@@ -546,8 +500,6 @@ fn light_profile_runs_check_and_complexity_sweep_then_done() {
 fn passed_task_gives_its_attempt_the_outcome_verified() {
     let mut w = World::new(VerifyProfile::Light);
     let t = w.task(ReviewMode::Light);
-    // The agent exits after its result: rung 5 ends the attempt of the
-    // verifying task with `no_result` before the verifier decides.
     w.conn()
         .execute(
             "UPDATE attempts SET state = 'ended', outcome = 'no_result', ended_at = ?2
@@ -579,10 +531,8 @@ fn full_profile_runs_code_sweep_rounds() {
     let t = w.task(ReviewMode::Light);
     assert!(w.pass().is_empty());
     w.end_check(&t, true);
-    // The code-sweep queues its round of reviewer tasks and waits.
     assert_eq!(w.pass(), [(t.clone(), Reviewed::Waiting(CodeSweep))]);
     assert_eq!(w.reviews(&t).len(), 2, "light: 1 round of 2 reviewers");
-    // While a review is open, the step does not run again.
     assert_eq!(w.pass(), [(t.clone(), Reviewed::Waiting(CodeSweep))]);
     assert_eq!(w.reviews(&t).len(), 2);
     let rounds = w.number(
@@ -591,7 +541,6 @@ fn full_profile_runs_code_sweep_rounds() {
     );
     assert_eq!(rounds, 1);
     w.reviews_in(&t, |_| NONE);
-    // Then the complexity-sweep job, then the recheck job, in the run order.
     assert_eq!(w.pass(), [(t.clone(), Reviewed::Waiting(ComplexitySweep))]);
     assert_eq!(step_of(&w.steps(&t), CodeSweep), "passed");
     w.run_complexity(&t);
@@ -612,7 +561,6 @@ fn code_kind_needs_review_pass_with_at_most_2_requeues() {
     assert!(w.pass().is_empty());
     w.end_check(&t, true);
     assert_eq!(w.pass(), [(t.clone(), Reviewed::Waiting(CodeSweep))]);
-    // V-14: a cancelled reviewer task is queued again at most 2 times.
     let bug_hunter = |w: &World| {
         w.reviews(&t)
             .into_iter()
@@ -632,11 +580,8 @@ fn code_kind_needs_review_pass_with_at_most_2_requeues() {
         w.pass();
     }
     assert_eq!(bug_hunter(&w).len(), 3, "the first review and 2 requeues");
-    // The review did not pass: a fix attempt, and not done.
     assert_eq!(w.status(&t), "ready");
     assert_eq!(w.fix_rounds(&t), 1);
-    // RR-18 and V-14: at most 2 review requeues; the next failure burns 1
-    // attempt by rung 6.
     w.next_attempt(&t);
     assert_eq!(w.review_until_settled(&t), Reviewed::FixAttempt(CodeSweep));
     assert_eq!(w.fix_rounds(&t), 2);
@@ -644,7 +589,6 @@ fn code_kind_needs_review_pass_with_at_most_2_requeues() {
     assert_eq!(w.review_until_settled(&t), Reviewed::Rejected(CodeSweep));
     assert_eq!(w.fix_rounds(&t), 2);
     assert_ne!(w.status(&t), "done");
-    // 3 attempts ran; only the last burned 1.
     assert_eq!(
         w.number("SELECT attempts FROM tasks WHERE task_id = ?1", &t),
         3
@@ -669,7 +613,6 @@ fn findings_keep_their_ids_across_rounds() {
     let reason = verdict_file::newest(w.conn(), &t).unwrap().unwrap().reason;
     assert!(reason.starts_with("code-sweep: WARN: "), "{reason}");
     assert!(reason.contains("(F1)"), "{reason}");
-    // The fix attempt commits a change; round 2 reviews it.
     w.next_attempt(&t);
     commit(&w.worktree(&t), "lib.ts", "export const a = 2;\n");
     assert_eq!(w.review_until_settled(&t), Reviewed::Waiting(CodeSweep));
@@ -682,7 +625,6 @@ fn findings_keep_their_ids_across_rounds() {
         }
     });
     assert_eq!(w.pass(), [(t.clone(), Reviewed::FixAttempt(CodeSweep))]);
-    // The same finding has the same id in both rounds.
     let reports = reports(&w.tools.evidence_root.join(&t));
     assert_eq!(reports.len(), 2, "{reports:?}");
     for report in &reports {
@@ -693,7 +635,6 @@ fn findings_keep_their_ids_across_rounds() {
     }
 }
 
-/// The code-sweep reports of the attempts under `dir`, by path.
 fn reports(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     for e in std::fs::read_dir(dir).unwrap() {
@@ -722,8 +663,6 @@ fn review_requeue_keeps_the_attempt_count() {
         }
     });
     assert_eq!(w.pass(), [(t.clone(), Reviewed::FixAttempt(CodeSweep))]);
-    // The attempt ended `rejected`, its worker ended, and the task is ready
-    // for a fix attempt with 1 fix round.
     let outcome: String = w
         .conn()
         .query_row(
@@ -735,10 +674,8 @@ fn review_requeue_keeps_the_attempt_count() {
     assert_eq!(outcome, "rejected");
     assert_eq!(w.status(&t), "ready");
     assert_eq!(w.fix_rounds(&t), 1);
-    // The fix attempt runs with the same attempt count.
     w.next_attempt(&t);
     assert_eq!(w.used(&t), 1);
-    // Its START.md names the review that sent it back.
     let section = review::start_section(w.conn(), &t).unwrap().unwrap();
     assert!(
         section.starts_with("## The review of the last attempt"),
@@ -758,8 +695,6 @@ fn complexity_findings_reject_and_reach_the_next_start_md() {
         w.review_until_settled(&t),
         Reviewed::Rejected(ComplexitySweep)
     );
-    // Q11: the outcome is `rejected`, and the list is in the verdict and
-    // in START.md of the next attempt.
     assert_eq!(w.fix_rounds(&t), 0);
     let verdict = verdict_file::newest(w.conn(), &t).unwrap().unwrap();
     assert!(
@@ -789,8 +724,6 @@ fn answered_important_finding_passes() {
         }
     });
     assert_eq!(w.pass(), [(t.clone(), Reviewed::FixAttempt(CodeSweep))]);
-    // The fix attempt answers the finding in the answers file of the round
-    // and changes no code.
     let reason = verdict_file::newest(w.conn(), &t).unwrap().unwrap().reason;
     let answers = reason
         .split_whitespace()
@@ -812,12 +745,10 @@ fn land_pr_and_cleanup_are_not_verifier_steps() {
     assert_eq!(w.review_until_settled(&t), Reviewed::Done);
     assert_eq!(w.status(&t), "done");
     let steps = w.steps(&t);
-    // Review: none makes the code-sweep not applicable, as today.
     assert_eq!(step_of(&steps, CodeSweep), "not_applicable");
     for name in [StepName::Land, StepName::Pr, StepName::Cleanup] {
         assert_eq!(step_of(&steps, name), "pending", "{steps:?}");
     }
-    // Nothing landed: the run branch did not move.
     assert_eq!(git(&w.worktree(&t), &["rev-parse", RUN_BRANCH]), run_branch);
 }
 
@@ -854,20 +785,25 @@ fn claim_attempt_finish_is_unchanged() {
         finish::worktree_new_with(&mut w.store, &w.tools.git, &worker, "feat", &TestJobs).unwrap();
     commit(Path::new(&wt.path), "notes.txt", "x\n");
     let task = wt.task_id.unwrap();
-    // The worker's finish runs each step of the run in its own process,
-    // land included, as today.
     let r = finish::finish(&mut w.store, &w.tools, &worker).unwrap();
     assert!(r.complete, "{r:?}");
     let names: Vec<&str> = r.steps.iter().map(|s| s.name.as_str()).collect();
     assert_eq!(
         names,
-        ["check", "complexity-sweep", "land", "pr", "cleanup"]
+        [
+            "check",
+            "comment-sweep",
+            "complexity-sweep",
+            "land",
+            "pr",
+            "cleanup"
+        ]
     );
     assert_eq!(r.steps[0].status, "not_applicable");
     assert_eq!(r.steps[1].status, "not_applicable");
-    assert_eq!(r.steps[2].status, "passed");
+    assert_eq!(r.steps[2].status, "not_applicable");
+    assert_eq!(r.steps[3].status, "passed");
     assert_eq!(w.status(&task), "verifying");
-    // The verifier of fleetd does not touch a claim attempt.
     assert!(w.pass().is_empty());
     assert!(w.jobs_of(&task).is_empty());
 }
@@ -879,8 +815,6 @@ fn a_crash_before_or_after_the_step_row_runs_each_effect_once() {
     let tip = git(&w.worktree(&t), &["rev-parse", "HEAD"]);
     assert!(w.pass().is_empty());
     w.end_check(&t, true);
-    // A crash before the commit: the row of the running code-sweep is
-    // rolled back. The next pass runs the step 1 time.
     {
         let mut conn = Connection::open(&w.ledger).unwrap();
         let tx = conn.transaction().unwrap();
@@ -893,9 +827,6 @@ fn a_crash_before_or_after_the_step_row_runs_each_effect_once() {
     }
     assert_eq!(w.pass(), [(t.clone(), Reviewed::Waiting(CodeSweep))]);
     assert_eq!(w.reviews(&t).len(), 2);
-    // A crash after the commit and before the effect: the complexity-sweep
-    // row is running and its job is queued, but no job process ran. The
-    // next passes queue no second run, and the result is recorded 1 time.
     w.reviews_in(&t, |_| NONE);
     assert_eq!(w.pass(), [(t.clone(), Reviewed::Waiting(ComplexitySweep))]);
     assert_eq!(w.pass(), [(t.clone(), Reviewed::Waiting(ComplexitySweep))]);
@@ -918,10 +849,8 @@ fn a_crash_before_or_after_the_step_row_runs_each_effect_once() {
     assert_eq!(passed_events, 1);
     w.end_check(&t, true);
     assert_eq!(w.pass(), [(t.clone(), Reviewed::Done)]);
-    // A pass after done changes nothing, and the code-sweep ran 1 round.
     assert!(w.pass().is_empty());
     assert_eq!(w.reviews(&t).len(), 2);
-    // No tip and no work is lost.
     assert_eq!(git(&w.worktree(&t), &["rev-parse", "HEAD"]), tip);
     assert!(w.worktree(&t).join("lib.ts").exists());
 }

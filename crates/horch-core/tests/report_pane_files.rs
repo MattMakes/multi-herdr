@@ -1,14 +1,3 @@
-//! A `horch_access: report` pane reports through files (ticket 32 of
-//! fleetd-p5): `progress` and `done` write the outbox of the own attempt,
-//! and the report socket takes only `tell`.
-//!
-//! `docs/specs/fleetd/design.md`, Migration plan item 7 and the
-//! Preservation row 06 S11; RR-5. The writer is the outbox writer of
-//! ticket 26.
-//!
-//! Each test uses a temp ledger and a temp fleet root. The process facts
-//! are fixed, so the test runs the same way on each OS.
-
 use std::path::PathBuf;
 
 use horch_core::fleetd::fleet_runtime::adapters::peer_process::ProcessFacts;
@@ -22,10 +11,8 @@ use rusqlite::{params, Connection, OpenFlags};
 
 const AT: &str = "2026-11-18T12:00:00Z";
 
-/// The start time that the fixed facts give for this process.
 const START: u64 = 7;
 
-/// The process facts of a wrapper with no parent: this test process.
 struct Facts;
 
 impl ProcessFacts for Facts {
@@ -42,9 +29,6 @@ impl ProcessFacts for Facts {
     }
 }
 
-/// A temp ledger with the schema of today, a fleet root, and 1 live attempt
-/// `T-1/A1` whose wrapper is this test process. fleetd made the attempt
-/// folder; its outbox is not made.
 struct World {
     temp: tempfile::TempDir,
     root: PathBuf,
@@ -73,7 +57,6 @@ fn world() -> World {
 }
 
 impl World {
-    /// The outbox writer of this process, from the ledger opened read-only.
     fn writer(&self) -> anyhow::Result<OutboxWriter> {
         let conn = Connection::open_with_flags(&self.ledger, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
         OutboxWriter::of_this_process(&self.root, &conn, &FleetConfig::default(), &Facts)
@@ -84,15 +67,10 @@ impl World {
     }
 }
 
-/// An outbox source that must not be used.
 fn no_outbox() -> anyhow::Result<OutboxWriter> {
     panic!("a tell of a report pane writes no outbox file")
 }
 
-/// `progress` and `done` of a report pane write `progress.jsonl` and
-/// `result.json` of the own attempt, and make no socket call: no file is at
-/// the socket path, so a call fails. No step needs a Unix socket, so a
-/// Windows pane does not lose its reports (06 S11).
 #[test]
 fn pres_06_s11_worker_report_is_a_file_on_every_os() {
     let w = world();
@@ -136,7 +114,6 @@ fn pres_06_s11_worker_report_is_a_file_on_every_os() {
     assert_eq!(file.status.as_str(), "completed");
     assert_eq!(file.summary, "all done");
 
-    // An empty text writes no file.
     let err = report::report(
         &socket,
         &Request::Progress { text: " ".into() },
@@ -152,7 +129,6 @@ fn pres_06_s11_worker_report_is_a_file_on_every_os() {
 #[cfg(unix)]
 use std::sync::{Arc, Mutex};
 
-/// A server that records each request it runs.
 #[cfg(unix)]
 fn server(path: &std::path::Path) -> (Arc<Mutex<Vec<Request>>>, report::Server) {
     let seen = Arc::new(Mutex::new(Vec::new()));
@@ -166,15 +142,11 @@ fn server(path: &std::path::Path) -> (Arc<Mutex<Vec<Request>>>, report::Server) 
     (seen, server)
 }
 
-/// A Unix socket path has a short length limit, so the folder is under
-/// `/tmp`, not the long macOS temp folder.
 #[cfg(unix)]
 fn socket_dir() -> tempfile::TempDir {
     tempfile::Builder::new().tempdir_in("/tmp").unwrap()
 }
 
-/// The socket refuses `progress` and `done` with an answer, and its parent
-/// runs nothing for them.
 #[cfg(unix)]
 #[test]
 fn report_socket_refuses_progress_and_done() {
@@ -194,8 +166,6 @@ fn report_socket_refuses_progress_and_done() {
     assert!(seen.lock().unwrap().is_empty());
 }
 
-/// `tell` of a report pane goes over the socket to its report target, and
-/// writes no outbox file.
 #[cfg(unix)]
 #[test]
 fn report_socket_keeps_tell() {

@@ -1,20 +1,7 @@
-//! The 256k context limit of a CLI with no compaction setting (fleetd-p7
-//! ticket 18; FM-20, FR-9, MAP.md Q2).
-//!
-//! The wrapper ends an Antigravity attempt at 256000 context tokens with
-//! the outcome hint `context_limit`. fleetd ends the attempt with the
-//! outcome `context_limit`, burns no attempt, and moves the task to `ready`
-//! at once, with the handoff file of rung 6 for the next attempt in the
-//! same worktree. When 2 attempts in a row end with `context_limit` and the
-//! task branch has no new commit between them, the task does not go to
-//! `ready` again, and 1 needs-you item opens.
-//!
-//! Each test runs the fake agents of `crates/horch-e2e` in a temporary
-//! fleet root, with a temporary ledger and a temporary git worktree. No
-//! test reads the clock of this machine or waits for a time: each waits
-//! for the end of the fake or for a line of its stream.
+#[path = "support/fakes.rs"]
+mod fakes;
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command as StdCommand;
 use std::sync::mpsc;
 use std::time::Duration;
@@ -44,91 +31,14 @@ use rusqlite::{params, Connection};
 
 const GUARD: Generation = Generation(1);
 
-/// The fleet clock of the `fleetd` row in each test.
 const CLOCK: i64 = 4242;
 
-/// The fakes that the tests run.
 const FAKES: [&str; 2] = ["fake-claude", "fake-antigravity"];
 
-// ─── the fakes ──────────────────────────────────────────────────────────
-
-/// The folder of the built fakes: `target/<profile>`, beside this test.
-fn bin_dir() -> PathBuf {
-    let exe = std::env::current_exe().unwrap();
-    let mut dir = exe.parent().unwrap().to_path_buf();
-    if dir.file_name().and_then(|n| n.to_str()) == Some("deps") {
-        dir.pop();
-    }
-    dir
-}
-
-/// The variables cargo sets for a test process. A nested build that sees
-/// them has another fingerprint, and builds each crate again.
-const CARGO_RUN_VARS: &[&str] = &[
-    "CARGO_MANIFEST_DIR",
-    "CARGO_MANIFEST_PATH",
-    "CARGO_CRATE_NAME",
-    "CARGO_BIN_NAME",
-    "CARGO_PRIMARY_PACKAGE",
-    "CARGO_TARGET_TMPDIR",
-    "CARGO_RUSTC_CURRENT_DIR",
-    "OUT_DIR",
-];
-
-/// Build the fakes 1 time in this test process, into the target folder
-/// of this test. `cargo test -p horch-core` does not build them.
 fn fake(name: &str) -> PathBuf {
-    static BUILT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
-    let dir = bin_dir();
-    BUILT.get_or_init(|| {
-        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-        let mut cmd = StdCommand::new(cargo);
-        for (key, _) in std::env::vars_os() {
-            let key = key.to_string_lossy();
-            if key.starts_with("CARGO_PKG_") || CARGO_RUN_VARS.contains(&key.as_ref()) {
-                cmd.env_remove(key.as_ref());
-            }
-        }
-        cmd.current_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
-            .args(["build", "--locked", "-p", "horch-e2e"]);
-        for bin in FAKES {
-            cmd.args(["--bin", bin]);
-        }
-        match dir.file_name().and_then(|n| n.to_str()) {
-            Some("debug") | None => {}
-            Some("release") => {
-                cmd.arg("--release");
-            }
-            Some(profile) => {
-                cmd.args(["--profile", profile]);
-            }
-        }
-        cmd.arg("--target-dir").arg(dir.parent().unwrap());
-        let out = cmd.output().unwrap();
-        assert!(
-            out.status.success(),
-            "the build of the fakes failed: {cmd:?}\n{}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        // macOS holds a new binary at its first launch, for minutes. Take
-        // that hold here, with no bound, so no bounded wait of a test
-        // counts it.
-        for bin in FAKES {
-            let path = dir.join(format!("{bin}{}", std::env::consts::EXE_SUFFIX));
-            let status = StdCommand::new(&path)
-                .arg("--version")
-                .env_remove("HORCH_FAKE_LOG")
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .status()
-                .unwrap();
-            assert!(status.success(), "{bin} --version: {status}");
-        }
-    });
-    dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
+    fakes::fake(&FAKES, name)
 }
 
-/// A pane that sends each complete line that it gets to the test.
 struct Pane {
     send: mpsc::Sender<String>,
     open: Vec<u8>,
@@ -151,12 +61,8 @@ impl std::io::Write for Pane {
     }
 }
 
-/// The failure bound of 1 wait of a test. A test never passes by it: it
-/// only turns a hang into a failure.
 const BOUND: Duration = Duration::from_secs(120);
 
-/// End the CLI of the attempt in `files` with `kill -KILL`, by the pid of
-/// its heartbeat. No heartbeat: nothing to end.
 fn kill_cli(files: &AttemptFiles) {
     let Ok(text) = std::fs::read_to_string(files.dir().join(HEARTBEAT_JSON)) else {
         return;
@@ -169,9 +75,6 @@ fn kill_cli(files: &AttemptFiles) {
     }
 }
 
-/// End the CLI that the wrapper started with `kill -KILL`, by the pid that
-/// the wrapper took at its spawn. A bounded wait that fails calls it, so
-/// the scoped wrapper thread ends and the test fails, not hangs.
 fn kill_agent(facts: &AgentFacts) {
     if let Some(pid) = facts.pid() {
         let _ = StdCommand::new("kill")
@@ -180,9 +83,6 @@ fn kill_agent(facts: &AgentFacts) {
     }
 }
 
-/// Run `cmd` through the wrapper. `watch` gets each pane line until it
-/// returns `true`, then `act` runs. A run that does not end within
-/// [`BOUND`] after that is ended, and the test fails.
 fn run_watched(
     cli: ExecCli,
     cmd: Command,
@@ -230,16 +130,11 @@ fn run_watched(
     })
 }
 
-/// A pane line with a token count at or past the limit.
 fn past_the_limit(line: &str) -> bool {
     line.split_whitespace()
         .any(|word| word.parse::<u64>().is_ok_and(|n| n >= CONTEXT_LIMIT))
 }
 
-// ─── the world: a ledger, a fleet root and a git worktree ───────────────
-
-/// A temp ledger at generation 1 and fleet clock [`CLOCK`], 1 run, a fleet
-/// root and the git worktree of the task.
 struct World {
     dir: PathBuf,
     _temp: tempfile::TempDir,
@@ -268,7 +163,6 @@ fn world() -> World {
         },
     )
     .unwrap();
-    // A task needs an idea in flight of the feature of its run (FR-12).
     schema::run_idea(&conn, &run.run_id, &util::now(), true).unwrap();
     std::fs::create_dir_all(dir.join("fleet")).unwrap();
     let w = World {
@@ -289,12 +183,10 @@ impl World {
         self.dir.join("fleet")
     }
 
-    /// The worktree of the task.
     fn tree(&self) -> PathBuf {
         self.dir.join("tree")
     }
 
-    /// Run git in the worktree, with no config of this machine.
     fn git(&self, args: &[&str]) -> String {
         let out = StdCommand::new("git")
             .current_dir(self.tree())
@@ -313,7 +205,6 @@ impl World {
         self.git(&["commit", "-q", "-m", message]);
     }
 
-    /// What fleetd knows of the worktree at the end of an attempt.
     fn tree_at_end(&self) -> TreeAtEnd {
         TreeAtEnd {
             head: Some(self.git(&["rev-parse", "HEAD"]).trim().to_string()),
@@ -321,8 +212,6 @@ impl World {
         }
     }
 
-    /// Add 1 task of the shared checkout, and bind it to a new live
-    /// attempt. The test keeps its own git worktree in [`World::tree`].
     fn running_task(&self) -> AttemptRef {
         let mut new = NewTask::work("t", "tickets/t.md", "agy");
         new.worktree_mode = WorktreeMode::Shared;
@@ -330,7 +219,6 @@ impl World {
         self.claim(&task.task_id)
     }
 
-    /// A new worker binds the task `task_id`: its new live attempt.
     fn claim(&self, task_id: &str) -> AttemptRef {
         let worker = NewWorker {
             run_id: self.run.run_id.clone(),
@@ -345,7 +233,6 @@ impl World {
         }
     }
 
-    /// The wrapper files of the attempt `a`, with its `inbox/START.md`.
     fn files(&self, a: &AttemptRef) -> AttemptFiles {
         let files = AttemptFiles::new(&self.root(), a.clone());
         std::fs::create_dir_all(files.dir().join("inbox")).unwrap();
@@ -354,8 +241,6 @@ impl World {
         files
     }
 
-    /// The wrapper runs the attempt `a` with the fake Antigravity and its
-    /// `long_context` key, and writes `exit.json`.
     fn run_agy_long_context(&self, a: &AttemptRef) -> ExecEnd {
         let files = self.files(a);
         let start_md = files.dir().join("inbox/START.md");
@@ -369,13 +254,11 @@ impl World {
         });
         cmd.env("HORCH_FAKE_LOG", self.dir.join("fake.log"))
             .env("HORCH_FAKE_SCENARIO", "long_context");
-        // The wrapper ends the fake by itself: the test does nothing.
         let end = run_watched(ExecCli::Antigravity, cmd, &files, past_the_limit, || {});
         write_exec_exit(&files, end, false).unwrap();
         end
     }
 
-    /// fleetd ingests the end of the attempt `a` at the context limit.
     fn on_context_limit(&mut self, a: &AttemptRef) -> Option<ContextLimitMove> {
         let tree = self.tree_at_end();
         let root = self.root();
@@ -390,7 +273,6 @@ impl World {
         tasks::get(&self.conn, &a.task_id).unwrap()
     }
 
-    /// The state and the outcome of the attempt `a`.
     fn attempt(&self, a: &AttemptRef) -> (String, Option<String>) {
         self.conn
             .query_row(
@@ -401,7 +283,6 @@ impl World {
             .unwrap()
     }
 
-    /// The open needs-you items: kind, entity id and text.
     fn needs_you(&self) -> Vec<(String, String, String)> {
         let mut st = self
             .conn
@@ -413,22 +294,17 @@ impl World {
             .collect()
     }
 
-    /// The attempts that the task of `a` used: `attempts - attempt_floor`.
     fn used(&self, a: &AttemptRef) -> i64 {
         let t = self.task(a);
         t.attempts - t.attempt_floor
     }
 }
 
-/// 1 attempt of a task that ends at the context limit: the wrapper run,
-/// then the ingest of fleetd.
 fn context_limit_attempt(w: &mut World, a: &AttemptRef) -> Option<ContextLimitMove> {
     let end = w.run_agy_long_context(a);
     assert!(matches!(end, ExecEnd::ContextLimit(_)), "{end:?}");
     w.on_context_limit(a)
 }
-
-// ─── the tests ──────────────────────────────────────────────────────────
 
 #[test]
 fn agy_attempt_at_256000_tokens_ends_with_context_limit() {
@@ -437,7 +313,6 @@ fn agy_attempt_at_256000_tokens_ends_with_context_limit() {
     let a = w.running_task();
     let end = w.run_agy_long_context(&a);
 
-    // The fake does not stop by itself: the wrapper ended it.
     assert!(matches!(end, ExecEnd::ContextLimit(_)), "{end:?}");
     assert_eq!(end.outcome_hint(), Some(OutcomeHint::ContextLimit));
     assert!(
@@ -458,7 +333,6 @@ fn agy_attempt_at_256000_tokens_ends_with_context_limit() {
         "the token line is in the transcript: {transcript}"
     );
 
-    // fleetd ends the attempt with the outcome context_limit.
     assert!(w.on_context_limit(&a).is_some());
     assert_eq!(
         w.attempt(&a),
@@ -484,11 +358,9 @@ fn context_limit_burns_no_attempt_and_moves_the_task_to_ready_at_once() {
     assert_eq!(w.used(&a), used - 1, "the attempt is given back");
     assert!(w.needs_you().is_empty());
 
-    // The next claim uses the same attempt number of the limit.
     let next = w.claim(&a.task_id);
     assert_eq!(w.used(&next), used, "no attempt is burned");
 
-    // A second ingest of the same attempt changes nothing.
     assert_eq!(w.on_context_limit(&a), None);
 }
 
@@ -496,7 +368,6 @@ fn context_limit_burns_no_attempt_and_moves_the_task_to_ready_at_once() {
 fn next_attempt_gets_the_handoff_file_in_the_same_worktree() {
     let mut w = world();
     let a = w.running_task();
-    // The attempt changed the worktree and wrote 1 progress line.
     std::fs::write(w.tree().join("a.txt"), "one\ntwo from A1\n").unwrap();
     let files = w.files(&a);
     std::fs::write(
@@ -519,8 +390,6 @@ fn next_attempt_gets_the_handoff_file_in_the_same_worktree() {
     assert!(text.contains(last), "the transcript tail: {text}");
     assert!(handoff.starts_with(files.dir()), "{}", handoff.display());
 
-    // The next attempt names the handoff file, and the worktree keeps the
-    // work of the old attempt.
     let next = w.claim(&a.task_id);
     assert_ne!(next.attempt_id, a.attempt_id);
     assert_eq!(
@@ -542,7 +411,6 @@ fn two_context_limits_with_no_new_commit_open_1_needs_you_item() {
         context_limit_attempt(&mut w, &a1),
         Some(ContextLimitMove::Ready { .. })
     ));
-    // A2 changes the worktree, but commits nothing.
     let a2 = w.claim(&a1.task_id);
     std::fs::write(w.tree().join("a.txt"), "one\nno commit\n").unwrap();
     let moved = context_limit_attempt(&mut w, &a2);
@@ -566,7 +434,6 @@ fn two_context_limits_with_no_new_commit_open_1_needs_you_item() {
     assert!(text.contains(&a1.attempt_id), "{text}");
     assert!(text.contains(&a2.attempt_id), "{text}");
 
-    // A second ingest opens no second item.
     assert_eq!(w.on_context_limit(&a2), None);
     assert_eq!(w.needs_you().len(), 1);
 }
@@ -580,7 +447,6 @@ fn two_context_limits_with_a_new_commit_go_on() {
         context_limit_attempt(&mut w, &a1),
         Some(ContextLimitMove::Ready { .. })
     ));
-    // A2 commits its work before it reaches the limit.
     let a2 = w.claim(&a1.task_id);
     std::fs::write(w.tree().join("a.txt"), "one\ncommitted by A2\n").unwrap();
     w.commit("A2 work");
@@ -597,7 +463,6 @@ fn two_context_limits_with_a_new_commit_go_on() {
     assert!(w.needs_you().is_empty());
 }
 
-/// The test ends the fake with `kill`, a command of Unix.
 #[cfg(unix)]
 #[test]
 fn claude_attempt_is_not_ended_by_the_wrapper_limit() {
@@ -619,8 +484,6 @@ fn claude_attempt_is_not_ended_by_the_wrapper_limit() {
     .env("HORCH_FAKE_LOG", w.dir.join("fake.log"))
     .env("HORCH_FAKE_SCENARIO", "long_context");
 
-    // Claude compacts by its own setting, so the CLI goes on past the
-    // limit. The test ends it: the end says who stopped it.
     let end = run_watched(ExecCli::Claude, cmd, &files, past_the_limit, || {
         kill_cli(&files)
     });

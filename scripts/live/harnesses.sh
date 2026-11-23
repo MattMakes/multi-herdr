@@ -1,17 +1,4 @@
 #!/usr/bin/env bash
-# Live check: the harness CLIs on this Mac (U-28, U-60..U-64, U-67, U-30 Q1).
-# Antigravity (agy) flags, model, resume and trust store; OpenCode --prompt on
-# a resume; the Prime status record; pi on the installed Node.
-# Result table: docs/live-checks/harnesses.md. The gate never runs this.
-#
-# Usage: scripts/live/harnesses.sh
-#        AGY_READ_CACHE=1 scripts/live/harnesses.sh  (also read agy's
-#        last_conversations.json; it lists your own workspaces)
-#        AGY_TRUST_SCRATCH=1 scripts/live/harnesses.sh  (answer agy's trust
-#        question for the scratch repo once, so the TUI resume step runs)
-# Cost: 4 small agy turns on the operator's Google login (a 5th is refused
-# before it starts) and 2 small opencode turns on a free tier. Both train on
-# input: every prompt is dummy text in a scratch repo that holds 1 dummy file.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -26,19 +13,14 @@ pass() { echo "PASS $1${2:+: $2}"; }
 fail() { echo "FAIL $1: $2"; FAILS=$((FAILS + 1)); }
 skip() { echo "SKIP $1: $2"; }
 
-# within <seconds> <cmd...>: run with a time limit (macOS has no timeout(1)).
 within() { local s="$1"; shift; perl -e 'alarm shift; exec @ARGV' "$s" "$@"; }
 
-# clean <seconds> <cmd...>: within, and never pass a key to a harness: the
-# Anthropic one is banned in this project, and the Google ones move agy off
-# the operator's login.
 clean() {
   local s="$1"; shift
   env -u ANTHROPIC_API_KEY -u GEMINI_API_KEY -u GOOGLE_API_KEY -u GOOGLE_GEMINI_BASE_URL \
     perl -e 'alarm shift; exec @ARGV' "$s" "$@"
 }
 
-# scratch_repo <dir>: a fresh git repo with 1 dummy file.
 scratch_repo() {
   rm -rf "$1"
   mkdir -p "$1"
@@ -46,9 +28,6 @@ scratch_repo() {
     git -c user.name=live -c user.email=live@example.invalid commit -qm init)
 }
 
-# tui_screen <seconds> <out> <cmd...>: run cmd in a 160x50 pseudo-terminal,
-# then kill it; <out> gets the screen text without escape codes. With
-# AGY_TRUST_SCRATCH=1 it presses Enter once at agy's trust question.
 tui_screen() {
   local s="$1" out="$2"; shift 2
   env -u ANTHROPIC_API_KEY -u GEMINI_API_KEY -u GOOGLE_API_KEY -u GOOGLE_GEMINI_BASE_URL \
@@ -85,10 +64,8 @@ open(out, "w").write(re.sub(r"\x1b\[[0-9;?<>=]*[a-zA-Z~]|\x1b\][^\x07]*\x07", ""
 ' "$s" "$out" "$@" </dev/null >/dev/null 2>&1 || true
 }
 
-# json_get <key>: one top-level field of the JSON object on stdin.
 json_get() { python3 -c 'import json,sys; t=sys.stdin.read(); print(json.loads(t[t.index("{"):]).get(sys.argv[1], ""))' "$1"; }
 
-# ---------------------------------------------------------------- Antigravity
 if ! command -v agy >/dev/null 2>&1; then
   skip agy "agy is not installed (curl -fsSL https://antigravity.google/cli/install.sh | bash)"
 else
@@ -113,7 +90,6 @@ else
 
   SETTINGS="$AGY_HOME_DIR/settings.json"
   if [ -f "$SETTINGS" ]; then
-    # Key names and a count only: never print the values.
     shape="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); t=d.get("trustedWorkspaces"); print("provider" if "modelProvider" in d else "", type(t).__name__, all(isinstance(x,str) for x in t) if isinstance(t,list) else "")' "$SETTINGS")"
     case "$shape" in
       provider*) fail agy-no-api-key "settings.json sets modelProvider: agy may need GEMINI_API_KEY" ;;
@@ -132,8 +108,6 @@ else
   trusted() { [ -f "$SETTINGS" ] && python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if sys.argv[2] in d.get("trustedWorkspaces",[]) else 1)' "$SETTINGS" "$REPO" 2>/dev/null; }
   PRE_TRUSTED=0
   if trusted; then PRE_TRUSTED=1; fi
-  # Print mode: the TUI would stop at the trust question in a new directory.
-  # No permission flags: the turn needs no tool.
   first="$(cd "$REPO" && clean 180 agy --model "$AGY_MODEL" --effort medium \
     -p "Remember the word ZEBRA. Reply with the single word PONG." --output-format json 2>/dev/null || true)"
   CID="$(json_get conversation_id <<<"$first" 2>/dev/null || true)"
@@ -153,9 +127,6 @@ else
     else
       fail agy-mode-plan "--mode plan failed"
     fi
-    # The repo is re-created at the same path, and trust is per path: after
-    # one AGY_TRUST_SCRATCH=1 run, this step cannot tell print mode's trust
-    # from the earlier answer.
     if [ "$PRE_TRUSTED" = "1" ]; then
       skip agy-print-no-trust "the scratch repo was trusted before this run (AGY_TRUST_SCRATCH=1)"
     elif trusted; then
@@ -164,16 +135,11 @@ else
       pass agy-print-no-trust "print mode runs in an untrusted directory and records no trust"
     fi
 
-    # The resume argv is --conversation <id> --prompt-interactive <p>
-    # (harness/antigravity.rs). The TUI must run <p> as a new turn of <id>.
-    # OpenCode ignored the same pair (opencode-resume-prompt).
     if [ "$AGY_TRUST_SCRATCH" = "1" ] || trusted; then
       # shellcheck disable=SC2016 # $1 and $@ expand in the child sh, not here
       tui_screen 45 "$SCR/agy-resume.txt" sh -c 'cd "$1" && shift && exec "$@"' _ "$REPO" \
         agy --model "$AGY_MODEL" --effort low --conversation "$CID" \
         --prompt-interactive "What is 17 times 23? Reply with the number only."
-      # Control: the same resume without a prompt shows the history and runs
-      # no turn. The 17 x 23 turn in that history proves it is in <id>.
       # shellcheck disable=SC2016 # $1 and $@ expand in the child sh, not here
       tui_screen 30 "$SCR/agy-control.txt" sh -c 'cd "$1" && shift && exec "$@"' _ "$REPO" \
         agy --model "$AGY_MODEL" --effort low --conversation "$CID"
@@ -191,7 +157,6 @@ else
     skip agy-turn "agy print mode did not succeed (log in: run agy once)"
   fi
 
-  # Effort on a model id that agy does not list bare: refused (seen on 1.2.17).
   bad="$(cd "$REPO" && clean 60 agy --model gemini-3-1-pro --effort low -p "x" --output-format json 2>/dev/null || true)"
   if grep -q "not supported" <<<"$(json_get error <<<"$bad" 2>/dev/null || true)"; then
     pass agy-effort-refusal "agy refuses --effort for an id it does not list (gemini-3-1-pro)"
@@ -199,10 +164,6 @@ else
     skip agy-effort-refusal "agy accepted or did not answer"
   fi
 
-  # A bare model id with no --effort: agy 1.3.0 refused it before a turn
-  # starts; 1.4.0 accepts it. The roster check still fails such a teammate
-  # (roster/validation.rs), so the tier does not depend on agy's default
-  # effort. This step records what agy does with a bare id.
   bare="$(cd "$REPO" && clean 60 agy --model "$AGY_MODEL" -p "x" --output-format json 2>/dev/null || true)"
   if grep -q "requires --effort" <<<"$(json_get error <<<"$bare" 2>/dev/null || true)"; then
     skip agy-bare-model "agy refuses a bare model id without --effort (pre-1.4.0 behavior); the roster rule still holds"
@@ -210,8 +171,6 @@ else
     pass agy-bare-model "agy accepts a bare model id; the roster still requires effort"
   fi
 
-  # Usage: file names only. A token count would need a file with "usage" or
-  # "quota" in its name, or a table column.
   usage="$(find "$AGY_HOME_DIR" -maxdepth 3 \( -iname '*usage*' -o -iname '*quota*' \) 2>/dev/null | head -3)"
   if [ -n "$usage" ]; then
     fail agy-no-usage-file "a usage file now exists; add a reader (U-60): $usage"
@@ -220,7 +179,6 @@ else
   fi
 
   if [ "${AGY_READ_CACHE:-0}" = "1" ] && [ -f "$AGY_HOME_DIR/cache/last_conversations.json" ]; then
-    # Prints only the value type for the scratch repo.
     kind="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); v=d.get(sys.argv[2]); print(type(v).__name__)' "$AGY_HOME_DIR/cache/last_conversations.json" "$REPO")"
     case "$kind" in
       str | dict) pass agy-cache-format "last_conversations.json maps the scratch repo to a $kind" ;;
@@ -232,7 +190,6 @@ else
   skip agy-fleet-spawn "needs a fleet and a trusted directory; see docs/live-checks/harnesses.md"
 fi
 
-# ------------------------------------------------------------------- OpenCode
 if ! command -v opencode >/dev/null 2>&1; then
   skip opencode "opencode is not installed"
 else
@@ -240,19 +197,12 @@ else
   REPO="$SCR/opencode"
   scratch_repo "$REPO"
   export OPENCODE_DISABLE_EXTERNAL_SKILLS=1
-  # user_turns <session>: the number of user messages in the session.
   user_turns() {
     (cd "$REPO" && opencode export "$1" 2>/dev/null) | python3 -c 'import json,sys; t=sys.stdin.read(); d=json.loads(t[t.index("{"):]); print(sum(1 for m in d.get("messages",[]) if m.get("info",{}).get("role")=="user"))'
   }
-  # sessions: the ids of the sessions in the scratch repo.
   sessions() {
     (cd "$REPO" && opencode session list --format json 2>/dev/null) | python3 -c 'import json,sys; t=sys.stdin.read().strip() or "[]"; [print(r["id"]) for r in json.loads(t) if r.get("directory")==sys.argv[1]]' "$REPO"
   }
-  # tui <seconds> <args...>: the TUI in a pseudo-terminal for <seconds>, then
-  # stopped. `script` ends first and leaves opencode running, so the PID of
-  # opencode (the 1 child of this `script`) is read while `script` runs, and
-  # that 1 PID is stopped. Never stop a process by a name or a pattern
-  # (docs/adr/0002).
   tui() {
     local s="$1"; shift
     local sp oc=""
@@ -275,9 +225,6 @@ else
     skip opencode-resume-prompt "opencode run made no session (no network or no free tier)"
   else
     before="$(user_turns "$SID")"
-    # Control: the same TUI setup without --session delivers --prompt. A fresh
-    # opencode TUI can take 1 to 5 minutes to create its session on a loaded
-    # Mac, so poll for up to 360 s and stop the TUI at the control word.
     CTRL=(--prompt "Reply with the single word CHERRY.")
     tui 360 "${CTRL[@]}" &
     tpid=$!
@@ -298,9 +245,6 @@ else
     elif [ -z "$control" ]; then
       skip opencode-resume-prompt "control failed: a fresh TUI --prompt did not arrive"
     else
-      # The resume TUI creates no session, so it shows no startup signal. Give
-      # it the startup time the control needed, then the 45 s window, so a
-      # slow start cannot make "ignored" pass by timing.
       tui $((startup + 45)) --session "$SID" --prompt "Reply with the single word BANANA."
       sleep 2
       after="$(user_turns "$SID")"
@@ -313,12 +257,6 @@ else
   fi
 fi
 
-# ---------------------------------------------------------------------- Prime
-# The Rust build (0.10.0): `status` and `shutdown` scan only
-# `$TMPDIR/prime-agent-<uid>/`. A scratch TUI (no prompt, no model turn) on a
-# socket in a scratch scan dir; `TMPDIR=<dir>/ prime-agent status --json`
-# must name it with pid and socketPath and no start time (U-63), and the
-# scoped `shutdown --force --json` must name it as stopped.
 if ! command -v prime-agent >/dev/null 2>&1; then
   skip prime-status "prime-agent is not installed"
 else
@@ -335,8 +273,6 @@ else
   for _ in $(seq 1 30); do [ -S "$PSOCK" ] && break; sleep 1; done
   PST="$(TMPDIR="$PDIR/" prime-agent status --json 2>&1 || true)"
   PSTOP="$(TMPDIR="$PDIR/" clean 30 prime-agent shutdown --force --json 2>&1 || true)"
-  # A daemon the scoped shutdown left: its PID is in the scoped status above.
-  # Stop that 1 PID, never a pattern (docs/adr/0002).
   PDPID="$(printf '%s' "$PST" | sed -n 's/.*"pid": *\([0-9][0-9]*\).*/\1/p' | head -1)"
   if [ -n "$PDPID" ]; then kill "$PDPID" 2>/dev/null || true; fi
   kill "$PTUI" 2>/dev/null || true
@@ -354,7 +290,6 @@ else
   fi
 fi
 
-# ------------------------------------------------------------------------- pi
 if ! command -v pi >/dev/null 2>&1; then
   skip pi-version "pi is not installed"
 elif out="$(within 30 pi --version 2>&1)"; then

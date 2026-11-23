@@ -20,7 +20,6 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-# `<job>\t<step>\t` of `gh run view --log`, then the time of a CI log line.
 PREFIX = re.compile(r"^(?:[^\t]*\t[^\t]*\t)?\ufeff?\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z ")
 RUNNING = re.compile(r"^\s*Running (?:unittests )?(.+?) \((.+)\)$")
 DOC_TESTS = re.compile(r"^\s*Doc-tests (\S+)$")
@@ -49,8 +48,8 @@ def binary_prefix(source, binary):
 def parse_log(lines):
     """Return {key: result} for each test of a cargo test log."""
     found = defaultdict(list)
-    current = None  # (prefix, header) of the binary that runs
-    open_binary = None  # header of a binary with no result line yet
+    current = None
+    open_binary = None
     summaries = 0
     for raw in lines:
         line = strip_prefix(raw)
@@ -84,7 +83,6 @@ def parse_log(lines):
         if len(results) == 1:
             records[key] = results[0]
             continue
-        # 2 doc tests of 1 item differ only by line number: number them by result.
         for index, result in enumerate(sorted(results), start=1):
             records[f"{key}#{index}"] = result
     return records

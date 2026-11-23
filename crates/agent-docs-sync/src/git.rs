@@ -1,7 +1,3 @@
-//! The `also_git` source: the `docs/` folder of a git repository, as a
-//! shallow, sparse clone into `<out>/<tool>/<version>/git/`. Git starts
-//! through the platform start function (SR-7).
-
 use std::path::Path;
 use std::process::Stdio;
 
@@ -10,11 +6,8 @@ use horch_platform::start;
 
 use crate::Outcome;
 
-/// The folder of the clone in a version folder, also its report entry.
 pub const GIT_DIR: &str = "git";
 
-/// Clone the `docs/` folder of `url` into `<version_dir>/git/`. A clone that
-/// is there already is replaced.
 pub(crate) fn copy_docs(url: &str, version_dir: &Path) -> Outcome {
     let target = version_dir.join(GIT_DIR);
     let existed = target.exists();

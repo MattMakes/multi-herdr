@@ -1,6 +1,3 @@
-//! `horch self-update` paths that `self_update_cli.rs` leaves out: `--check`,
-//! up to date, no release, a failing install and a missing asset. A local
-//! server stands in for GitHub; the environment is cleared.
 #![cfg(unix)]
 
 use std::io::{BufRead, BufReader, Write};
@@ -31,15 +28,11 @@ fn tar_gz(script: &str) -> Vec<u8> {
     builder.into_inner().unwrap().finish().unwrap()
 }
 
-/// What the server offers for `/releases/latest`.
 enum Offer {
-    /// 404: no release yet.
     None,
-    /// `tag` with the archive and, when `sums`, its SHA256SUMS.
     Release { tag: &'static str, sums: bool },
 }
 
-/// Serve the offer and `archive`; returns the API base URL.
 fn serve(offer: Offer, archive: Vec<u8>) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
@@ -96,7 +89,7 @@ fn serve(offer: Offer, archive: Vec<u8>) -> String {
 
 fn world() -> (tempfile::TempDir, std::path::PathBuf) {
     let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().canonicalize().unwrap();
+    let root = horch_platform::path::canonicalize(tmp.path()).unwrap();
     for dir in ["home", "data", "state", "bin"] {
         std::fs::create_dir_all(root.join(dir)).unwrap();
     }
@@ -109,6 +102,7 @@ fn self_update(root: &Path, api: &str, args: &[&str]) -> Output {
         .args(args)
         .current_dir(root)
         .env_clear()
+        .env("TMPDIR", std::env::temp_dir())
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", root.join("home"))
         .env("XDG_DATA_HOME", root.join("data"))

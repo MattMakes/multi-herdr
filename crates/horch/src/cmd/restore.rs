@@ -1,23 +1,11 @@
-//! herdr's native agent session restore (#125).
-//!
-//! After a herdr server restart, herdr resumes agent panes by itself
-//! (`[session] resume_agents_on_restore`, on by default). A resumed fleet
-//! agent runs without `horch worker`: it has no `HORCH_ROLE`, no record id
-//! and no relay, and it starts from the herdr server's environment, which
-//! horch does not scrub. This module warns when the restore is on, and lets
-//! a resumed worker pane act as its registered role again.
-//!
-//! Nothing here reads a forbidden variable: the warning names it only.
-
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use horch_core::harness::launch::FORBIDDEN_ENV;
 use horch_core::messaging::mailbox::Mailbox;
 use horch_core::runtime::{RuntimeContext, WorkerEnv};
-use horch_core::workspace::herdr::Herdr;
+use horch_core::workspace::PaneHost;
 
-/// herdr's config file: `HERDR_CONFIG_PATH`, else the platform default.
 fn herdr_config_path(ctx: &RuntimeContext) -> PathBuf {
     if let Some(p) = std::env::var_os("HERDR_CONFIG_PATH").filter(|p| !p.is_empty()) {
         return PathBuf::from(p);
@@ -34,9 +22,6 @@ fn herdr_config_path(ctx: &RuntimeContext) -> PathBuf {
         .join("config.toml")
 }
 
-/// Whether herdr's `config` text leaves `resume_agents_on_restore` on. It is
-/// on unless the `[session]` table (or a dotted `session.` key) sets it to
-/// `false`; a later line wins, as in TOML.
 fn resumes_on_restore(config: &str) -> bool {
     let mut table = String::new();
     let mut on = true;
@@ -59,8 +44,6 @@ fn resumes_on_restore(config: &str) -> bool {
     on
 }
 
-/// The warning for a herdr that resumes agents on restore, or `None` when
-/// the config at `path` turns it off. A missing file is herdr's default: on.
 fn resume_warning(path: &Path, config: Option<&str>) -> Option<String> {
     if config.is_some_and(|c| !resumes_on_restore(c)) {
         return None;
@@ -76,7 +59,6 @@ fn resume_warning(path: &Path, config: Option<&str>) -> Option<String> {
     ))
 }
 
-/// Print [`resume_warning`] for this machine's herdr config.
 pub fn warn_if_resume_on(ctx: &RuntimeContext) {
     let path = herdr_config_path(ctx);
     let config = std::fs::read_to_string(&path).ok();
@@ -85,15 +67,6 @@ pub fn warn_if_resume_on(ctx: &RuntimeContext) {
     }
 }
 
-/// A pane that herdr resumed runs a registered worker's agent with no
-/// `HORCH_ROLE`. When this process runs in such a pane, give it that role's
-/// identity from the workspace registry and its brief, and say once that
-/// the pane runs outside its supervisor.
-///
-/// Only a pane that herdr shows running an agent counts: an operator's
-/// shell that got a stale pane id is not a worker. The orchestrator's role
-/// is never taken, and nothing is taken in the pane the workspace registers
-/// for the orchestrator: an untagged orchestrator line is the operator's.
 pub fn adopt_restored_identity(ctx: &mut RuntimeContext) {
     if ctx.worker.as_ref().is_some_and(|w| w.role.is_some()) {
         return;
@@ -101,16 +74,12 @@ pub fn adopt_restored_identity(ctx: &mut RuntimeContext) {
     let Some(pane_env) = ctx.herdr.pane.as_ref().map(|p| p.as_str().to_string()) else {
         return;
     };
-    // With the workspace known, the registry answers first: most panes
-    // that get here (the orchestrator's) name no worker, and need no herdr
-    // call.
     if let Some(ws) = ctx.herdr.workspace.as_ref().map(|w| w.as_str().to_string()) {
         if worker_role_of(&Mailbox::in_context(ctx, &ws), &pane_env).is_none() {
             return;
         }
     }
-    // herdr can hang while its server restarts, the case this serves.
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr).with_timeout(Duration::from_secs(2));
+    let herdr = PaneHost::of(ctx).with_timeout(Duration::from_secs(2));
     let Ok(pane) = herdr.pane_get(&pane_env) else {
         return;
     };
@@ -151,9 +120,6 @@ pub fn adopt_restored_identity(ctx: &mut RuntimeContext) {
     }
 }
 
-/// The worker role that `mailbox` registers on `pane`, or `None` when no
-/// worker role does, or when the pane is the orchestrator's: a stale worker
-/// id on the orchestrator's pane never makes the orchestrator that worker.
 fn worker_role_of(mailbox: &Mailbox, pane: &str) -> Option<String> {
     let roles = mailbox.roles();
     if roles
@@ -187,14 +153,12 @@ mod tests {
         assert!(!resumes_on_restore(
             "session.resume_agents_on_restore = false\n"
         ));
-        // The key of another table, and a commented-out line, do not count.
         assert!(resumes_on_restore(
             "[other]\nresume_agents_on_restore = false\n"
         ));
         assert!(resumes_on_restore(
             "[session]\n# resume_agents_on_restore = false\n"
         ));
-        // A later line wins.
         assert!(resumes_on_restore(
             "[session]\nresume_agents_on_restore = false\nresume_agents_on_restore = true\n"
         ));

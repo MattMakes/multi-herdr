@@ -12,7 +12,10 @@ phase: plan
 # It and orchestrate are orchestrator-only: `horch teammates --check` fails
 # any other teammate that names either, and every pane switches off the
 # ambient copies (the official plugin, the claude.ai-synced one).
-skills: [orchestrate, skill-creator]
+# make-videos plans a game's devblog video series from its git history and
+# sends the approved scripts through the video pipeline. Both orchestrators
+# name it; it belongs to no phase.
+skills: [orchestrate, skill-creator, make-videos]
 model: fable
 effort: medium
 compact_window: 256000

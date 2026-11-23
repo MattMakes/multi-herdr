@@ -1,18 +1,3 @@
-//! The task commands: I4, I5 and the process part of I1.
-//!
-//! Each command writes its rows in the transaction it is given and returns
-//! the stops to do after the commit. No command signals a process or
-//! closes a pane: a reap ends the rows and queues the task in 1
-//! transaction before any signal (`preservation-04-behavior.md`, S7).
-//!
-//! - `transition()` deletes the lease of a task that moves out of the
-//!   states that hold a lease: [`schedule_retry`] and [`escalate_task`].
-//! - `horch ledger done` ends the attempt of its worker:
-//!   [`end_own_attempt`].
-//! - I1, process part: [`finish_exited`]. Each dead attempt goes through
-//!   [`end_attempt`], then rung 6 ([`schedule_retry`]).
-//! - I5: [`mark_orphans`].
-
 use anyhow::{bail, Result};
 use rusqlite::Connection;
 
@@ -24,18 +9,17 @@ use crate::fleetd::task_execution::adapters::sqlite as store;
 use crate::fleetd::task_execution::application::retry::{self, Policy};
 use crate::fleetd::task_execution::domain::retry::Outcome;
 use crate::fleetd::task_execution::domain::task::{
-    dead_attempts, held_attempt, orphans, AttemptState, Facts, KeptPane, Reap, Recorded, RowRef,
-    Stop,
+    dead_attempts, held_attempt, orphans, AttemptState, Facts, KeptGroup, KeptPane, Reap, Recorded,
+    RowRef, Stop,
 };
 use crate::taskledger::model::{Actor, TaskStatus, WorkerStatus};
 use crate::taskledger::workers;
 use crate::taskledger::{tasks, util};
 
-/// The kind of the needs-you item of a pane that is not closed.
 const PANE_KEPT: &str = "pane_kept";
 
-/// The commands write rows and events together: refuse a connection with
-/// no open transaction.
+const GROUP_KEPT: &str = "group_kept";
+
 fn check_open(tx: &Connection) -> Result<()> {
     if tx.is_autocommit() {
         bail!("the reap path writes its rows in 1 open transaction of the ledger");
@@ -50,21 +34,31 @@ fn cause(text: &str) -> Cause<'_> {
     }
 }
 
-/// `horch ledger done`: the attempt that worker `worker_id` holds moves to
-/// `ended` with the outcome `outcome`, in the transaction of `done`. A
-/// worker with no attempt that holds it writes nothing.
 pub fn end_own_attempt(tx: &Connection, worker_id: &str, outcome: &str) -> Result<()> {
+    let text = format!("its worker ran horch ledger done: {outcome}");
+    let by = Cause {
+        actor: Actor::Worker,
+        text: &text,
+    };
+    end_held_attempt(tx, worker_id, outcome, by)
+}
+
+pub fn end_stopped_attempt(tx: &Connection, worker_id: &str, reason: &str) -> Result<()> {
+    let text = format!("its worker was stopped: {reason}");
+    let by = Cause {
+        actor: Actor::Orchestrator,
+        text: &text,
+    };
+    end_held_attempt(tx, worker_id, Outcome::Killed.as_str(), by)
+}
+
+fn end_held_attempt(tx: &Connection, worker_id: &str, outcome: &str, by: Cause<'_>) -> Result<()> {
     check_open(tx)?;
     let attempts = store::attempts_of_worker(tx, worker_id)?;
     let Some(a) = held_attempt(worker_id, &attempts) else {
         return Ok(());
     };
     store::set_ended(tx, &a.id, outcome, &util::now())?;
-    let text = format!("its worker ran horch ledger done: {outcome}");
-    let by = Cause {
-        actor: Actor::Worker,
-        text: &text,
-    };
     transition(
         tx,
         None,
@@ -77,9 +71,6 @@ pub fn end_own_attempt(tx: &Connection, worker_id: &str, outcome: &str) -> Resul
     Ok(())
 }
 
-/// `EndAttempt`: the attempt of `reap` to `ended` with its outcome, and a
-/// live worker row to `incomplete`. Returns the stops of the rest of the
-/// row; each pane that no fact proves goes on the needs-you list.
 pub fn end_attempt(tx: &Connection, reap: &Reap) -> Result<Vec<Stop>> {
     check_open(tx)?;
     let text = format!("its process is gone: {}", reap.outcome);
@@ -101,9 +92,6 @@ pub fn end_attempt(tx: &Connection, reap: &Reap) -> Result<Vec<Stop>> {
     Ok(reap.cleanup.stops.clone())
 }
 
-/// The launch of the attempt `attempt` in `launching` is seen: its process
-/// `launched`, when fleetd launched it, goes on the row, and the attempt
-/// moves to `live` in `tx`. The fleetd of generation `guard` writes it.
 pub fn attempt_live(
     tx: &Connection,
     guard: Option<Generation>,
@@ -126,20 +114,12 @@ pub fn attempt_live(
     Ok(())
 }
 
-/// The wrapper `wrapper` of the `live` attempt `attempt` passed its PID
-/// check after the attempt went live: it goes on the row when the row has
-/// no process. The first heartbeat can come before the agent starts, and
-/// only a heartbeat with the agent PID names the wrapper.
 pub fn attempt_wrapper(tx: &Connection, attempt: &str, wrapper: Recorded) -> Result<()> {
     check_open(tx)?;
     store::set_missing_process(tx, attempt, wrapper)?;
     Ok(())
 }
 
-/// The agent of the push attempt `attempt` runs: a heartbeat named it and
-/// its wrapper. Its worker row, which no claim moves, goes from a
-/// pre-claim state to `working`, so the pre-claim sweep does not end it
-/// `launch_failed` and an exit ends it by rung 5.
 pub fn push_worker_working(
     tx: &Connection,
     guard: Option<Generation>,
@@ -169,27 +149,17 @@ pub fn push_worker_working(
     Ok(())
 }
 
-/// `ScheduleRetry`, rung 6 with the design numbers: the attempt of task
-/// `task_id` crashed. The task waits for its backoff in `ready`, first in
-/// line, or goes to `failed` or `escalated`
-/// ([`retry::burn_attempt`]).
 pub fn schedule_retry(tx: &Connection, task_id: &str, why: &str) -> Result<()> {
     check_open(tx)?;
     retry::burn_attempt(tx, task_id, Outcome::Crashed, &Policy::default(), why)?;
     Ok(())
 }
 
-/// `EscalateTask`: task `task_id` is held for the operator, through
-/// `failed`.
 pub fn escalate_task(tx: &Connection, task_id: &str) -> Result<()> {
     check_open(tx)?;
     tasks::escalate(tx, task_id)
 }
 
-/// I1, process part: each live attempt of this host whose process is dead
-/// ends, and the task of its worker is queued again or held. A resolver or
-/// fix attempt of a `done` task ends with no rung 6: the task stays `done`
-/// (ticket 33), and ticket 34 counts the end on its branch.
 pub fn finish_exited(tx: &Connection, facts: &Facts) -> Result<Vec<Stop>> {
     check_open(tx)?;
     let rows = store::rows(tx, &util::host_name())?;
@@ -206,17 +176,42 @@ pub fn finish_exited(tx: &Connection, facts: &Facts) -> Result<Vec<Stop>> {
     Ok(stops)
 }
 
-/// I5: the stops of each orphan process, and of each pane that a fact
-/// proves.
 pub fn mark_orphans(tx: &Connection, facts: &Facts) -> Result<Vec<Stop>> {
     check_open(tx)?;
     let rows = store::rows(tx, &util::host_name())?;
     let out = orphans(&rows, facts);
     keep_panes(tx, &out.kept)?;
+    keep_groups(tx, &out.kept_groups)?;
     Ok(out.stops)
 }
 
-/// Open 1 needs-you item for each pane in `kept`.
+pub fn keep_groups(tx: &Connection, kept: &[KeptGroup]) -> Result<()> {
+    for k in kept {
+        let (entity, id) = match &k.row {
+            RowRef::Worker(id) => (Entity::Worker, id),
+            RowRef::Attempt(id) => (Entity::Attempt, id),
+        };
+        let key = format!("{GROUP_KEPT}:{}", k.group);
+        let text = format!(
+            "fleetd did not stop process group {} of {entity} {id}: the leader of the row is \
+             gone, and a new process has its pid, so the group can be a new group. Stop the \
+             processes of the row yourself when they still run.",
+            k.group
+        );
+        needs_you::open_item(
+            tx,
+            &Write {
+                key: &key,
+                kind: GROUP_KEPT,
+                entity: entity.as_str(),
+                entity_id: id,
+                text: &text,
+            },
+        )?;
+    }
+    Ok(())
+}
+
 fn keep_panes(tx: &Connection, kept: &[KeptPane]) -> Result<()> {
     for k in kept {
         let (entity, id) = match &k.row {
@@ -261,7 +256,6 @@ mod tests {
     use crate::taskledger::workers::{self, NewWorker};
     use crate::taskledger::{util, Store};
 
-    /// A child `sleep` that is killed and reaped when the test ends.
     struct Sleep(Child);
 
     impl Sleep {
@@ -282,7 +276,6 @@ mod tests {
             crate::procid::alive(r.pid, r.pid_start)
         }
 
-        /// Kill and reap it: its pid then names no process.
         fn end(mut self) -> Recorded {
             let r = self.recorded();
             self.0.kill().unwrap();
@@ -314,7 +307,6 @@ mod tests {
         let run = store
             .immediate(|tx| {
                 let run = runs::create(tx, dir.path(), &new_run)?;
-                // FR-12: a task needs an idea in flight of the feature of its run.
                 crate::taskledger::schema::run_idea(
                     tx,
                     &run.run_id,
@@ -342,7 +334,6 @@ mod tests {
                 .task_id
         }
 
-        /// A worker with `agent` and `supervisor`, in pane `w0:p1`.
         fn worker(&mut self, agent: Recorded, supervisor: Recorded) -> String {
             let new = NewWorker {
                 run_id: self.run.run_id.clone(),
@@ -360,8 +351,6 @@ mod tests {
                 .unwrap()
         }
 
-        /// Bind `task` to a new worker with `agent` and `supervisor`, in
-        /// pane `w0:p1`: 1 live attempt.
         fn bind(&mut self, task: &str, agent: Recorded, supervisor: Recorded) -> String {
             let new = NewWorker {
                 run_id: self.run.run_id.clone(),
@@ -412,8 +401,6 @@ mod tests {
                 .collect()
         }
 
-        /// The facts of the OS for each process that a row names, and the
-        /// panes `panes`.
         fn facts(&self, panes: &[(&str, InPane)]) -> Facts {
             let rows = sqlite::rows(self.store.conn(), &util::host_name()).unwrap();
             let processes = rows
@@ -452,7 +439,6 @@ mod tests {
         }
     }
 
-    /// `p` runs in a pane.
     fn runs(p: Recorded) -> InPane {
         InPane::Runs {
             pid: p.pid,
@@ -491,12 +477,9 @@ mod tests {
                 supervisor.recorded()
             )]
         );
-        // The next pass finds nothing more to end.
         assert_eq!(l.finish_exited(&l.facts(&[])), []);
     }
 
-    /// Ticket 33: the dead process of a resolver or fix attempt of a `done`
-    /// task ends its attempt with no rung 6, and the task stays `done`.
     #[test]
     fn dead_attempt_of_a_done_task_ends_and_the_task_stays_done() {
         let mut l = fixture();
@@ -535,7 +518,6 @@ mod tests {
 
         l.finish_exited(&l.facts(&[]));
 
-        // L4: no attempt left. Rung 6: failed, for its 1 replan.
         let t = tasks::get(l.store.conn(), &task).unwrap();
         assert_eq!(t.status, TaskStatus::Failed.as_str());
         assert_eq!(t.held_reason, None);
@@ -553,8 +535,6 @@ mod tests {
             agents.push(agent);
             workers.push(w);
         }
-        // The restart: every agent process is gone, and herdr gave the
-        // pane id of the rows to a pane that runs another process.
         let stranger = Sleep::start();
         for a in agents {
             a.end();
@@ -587,7 +567,6 @@ mod tests {
             [process_stop(RowRef::Worker(w.clone()), agent.recorded())]
         );
 
-        // A pane whose process is the recorded agent is the pane of the row.
         let stops = l.mark_orphans(&l.facts(&[("w0:p1", runs(agent.recorded()))]));
         assert_eq!(
             stops,
@@ -617,7 +596,6 @@ mod tests {
 
         assert_eq!(stops, [process_stop(RowRef::Worker(w), agent.recorded())]);
         assert_eq!(l.open_items(), ["pane_kept:w0:p1"]);
-        // No process of the snapshot either: the pane is kept too.
         let stops = l.mark_orphans(&l.facts(&[("w0:p1", InPane::Unknown)]));
         assert!(!stops
             .iter()
@@ -633,11 +611,9 @@ mod tests {
         agent.end();
         let facts = l.facts(&[]);
 
-        // No transaction: the command refuses and writes nothing.
         assert!(finish_exited(l.store.conn(), &facts).is_err());
         assert_eq!(l.task_status(&task), "running");
 
-        // A rolled back transaction leaves every row as it was.
         {
             let tx = l.store.conn().unchecked_transaction().unwrap();
             let stops = finish_exited(&tx, &facts).unwrap();
@@ -649,7 +625,6 @@ mod tests {
         assert_eq!(l.worker_status(&w), "working");
         assert_eq!(l.attempt_states(), [(format!("{task}/A1"), "live".into())]);
 
-        // The commit writes the 3 rows together; the stop is still to do.
         let stops = l.finish_exited(&facts);
         assert_eq!(
             (l.task_status(&task), l.worker_status(&w)),
@@ -672,7 +647,6 @@ mod tests {
         l.end_worker(&w_here, WorkerStatus::Stopped, None);
         let w_there = l.worker(there.recorded(), gone);
         l.end_worker(&w_there, WorkerStatus::Stopped, Some("another-host"));
-        // The pid of a live process with another start time.
         let other_start = Recorded {
             pid: restarted.recorded().pid,
             pid_start: restarted.recorded().pid_start.map(|s| s + 1),

@@ -1,15 +1,3 @@
-//! The operator boundary of the Antigravity, OpenCode, pi, Prime and none
-//! adapters (SR-8, A37; ticket 37 of fleetd-p5).
-//!
-//! Antigravity has no rule that denies a connect to a Unix socket, and its
-//! `read_file` deny is not documented to bind its terminal commands
-//! (antigravity.google/docs/permissions). OpenCode, pi and Prime run their
-//! tools with no OS sandbox. So each of the 4 gives `NotSupported` on each
-//! OS, and the rendered launch of each shipped persona names no operator
-//! path. The `none` harness launches nothing, so its boundary holds.
-//!
-//! The real CLIs never run here. The tests read the built command.
-
 use std::path::{Path, PathBuf};
 
 use horch_core::fleetd::worker_profiles::domain::operator_boundary::{
@@ -20,8 +8,6 @@ use horch_core::harness::{CommandSpec, HarnessKind, LaunchEnv, Session};
 use horch_core::roster::{Roster, Teammate};
 use horch_core::runtime::{MapEnv, RuntimeContext};
 
-/// A test fleet: a home, a fleet root with its run folder, the token and
-/// the request folder, a task folder and a worktree.
 struct Fleet {
     root: tempfile::TempDir,
     fleet_root: PathBuf,
@@ -65,8 +51,6 @@ impl Fleet {
         env
     }
 
-    /// The whole rendered launch of `teammate`: its argv and each variable
-    /// that the adapter sets, for example `OPENCODE_CONFIG_CONTENT`.
     fn rendered(&self, teammate: &Teammate) -> String {
         let cmd = teammate
             .agent
@@ -96,8 +80,6 @@ impl Fleet {
         text.join("\n")
     }
 
-    /// The rendered launch of each shipped persona of `kind` names no
-    /// operator path, so no rule of it denies an operator act.
     fn assert_no_rule_names_an_operator_path(&self, kind: HarnessKind) -> Vec<Teammate> {
         let personas = personas(kind);
         assert!(!personas.is_empty(), "no shipped persona runs on {kind:?}");
@@ -119,7 +101,6 @@ impl Fleet {
     }
 }
 
-/// Each shipped persona of `kind`.
 fn personas(kind: HarnessKind) -> Vec<Teammate> {
     let roster = Roster::builtin().unwrap();
     roster
@@ -172,7 +153,6 @@ fn prime_boundary_denies_the_3_acts_or_is_not_supported() {
     }
 }
 
-/// `agent: none` launches no process, so no process can do an operator act.
 #[test]
 fn none_boundary_denies_the_3_acts_or_is_not_supported() {
     let f = fleet();

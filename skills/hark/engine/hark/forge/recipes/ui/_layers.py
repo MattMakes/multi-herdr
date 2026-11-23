@@ -18,8 +18,6 @@ SR = 48000
 Params = dict[str, Any]
 
 
-# ------------------------------------------------------------ helpers
-
 def n_of(seconds: float) -> int:
     """Number of samples in ``seconds``, never less than 1."""
     return max(1, int(round(seconds * SR)))
@@ -83,8 +81,6 @@ def ref_root() -> str:
     return root.rstrip("/") or root
 
 
-# ----------------------------------------------------------- short wrappers
-
 TWO_PI = 2 * np.pi
 
 
@@ -110,8 +106,6 @@ def highpass(x: np.ndarray, f: float, order: int = 2) -> np.ndarray:
 def bandpass(x: np.ndarray, lo: float, hi: float, order: int = 2) -> np.ndarray:
     return dsp.butter(x, "band", (lo, hi), order)
 
-
-# ------------------------------------------------------- parameter tables
 
 def _scalar(word: str) -> Any:
     """Read one table cell: an int, else a float, else the bare word."""
@@ -143,8 +137,6 @@ def value_table(text: str) -> Params:
     words = text.split()
     return {words[i]: _scalar(words[i + 1]) for i in range(0, len(words), 2)}
 
-
-# ------------------------------------------------------------ sound layers
 
 def band_burst(seconds: float, r: np.random.Generator, f_lo: float, f_hi: float, rise: float = 0.0003,
                order: int = 2) -> np.ndarray:
@@ -299,8 +291,6 @@ def room_tail(st: np.ndarray, snd: np.ndarray, r: np.random.Generator, p: Params
     size = max(len(st), len(wet))
     return fit(st, size) + fit(wet, size)
 
-
-# ------------------------------------------------------------ family boxes
 
 def _box_spec(space: Params, key: str, val: Any) -> Any:
     if not isinstance(val, tuple):

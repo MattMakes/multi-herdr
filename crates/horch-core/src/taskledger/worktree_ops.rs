@@ -1,4 +1,3 @@
-//! Registered alternate-base, scratch and abandonment operations. Never force git.
 use super::{
     finish::{self, WorktreeRow},
     git::Git,
@@ -15,7 +14,6 @@ use anyhow::{bail, Context, Result};
 use rusqlite::{params, Connection};
 use std::path::{Path, PathBuf};
 
-/// Refuse a worktree name that is not 1 to 60 letters, digits, `-` or `_`.
 pub fn valid_name(name: &str) -> Result<()> {
     if name.is_empty()
         || name.len() > 60
@@ -27,7 +25,6 @@ pub fn valid_name(name: &str) -> Result<()> {
     }
     Ok(())
 }
-/// Make a normal worktree from an explicit ref, or a scratch tree detached from task completion.
 pub fn create(
     store: &mut Store,
     git: &Git,
@@ -45,12 +42,9 @@ pub fn create(
     create_with(store, git, worker_id, name, kind, &jobs)
 }
 
-/// The tree that [`create_with`] makes or takes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CreateKind<'a> {
-    /// The tree of the claimed task, on `from`, else on the run branch.
     Task { from: Option<&'a str> },
-    /// A scratch tree with no task, on `from`, else on the run branch.
     Scratch { from: Option<&'a str> },
 }
 
@@ -62,7 +56,6 @@ impl<'a> CreateKind<'a> {
     }
 }
 
-/// [`create`], with `jobs` to run the `worktree_add` job.
 pub fn create_with(
     store: &mut Store,
     git: &Git,
@@ -80,7 +73,6 @@ pub fn create_with(
         store.conn(),
         worker.run_id.as_deref().context("worker has no run")?,
     )?;
-    // The task of the tree: `None` for a scratch tree.
     let task = match kind {
         CreateKind::Scratch { .. } => None,
         CreateKind::Task { .. } => Some(owned_task(store, &worker, worker_id)?),
@@ -112,8 +104,6 @@ pub fn create_with(
     finish::worktree(store.conn(), &id)
 }
 
-/// The claimed task of `worker`, when it still owns it and it uses a
-/// worktree.
 fn owned_task(store: &Store, worker: &workers::Worker, worker_id: &str) -> Result<tasks::Task> {
     let id = worker
         .task_id
@@ -129,8 +119,6 @@ fn owned_task(store: &Store, worker: &workers::Worker, worker_id: &str) -> Resul
     Ok(t)
 }
 
-/// The row of a new tree: a task tree on `from`, or a scratch tree when
-/// `task` is `None`. No folder is made here.
 fn new_tree(
     git: &Git,
     run: &runs::Run,
@@ -170,8 +158,6 @@ fn new_tree(
     })
 }
 
-/// The path and the branch of a new tree named `name` in `run`: a task
-/// tree of `task`, or a scratch tree when `task` is `None`.
 pub fn tree_names(run: &runs::Run, task: Option<&tasks::Task>, name: &str) -> (PathBuf, String) {
     let (slug, branch) = match task {
         None => (
@@ -191,12 +177,10 @@ pub fn tree_names(run: &runs::Run, task: Option<&tasks::Task>, name: &str) -> (P
     (path, branch)
 }
 
-/// Resolve one registered tree by id, exact mode name or final directory component in this run.
 pub fn find(store: &Store, run_id: &str, name: &str) -> Result<WorktreeRow> {
     find_in(store.conn(), run_id, name)
 }
 
-/// [`find`], on the connection `conn`.
 pub fn find_in(conn: &Connection, run_id: &str, name: &str) -> Result<WorktreeRow> {
     let mut stmt=conn.prepare(&format!("SELECT w.worktree_id,w.path,m.name FROM worktrees w LEFT JOIN tasks t ON t.task_id=w.task_id LEFT JOIN worktree_modes m ON m.worktree_id=w.worktree_id WHERE (t.run_id=?1 OR m.run_id=?1) AND w.status NOT IN ({gone})",gone=sql_words::list(sql_words::WORKTREES_GONE)))?;
     let rows = stmt
@@ -226,9 +210,6 @@ pub fn find_in(conn: &Connection, run_id: &str, name: &str) -> Result<WorktreeRo
     finish::worktree(conn, &ids[0])
 }
 
-// The ledger records a branch, but the live checkout can be detached or switched
-// by ordinary git commands. Never remove it while that identity differs: keeping
-// the recorded branch would not preserve the actual checkout's commit.
 fn verified_head(git: &Git, root: &Path, wt: &WorktreeRow) -> Result<String> {
     let path = Path::new(&wt.path);
     let recorded = git.rev(root, &wt.branch)?;
@@ -251,8 +232,6 @@ fn verified_head(git: &Git, root: &Path, wt: &WorktreeRow) -> Result<String> {
     Ok(actual)
 }
 
-/// Drop only a clean tree. Keep the branch explicitly if it contains unique work.
-/// The custody jobs run in the job process of this `horch` binary.
 pub fn drop_worktree(
     store: &mut Store,
     git: &Git,
@@ -265,11 +244,6 @@ pub fn drop_worktree(
     drop_worktree_with(store, git, run_id, name, reason, keep_branch, &jobs)
 }
 
-/// [`drop_worktree`], with `jobs` to run the custody jobs. Today's
-/// refusals come first (row W6, RR-13). Then the tree is removed only
-/// through custody (RR-9): it moves to `orphaned` (cause `dropped`), a
-/// `rescue` job puts it on a verified rescue ref, and 1 `worktree_remove`
-/// job removes it. With `keep_branch` the job keeps the branch.
 pub fn drop_worktree_with(
     store: &mut Store,
     git: &Git,
@@ -291,8 +265,6 @@ pub fn drop_worktree_with(
     if !git.stashes_on(&root, &wt.branch)?.is_empty() {
         bail!("worktree branch has a stash; nothing removed");
     }
-    // Exclude this branch from every durable ref: a reflog or a linked HEAD is
-    // not another published copy. A local branch/tag or remote ref is a copy.
     let refs = git.run(
         &root,
         &[
@@ -311,8 +283,6 @@ pub fn drop_worktree_with(
     if !keep_branch && !unique.is_empty() {
         bail!("worktree has unpublished commits that exist nowhere else; use --keep-branch; nothing removed");
     }
-    // Repeat the identity check after the ref/commit safety checks, directly
-    // before removal, so a checkout changed during those reads stays intact.
     if verified_head(git, &root, &wt)? != head {
         bail!("worktree HEAD changed during the drop checks; nothing removed");
     }
@@ -325,8 +295,6 @@ pub fn drop_worktree_with(
             bail!("the worktree stays: {why}; nothing removed");
         }
     }
-    // Keeping a redundant branch is preferable to force deletion; -d has
-    // its own upstream check and may conservatively refuse. The folder is gone.
     if !keep_branch && git.branch_exists(&root, &wt.branch) {
         let _ = git.try_run(&root, &["branch", "-d", &wt.branch]);
     }
@@ -334,7 +302,6 @@ pub fn drop_worktree_with(
     finish::worktree(store.conn(), &wt.worktree_id)
 }
 
-/// The row of a dropped tree: `abandoned`, with the reason of the drop.
 pub fn record_drop(conn: &Connection, id: &str, reason: &str) -> Result<()> {
     conn.execute(
         &format!(
@@ -346,7 +313,6 @@ pub fn record_drop(conn: &Connection, id: &str, reason: &str) -> Result<()> {
     Ok(())
 }
 
-/// Whether a row is scratch. Scratch rows have no task and never enter finish.
 pub fn is_scratch(store: &Store, id: &str) -> Result<bool> {
     Ok(optional(store.conn().query_row(
         "SELECT scratch FROM worktree_modes WHERE worktree_id=?1",

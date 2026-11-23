@@ -1,7 +1,3 @@
-//! The Phase 5 keys of `fleet.toml`: the size limits of the protocol rules
-//! (design, "Workspace layout and file protocol", Protocol rules, rule 7).
-//! Phase 6 retired the list of orchestrator seats (`p6_authorize.rs`).
-
 use horch_core::fleetd::fleet_runtime::adapters::config_file;
 use horch_core::fleetd::fleet_runtime::domain::config::FleetConfig;
 

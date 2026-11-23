@@ -1,13 +1,3 @@
-//! The check of a task runs only in the sandbox profile of its worker
-//! (docs/specs/fleetd/design.md, SR-4, SR-7, "Architecture and roles":
-//! the acceptance commands run in the sandbox profile of the task's
-//! worker, never with the rights of fleetd; preservation-04-behavior.md
-//! row F10; docs/tickets/fleetd-p4/18-check-runs-in-the-worker-sandbox.md).
-//!
-//! Each test uses a temp ledger, a temp fleet root and temp worktrees. A
-//! check runs through the launcher, as the job process runs it. No test
-//! reads the load, the limits or the clock of this machine.
-
 #![cfg(unix)]
 
 use std::cell::RefCell;
@@ -25,6 +15,7 @@ use horch_core::fleetd::task_execution::adapters::task_files::attempt_dir;
 use horch_core::fleetd::task_execution::application::dispatch::{
     choices, CheckSandboxes, NO_CHECK_SANDBOX,
 };
+use horch_core::fleetd::task_execution::application::review;
 use horch_core::fleetd::task_execution::domain::dispatch::{Choice, Hold, Holds};
 use horch_core::fleetd::worker_profiles::adapters::check_sandbox::{
     WorkerSandboxes, NO_CHECK_SANDBOX_KIND,
@@ -34,24 +25,21 @@ use horch_core::fleetd::worker_profiles::application::ports::{
     LaunchError, LaunchSpec, Launched, ProcessHost,
 };
 use horch_core::harness::launch::FORBIDDEN_ENV;
-use horch_core::taskledger::finish::CodexSandbox;
-use horch_core::taskledger::model::{Actor, WorktreeMode};
+use horch_core::taskledger::finish::{CodexSandbox, Tools};
+use horch_core::taskledger::git::Git;
+use horch_core::taskledger::model::{Actor, StepName, WorktreeMode};
 use horch_core::taskledger::runs::{self, NewRun, Run};
 use horch_core::taskledger::tasks::{self, NewTask};
-use horch_core::taskledger::workers::{self, NewWorker};
+use horch_core::taskledger::workers::{self, NewWorker, Worker};
 use horch_core::taskledger::{schema, util};
 use horch_platform::NotSupported;
 use rusqlite::{params, Connection, TransactionBehavior};
 
-/// The Codex persona of each test.
 const CODEX: &str = "codex-dev";
-/// A persona of another CLI.
 const CLAUDE: &str = "claude-dev";
 
 struct World {
     dir: tempfile::TempDir,
-    /// A folder outside each writable path of a check: not in the temp
-    /// folder, not in a worktree, not in the fleet root.
     outside: tempfile::TempDir,
     conn: Connection,
     config: FleetConfig,
@@ -59,13 +47,12 @@ struct World {
     run: Run,
 }
 
-/// A temp ledger of the current schema, a fleet root and 1 run.
 fn world() -> World {
     let dir = tempfile::tempdir().unwrap();
     let outside = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
     let mut conn = Connection::open(dir.path().join("ledger.sqlite3")).unwrap();
     schema::migrate_to(&mut conn, schema::VERSION).unwrap();
-    let top = dir.path().canonicalize().unwrap();
+    let top = horch_platform::path::canonicalize(dir.path()).unwrap();
     let fleet_root = top.join("fleet");
     let project = top.join("repo");
     std::fs::create_dir_all(&fleet_root).unwrap();
@@ -79,7 +66,6 @@ fn world() -> World {
         },
     )
     .unwrap();
-    // FR-12: a task needs an idea in flight of the feature of its run.
     horch_core::taskledger::schema::run_idea(
         &conn,
         &run.run_id,
@@ -98,22 +84,22 @@ fn world() -> World {
 }
 
 impl World {
-    /// The adapter of this world, on a host with the sandbox `gap`.
     fn sandboxes(&self, codex: CodexSandbox, gap: Option<NotSupported>) -> WorkerSandboxes {
         WorkerSandboxes {
             codex,
             fleet_root: self.fleet_root.clone(),
             gap,
+            path: std::env::var_os("PATH"),
             refused: Default::default(),
             fallbacks: Default::default(),
         }
     }
 
-    /// The adapter of this world on this host.
     fn host_sandboxes(&self) -> WorkerSandboxes {
-        WorkerSandboxes::new(
+        WorkerSandboxes::on_path(
             self.codex(&self.dir.path().join("codex")),
             self.fleet_root.clone(),
+            std::env::var_os("PATH"),
         )
     }
 
@@ -125,7 +111,6 @@ impl World {
         }
     }
 
-    /// A ready task of `persona` with no worker.
     fn ready(&mut self, title: &str, persona: &str) -> String {
         let new = NewTask::work(title, &format!("{title}.md"), persona);
         tasks::add(&self.conn, &self.run, &new, Actor::Orchestrator)
@@ -133,9 +118,6 @@ impl World {
             .task_id
     }
 
-    /// A task with the check `check`, held by attempt 1 of a worker of
-    /// `persona` and `harness`. A worktree task gets a worktree folder; a
-    /// shared-checkout task works in the project root.
     fn task(&mut self, check: &str, persona: &str, harness: &str, mode: WorktreeMode) -> String {
         let mut new = NewTask::work("check", "check.md", persona);
         new.land_check = Some(check.into());
@@ -188,26 +170,33 @@ impl World {
             .join(format!("wt-{task}"))
     }
 
-    /// The folder of attempt 1 of `task`, made.
     fn attempt(&self, task: &str) -> PathBuf {
         let dir = attempt_dir(&self.fleet_root, task, "A1");
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
 
-    /// Queue the `task_check` job of `task`, start its job process (`true`)
-    /// through the launcher, then run the executor as that process, with
-    /// the check started through `host` in the profiles `profiles`.
     fn check(
         &mut self,
         task: &str,
         profiles: &dyn SandboxProfiles,
         host: &dyn ProcessHost,
     ) -> (State, Outcome) {
+        self.task_check_job(task, "tip1", profiles, host, None)
+    }
+
+    fn task_check_job(
+        &mut self,
+        task: &str,
+        input_key: &str,
+        profiles: &dyn SandboxProfiles,
+        host: &dyn ProcessHost,
+        sweep: Option<&Tools>,
+    ) -> (State, Outcome) {
         let key = JobKey {
             kind: Kind::TaskCheck,
             subject: task,
-            input_key: "tip1",
+            input_key,
         };
         let config = self.config.clone();
         let ctx = JobCtx {
@@ -246,10 +235,11 @@ impl World {
         let checks = CheckRunner {
             host,
             profiles,
-            sweep: None,
+            sweep,
         };
-        let written = jobs::run_job(&ctx, &mut self.conn, id, me, &checks).unwrap();
+        let written = jobs::run_job(&ctx, &self.conn, id, me, &checks).unwrap();
         assert!(written.is_some(), "run_job wrote the result of job {id}");
+        jobs::end_from_files(&ctx, &mut self.conn).unwrap();
         let row = self.row(id);
         (row.state, outcome(&row).unwrap())
     }
@@ -259,8 +249,6 @@ impl World {
     }
 }
 
-/// A process host that records each spec, then starts it through the
-/// launcher of fleetd.
 #[derive(Default)]
 struct Recording {
     specs: RefCell<Vec<LaunchSpec>>,
@@ -273,13 +261,80 @@ impl ProcessHost for Recording {
     }
 }
 
-/// Why this host has no platform sandbox, or `None` when it has one.
 fn host_gap() -> Option<NotSupported> {
-    horch_platform::sandbox::host_problem(None)
+    horch_platform::sandbox::host_problem(std::env::var_os("PATH").as_deref())
 }
 
-/// The outcome of a check that did not run: no verdict, and the SR-4
-/// cause.
+fn tools_path(dir: &Path, tools: bool) -> std::ffi::OsString {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::create_dir_all(dir).unwrap();
+    if tools {
+        for bin in ["bwrap", "socat"] {
+            let file = dir.join(bin);
+            std::fs::write(&file, "#!/bin/sh\nexit 0\n").unwrap();
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+    std::env::join_paths([dir]).unwrap()
+}
+
+#[test]
+fn the_check_sandbox_looks_on_the_path_of_fleetd() {
+    let w = world();
+    let sandboxes = w.host_sandboxes();
+    assert_eq!(sandboxes.path, std::env::var_os("PATH"));
+    assert_eq!(sandboxes.gap, host_gap());
+}
+
+#[test]
+fn the_check_sandbox_finds_its_tool_on_the_given_path() {
+    let mut w = world();
+    let tools = horch_platform::path::canonicalize(w.dir.path())
+        .unwrap()
+        .join("tools");
+    let with = WorkerSandboxes::on_path(
+        w.codex(Path::new("/no/codex")),
+        w.fleet_root.clone(),
+        Some(tools_path(&tools, true)),
+    );
+    let without = WorkerSandboxes::on_path(
+        w.codex(Path::new("/no/codex")),
+        w.fleet_root.clone(),
+        Some(tools_path(&w.dir.path().join("none"), false)),
+    );
+    assert!(without.supported(CODEX), "codex keeps its own sandbox");
+    match std::env::consts::OS {
+        "linux" => {
+            assert_eq!(with.gap, None);
+            assert!(with.supported(CLAUDE));
+            let gap = without.gap.as_ref().expect("no bwrap: a host problem");
+            assert!(gap.to_string().contains("bwrap is not on PATH"), "{gap}");
+            assert!(!without.supported(CLAUDE), "no bwrap: the persona is held");
+            let a = w.ready("a", CLAUDE);
+            let chosen = choices(&w.conn, &Holds::default(), &without, None).unwrap();
+            assert!(
+                chosen.iter().any(|c| matches!(c,
+                    Choice::Held { task_id, hold: Hold::Persona { cause, .. } }
+                        if *task_id == a && cause == NO_CHECK_SANDBOX)),
+                "{chosen:?}"
+            );
+            let task = w.task("true", CLAUDE, "claude", WorktreeMode::Shared);
+            let host = Recording::default();
+            let (state, o) = w.check(&task, &with, &host);
+            assert_eq!(state, State::Passed, "{}", o.text);
+            let specs = host.specs.borrow();
+            assert_eq!(specs.len(), 1, "1 check started through the host");
+            assert_eq!(specs[0].program, tools.join("bwrap"));
+        }
+        "macos" => {
+            assert_eq!(with.gap, None);
+            assert_eq!(without.gap, None, "macOS ignores the path");
+            assert!(without.supported(CLAUDE));
+        }
+        _ => {}
+    }
+}
+
 fn assert_not_run(state: State, o: &Outcome) {
     assert_eq!(state, State::Failed, "{}", o.text);
     assert!(!o.verdict, "{}", o.text);
@@ -290,7 +345,6 @@ fn assert_not_run(state: State, o: &Outcome) {
 fn check_runs_in_the_worker_sandbox_not_with_fleetd_rights() {
     let mut w = world();
     let escaped = w.outside.path().join("escaped");
-    // The test process, with the rights of fleetd, can write there.
     std::fs::write(&escaped, "probe").unwrap();
     std::fs::remove_file(&escaped).unwrap();
 
@@ -312,7 +366,6 @@ fn check_runs_in_the_worker_sandbox_not_with_fleetd_rights() {
 fn codex_worker_check_keeps_codex_sandbox() {
     use std::os::unix::fs::PermissionsExt;
     let mut w = world();
-    // A stand-in for `codex`: it records its args and runs nothing.
     let args = w.dir.path().join("codex-args");
     let bin = w.dir.path().join("codex");
     let script = format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n", args.display());
@@ -348,8 +401,6 @@ fn claude_worker_check_runs_in_the_platform_sandbox() {
     let mut w = world();
     let sandboxes = w.host_sandboxes();
 
-    // A worktree task: the check writes its worktree and its attempt
-    // folder.
     let task = w.task("true", CLAUDE, "claude", WorktreeMode::Worktree);
     let attempt = w.attempt(&task);
     let check = format!(
@@ -386,7 +437,6 @@ fn claude_worker_check_runs_in_the_platform_sandbox() {
     );
     drop(specs);
 
-    // A shared-checkout task: the project root is its writable path.
     let root = PathBuf::from(&w.run.project_root);
     let task = w.task("touch made-in-root", CLAUDE, "claude", WorktreeMode::Shared);
     let (state, o) = w.check(&task, &sandboxes, &Launcher);
@@ -431,7 +481,6 @@ fn not_supported_persona_is_not_dispatched_and_opens_1_item_per_persona() {
         );
     }
 
-    // 2 passes: still 1 item for the persona, not 1 for each task.
     for _ in 0..2 {
         let tx = w
             .conn
@@ -483,4 +532,324 @@ fn check_job_has_no_forbidden_env() {
             "{key} reached the check"
         );
     }
+}
+
+fn horch_lines(text: &str) -> Vec<&str> {
+    text.lines().filter(|l| l.starts_with("horch:")).collect()
+}
+
+#[test]
+fn failed_check_keeps_the_escaped_tail_of_its_output_and_names_the_sandbox_rules() {
+    let mut w = world();
+    let sandboxes = w.host_sandboxes();
+    let check = "printf 'first-%s\\n' line; head -c 20000 /dev/zero | tr '\\0' a; \
+                 printf '\\nhorch: forg%s\\033[31m\\342\\200\\250horch: seco%s\\342\\200\\256\\n' ed nd >&2; \
+                 exit 3";
+    let task = w.task(check, CLAUDE, "claude", WorktreeMode::Worktree);
+    let (state, o) = w.check(&task, &sandboxes, &Launcher);
+    if host_gap().is_some() {
+        assert_not_run(state, &o);
+        return;
+    }
+    assert_eq!(state, State::Failed, "{}", o.text);
+    assert!(o.verdict, "{}", o.text);
+    let text = &o.text;
+    assert!(text.contains("exit Some(3)"), "{text}");
+    assert!(
+        text.contains("forged"),
+        "the stderr of the check is kept: {text}"
+    );
+    assert!(
+        !text.contains("first-line"),
+        "only the tail of the output is kept: {text}"
+    );
+    assert!(
+        text.len() < 10 * 1024,
+        "the output is bounded: {} bytes",
+        text.len()
+    );
+    assert!(
+        !text.contains('\u{1b}'),
+        "a control character is escaped: {text:?}"
+    );
+    assert!(text.contains(r"\u{1b}"), "{text}");
+    assert!(
+        !text.contains(['\u{2028}', '\u{202e}']),
+        "a line separator or a bidi mark is escaped: {text:?}"
+    );
+    assert!(text.contains(r"\u{2028}horch: second"), "{text}");
+    let horch = horch_lines(text);
+    assert!(
+        horch.iter().all(|l| !l.contains("forged")),
+        "a line of the check reads as a horch line: {horch:?}"
+    );
+    assert!(
+        horch.iter().any(|l| l.starts_with("horch: SR-3")),
+        "{horch:?}"
+    );
+    assert!(
+        horch.iter().any(|l| l.starts_with("horch: SR-4")),
+        "{horch:?}"
+    );
+}
+
+#[test]
+fn check_that_swaps_its_output_file_for_a_link_cannot_feed_the_verdict() {
+    let mut w = world();
+    let secret = w.outside.path().join("secret");
+    std::fs::write(&secret, "the-secret-bytes").unwrap();
+    let check = format!(
+        "for f in '{dir}'/*.out; do rm -f \"$f\"; ln -s '{secret}' \"$f\"; done; exit 1",
+        dir = w.fleet_root.join("run/checks").display(),
+        secret = secret.display()
+    );
+    let task = w.task(&check, CLAUDE, "claude", WorktreeMode::Worktree);
+    let sandboxes = w.host_sandboxes();
+    let (state, o) = w.check(&task, &sandboxes, &Launcher);
+    if host_gap().is_some() {
+        assert_not_run(state, &o);
+        return;
+    }
+    assert_eq!(state, State::Failed, "{}", o.text);
+    assert!(
+        !o.text.contains("the-secret-bytes"),
+        "the verdict holds a file that the check linked: {}",
+        o.text
+    );
+}
+
+#[test]
+fn check_that_writes_outside_its_paths_names_sr4_and_the_refusal() {
+    let mut w = world();
+    let escaped = w.outside.path().join("escaped");
+    let check = format!("echo outside > '{}'", escaped.display());
+    let task = w.task(&check, CLAUDE, "claude", WorktreeMode::Worktree);
+    let sandboxes = w.host_sandboxes();
+    let (state, o) = w.check(&task, &sandboxes, &Launcher);
+    if host_gap().is_some() {
+        assert_not_run(state, &o);
+        return;
+    }
+    assert_eq!(state, State::Failed, "{}", o.text);
+    assert!(
+        o.text.contains("Operation not permitted") || o.text.contains("Read-only file system"),
+        "the refusal of the sandbox is in the verdict: {}",
+        o.text
+    );
+    assert!(
+        horch_lines(&o.text)
+            .iter()
+            .any(|l| l.starts_with("horch: SR-4")),
+        "{}",
+        o.text
+    );
+}
+
+#[test]
+fn passed_check_names_no_sandbox_rule() {
+    let mut w = world();
+    let sandboxes = w.host_sandboxes();
+    let task = w.task("echo fine", CLAUDE, "claude", WorktreeMode::Worktree);
+    let (state, o) = w.check(&task, &sandboxes, &Launcher);
+    if host_gap().is_some() {
+        assert_not_run(state, &o);
+        return;
+    }
+    assert_eq!(state, State::Passed, "{}", o.text);
+    assert!(horch_lines(&o.text).is_empty(), "{}", o.text);
+}
+
+struct NoProfiles;
+
+impl SandboxProfiles for NoProfiles {
+    fn check_launch(&self, _: &Worker, _: &Path, _: &str) -> anyhow::Result<Option<LaunchSpec>> {
+        Ok(None)
+    }
+}
+
+fn git(dir: &Path, args: &[&str]) {
+    let o = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .env("LC_ALL", "C")
+        .output()
+        .unwrap();
+    assert!(
+        o.status.success(),
+        "git {}: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&o.stderr)
+    );
+}
+
+impl World {
+    fn sweep_tools(&self) -> Tools {
+        Tools {
+            git: Git::new("git"),
+            gh: "gh".into(),
+            node: "node".into(),
+            complexity_cli: None,
+            code_sweep_dir: None,
+            evidence_root: self.dir.path().join("evidence"),
+            shell: "/bin/sh".into(),
+            reviewers_down: Vec::new(),
+            codex: CodexSandbox::default(),
+            jobs: None,
+        }
+    }
+
+    fn running_gate(&mut self) -> i64 {
+        let config = self.config.clone();
+        let ctx = JobCtx {
+            guard: None,
+            config: &config,
+            needs_you: &NeedsYouList,
+        };
+        let key = JobKey {
+            kind: Kind::FastGate,
+            subject: "feature-1",
+            input_key: "gate1",
+        };
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .unwrap();
+        let q = jobs::queue(&ctx, &tx, &key, Some("/repo"), FleetSeconds(0)).unwrap();
+        tx.commit().unwrap();
+        let Queued::New(id) = q else {
+            panic!("expected a new run, got {q:?}");
+        };
+        let launcher = Launcher;
+        let mut runner = JobRunner::new(&launcher);
+        let spec = LaunchSpec {
+            program: "true".into(),
+            args: Vec::new(),
+            cwd: None,
+            env_rule: Default::default(),
+            detach: false,
+            output: None,
+        };
+        for job in jobs::due_to_start(&self.conn, FleetSeconds(0)).unwrap() {
+            assert!(runner
+                .start(&ctx, &mut self.conn, &job, &spec, FleetSeconds(0))
+                .unwrap());
+        }
+        assert_eq!(self.row(id).state, State::Running);
+        id
+    }
+
+    fn end_from_files(&mut self) {
+        let config = self.config.clone();
+        let ctx = JobCtx {
+            guard: None,
+            config: &config,
+            needs_you: &NeedsYouList,
+        };
+        jobs::end_from_files(&ctx, &mut self.conn).unwrap();
+    }
+}
+
+fn complexity_key() -> String {
+    review::step_input_key(
+        "tip1",
+        StepName::ComplexitySweep,
+        review::COMPLEXITY_COMMAND,
+    )
+}
+
+#[test]
+fn complexity_sweep_build_script_cannot_forge_another_running_job_result() {
+    let mut w = world();
+    w.conn
+        .execute(
+            "UPDATE runs SET base_branch = 'main' WHERE run_id = ?1",
+            [&w.run.run_id],
+        )
+        .unwrap();
+    let gate = w.running_gate();
+    let jobs_dir = w.fleet_root.join("run").join("jobs");
+    std::fs::create_dir_all(&jobs_dir).unwrap();
+    let forged = jobs_dir.join(format!("{gate}-1.json"));
+    let payload =
+        format!(r#"{{"job_id":{gate},"run":1,"passed":true,"verdict":true,"text":"forged"}}"#);
+
+    let task = w.task("true", CLAUDE, "claude", WorktreeMode::Worktree);
+    let wt = w.worktree(&task);
+    git(&wt, &["init", "--quiet", "-b", "main"]);
+    for (k, v) in [
+        ("user.name", "t"),
+        ("user.email", "t@example.com"),
+        ("commit.gpgsign", "false"),
+    ] {
+        git(&wt, &["config", k, v]);
+    }
+    std::fs::create_dir_all(wt.join("src")).unwrap();
+    std::fs::write(
+        wt.join("Cargo.toml"),
+        "[package]\nname = \"fx\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[workspace]\n",
+    )
+    .unwrap();
+    std::fs::write(wt.join(".gitignore"), "target/\nbuild-ran\n").unwrap();
+    std::fs::write(wt.join("src/lib.rs"), "pub fn a() -> u32 {\n    1\n}\n").unwrap();
+    git(&wt, &["add", "."]);
+    git(&wt, &["commit", "--quiet", "-m", "base"]);
+    git(&wt, &["checkout", "--quiet", "-b", "fleet/t"]);
+    std::fs::write(wt.join("src/lib.rs"), "pub fn a() -> u32 {\n    2\n}\n").unwrap();
+    let build = format!(
+        "fn main() {{\n    let dir = std::env::var(\"CARGO_MANIFEST_DIR\").unwrap();\n    \
+         std::fs::write(format!(\"{{dir}}/build-ran\"), \"1\").unwrap();\n    \
+         use std::io::Write;\n    use std::os::unix::fs::OpenOptionsExt;\n    \
+         let f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open({forged:?});\n    \
+         if let Ok(mut f) = f {{\n        let _ = f.write_all({payload:?}.as_bytes());\n    }}\n}}\n"
+    );
+    std::fs::write(wt.join("build.rs"), build).unwrap();
+    git(&wt, &["add", "."]);
+    git(&wt, &["commit", "--quiet", "-m", "work"]);
+
+    let tools = w.sweep_tools();
+    let sandboxes = w.host_sandboxes();
+    let key = complexity_key();
+    let (state, o) = w.task_check_job(&task, &key, &sandboxes, &Launcher, Some(&tools));
+    match host_gap() {
+        None => {
+            assert_eq!(state, State::Passed, "{}", o.text);
+            assert!(o.verdict, "{}", o.text);
+            assert!(
+                wt.join("build-ran").exists(),
+                "the build script ran: {}",
+                o.text
+            );
+            let evidence = tools.evidence_root.join(&task);
+            let clippy: Vec<String> = std::fs::read_dir(&evidence)
+                .unwrap()
+                .flat_map(|d| std::fs::read_dir(d.unwrap().path()).unwrap())
+                .map(|e| e.unwrap().path())
+                .filter(|p| p.to_string_lossy().ends_with("-clippy.json"))
+                .map(|p| std::fs::read_to_string(p).unwrap())
+                .collect();
+            assert_eq!(clippy.len(), 1, "1 clippy report");
+            assert!(
+                clippy[0].contains("\"reason\":\"build-finished\""),
+                "the report holds the stdout of clippy: {}",
+                clippy[0]
+            );
+        }
+        Some(_) => assert_not_run(state, &o),
+    }
+    let archived = jobs_dir.join("archive").join(format!("{gate}-1.json"));
+    assert!(
+        !forged.exists() && !archived.exists(),
+        "the build script wrote a result file for job {gate}"
+    );
+    w.end_from_files();
+    assert_eq!(
+        w.row(gate).state,
+        State::Running,
+        "the other running gate job is still running"
+    );
+
+    let task = w.task("true", CLAUDE, "claude", WorktreeMode::Worktree);
+    let (state, o) = w.task_check_job(&task, &key, &NoProfiles, &Launcher, Some(&tools));
+    assert_not_run(state, &o);
 }

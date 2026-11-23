@@ -1,33 +1,17 @@
-//! The launch environment of an agent, so that no agent pushes (ticket 22).
-//!
-//! SR-3: no agent pushes, deploys or messages outside the fleet. In Phase 4
-//! no agent pushes at all; each push is the push job of fleetd
-//! (`docs/tickets/fleetd-p4/MAP.md`, Q13). 2 guards hold it:
-//!
-//! - The environment of each worker sets `core.hooksPath` to
-//!   `<fleet root>/hooks/agent` through `GIT_CONFIG_COUNT`, and the
-//!   `pre-push` hook there refuses. The other hooks there pass each call
-//!   on to the hook of the repository, so the project hooks still run.
-//! - The profiles of Claude Code and Codex deny [`DENIED_COMMANDS`]. They
-//!   also stop `git push --no-verify`, which runs no hook.
-//!
-//! horch's own git calls and the jobs of fleetd set
-//! `-c core.hooksPath=/dev/null`, and a `-c` value wins over the
-//! `GIT_CONFIG_*` values of the environment. So their pushes still work.
-//!
-//! This module does no I/O: the launch writes [`hook_files`].
-
 use std::path::{Path, PathBuf};
 
-/// The message of the `pre-push` hook of an agent.
 pub const PRE_PUSH_REFUSAL: &str = "fleet agents do not push; fleetd pushes the feature branch";
 
-/// The commands that the profile of an agent denies, as words.
-pub const DENIED_COMMANDS: [&[&str]; 3] =
-    [&["git", "push"], &["gh", "pr", "merge"], &["gh", "release"]];
+pub const DENIED_COMMANDS: [&[&str]; 7] = [
+    &["git", "push"],
+    &["gh", "pr", "merge"],
+    &["gh", "release"],
+    &["gh", "issue", "comment"],
+    &["gh", "pr", "comment"],
+    &["gh", "pr", "review"],
+    &["gh", "discussion"],
+];
 
-/// The hook names of git (`githooks(5)`) other than `pre-push`. The agent
-/// hooks folder has a pass-through hook for each.
 const PASS_THROUGH_HOOKS: [&str; 26] = [
     "applypatch-msg",
     "pre-applypatch",
@@ -57,32 +41,24 @@ const PASS_THROUGH_HOOKS: [&str; 26] = [
     "post-index-change",
 ];
 
-/// The `pre-push` hook: it refuses each push.
 const PRE_PUSH: &str = "#!/bin/sh\n\
 # Written by horch (SR-3). Fleet agents do not push.\n\
 echo \"fleet agents do not push; fleetd pushes the feature branch\" >&2\n\
 exit 1\n";
 
-/// A pass-through hook: it runs the hook of the same name of the
-/// repository, from the hooks path the repository has without the agent
-/// environment, else from `<common git dir>/hooks`. It gives the arguments,
-/// the standard input and the exit code of that hook. A missing hook, or
-/// a hooks path that is this folder, passes.
 const PASS_THROUGH: &str = "#!/bin/sh\n\
 # Written by horch (SR-3). Runs the hook of the repository.\n\
-name=$(basename \"$0\")\n\
+name=${0##*/}\n\
 dir=$(unset GIT_CONFIG_COUNT; git config --type=path --get core.hooksPath)\n\
 if [ -z \"$dir\" ]; then dir=\"$(git rev-parse --git-common-dir)/hooks\"; fi\n\
 hook=\"$dir/$name\"\n\
 if [ -f \"$hook\" ] && [ -x \"$hook\" ] && ! [ \"$hook\" -ef \"$0\" ]; then exec \"$hook\" \"$@\"; fi\n\
 exit 0\n";
 
-/// The hooks folder of the agents of `fleet_root`.
 pub fn hooks_dir(fleet_root: &Path) -> PathBuf {
     fleet_root.join("hooks").join("agent")
 }
 
-/// The variables that give an agent the hooks folder of `fleet_root`.
 pub fn git_env(fleet_root: &Path) -> [(String, String); 3] {
     [
         ("GIT_CONFIG_COUNT".into(), "1".into()),
@@ -94,14 +70,11 @@ pub fn git_env(fleet_root: &Path) -> [(String, String); 3] {
     ]
 }
 
-/// Each file of the hooks folder: its name and its text. Each is a POSIX
-/// shell script with mode 0755. On Windows git runs it with its own sh.
 pub fn hook_files() -> impl Iterator<Item = (&'static str, &'static str)> {
     std::iter::once(("pre-push", PRE_PUSH))
         .chain(PASS_THROUGH_HOOKS.iter().map(|n| (*n, PASS_THROUGH)))
 }
 
-/// The Claude Code `permissions.deny` rule of 1 of [`DENIED_COMMANDS`].
 pub fn claude_deny_rule(words: &[&str]) -> String {
     format!("Bash({}:*)", words.join(" "))
 }
@@ -129,6 +102,115 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    struct SealedRepo {
+        _temp: tempfile::TempDir,
+        root: PathBuf,
+        repo: PathBuf,
+        sealed: PathBuf,
+    }
+
+    #[cfg(unix)]
+    impl SealedRepo {
+        fn new() -> SealedRepo {
+            use std::os::unix::fs::{symlink, PermissionsExt};
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().canonicalize().unwrap();
+            let sealed = root.join("sealed");
+            std::fs::create_dir_all(&sealed).unwrap();
+            let exec_path = std::process::Command::new("git")
+                .arg("--exec-path")
+                .output()
+                .unwrap();
+            let exec_path = String::from_utf8(exec_path.stdout).unwrap();
+            symlink(Path::new(exec_path.trim()).join("git"), sealed.join("git")).unwrap();
+            symlink("/bin/sh", sealed.join("sh")).unwrap();
+            let hooks = hooks_dir(&root);
+            std::fs::create_dir_all(&hooks).unwrap();
+            for (name, text) in hook_files() {
+                let path = hooks.join(name);
+                std::fs::write(&path, text).unwrap();
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            let repo = root.join("repo");
+            std::fs::create_dir_all(&repo).unwrap();
+            let world = SealedRepo {
+                _temp: temp,
+                root,
+                repo,
+                sealed,
+            };
+            let init = world.git(&["init", "-q"]).output().unwrap();
+            assert!(init.status.success(), "{init:?}");
+            world
+        }
+
+        fn sealed_env(&self, cmd: &mut std::process::Command) {
+            cmd.env_clear()
+                .current_dir(&self.repo)
+                .env("PATH", &self.sealed)
+                .env("HOME", &self.root)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t");
+        }
+
+        fn git(&self, args: &[&str]) -> std::process::Command {
+            let mut cmd = std::process::Command::new(self.sealed.join("git"));
+            cmd.args(args);
+            self.sealed_env(&mut cmd);
+            cmd
+        }
+
+        fn agent_git(&self, args: &[&str]) -> std::process::Command {
+            let mut cmd = self.git(args);
+            cmd.envs(git_env(&self.root));
+            cmd
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pass_through_hook_runs_the_repository_hook_with_only_git_and_sh_on_the_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let w = SealedRepo::new();
+        let mark = w.root.join("hook-ran");
+        let hook = w.repo.join(".git/hooks/pre-commit");
+        std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+        std::fs::write(
+            &hook,
+            format!("#!/bin/sh\necho ran > '{}'\nexit 1\n", mark.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let commit = w
+            .agent_git(&["commit", "-q", "--allow-empty", "-m", "work"])
+            .output()
+            .unwrap();
+        assert!(
+            mark.is_file(),
+            "the repository hook runs: {}",
+            String::from_utf8_lossy(&commit.stderr)
+        );
+        assert!(
+            !commit.status.success(),
+            "the refusal of the repository hook stops the commit"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pre_push_hook_refuses_with_only_git_and_sh_on_the_path() {
+        let w = SealedRepo::new();
+        let mut cmd = std::process::Command::new(hooks_dir(&w.root).join("pre-push"));
+        w.sealed_env(&mut cmd);
+        let push = cmd.output().unwrap();
+        assert_eq!(push.status.code(), Some(1));
+        assert!(String::from_utf8_lossy(&push.stderr).contains(PRE_PUSH_REFUSAL));
+    }
+
     #[test]
     fn git_env_points_core_hooks_path_at_the_agent_folder() {
         let env = git_env(Path::new("/fleet"));
@@ -137,14 +219,18 @@ mod tests {
     }
 
     #[test]
-    fn claude_rules_deny_push_merge_and_release() {
+    fn claude_rules_deny_push_merge_release_and_external_messages() {
         let rules = DENIED_COMMANDS.map(claude_deny_rule);
         assert_eq!(
             rules,
             [
                 "Bash(git push:*)",
                 "Bash(gh pr merge:*)",
-                "Bash(gh release:*)"
+                "Bash(gh release:*)",
+                "Bash(gh issue comment:*)",
+                "Bash(gh pr comment:*)",
+                "Bash(gh pr review:*)",
+                "Bash(gh discussion:*)"
             ]
         );
     }

@@ -1,16 +1,8 @@
-//! The request files of `<fleet root>/run/requests/`: the folder modes, the
-//! checks of each file, the `requests` row, then the archive
-//! (docs/tickets/fleetd-p5/14-request-file-spool.md; SR-5, SR-6, RR-8,
-//! FM-15, FM-23).
-//!
-//! Each test uses a temp fleet root, a temp ledger at generation 1, the
-//! operator token of the fleet root, and a handler of `task_cancel` that
-//! counts its calls and writes 1 row of the table `probe` for each call.
-//! The time of a scan comes from a test clock, never from the host.
-#![cfg(unix)]
-
-use std::fs::{self, OpenOptions, Permissions};
+use std::fs;
+#[cfg(unix)]
+use std::fs::{OpenOptions, Permissions};
 use std::io::Write;
+#[cfg(unix)]
 use std::os::unix::fs::{symlink, OpenOptionsExt, PermissionsExt};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
@@ -18,9 +10,14 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use horch_core::fleetd::fleet_runtime::adapters::channel_client::{self, Sent};
 use horch_core::fleetd::fleet_runtime::adapters::cursors_store;
 use horch_core::fleetd::fleet_runtime::adapters::request_spool::{
-    scan, FileFact, Handled, ScanOutcome, Spool, FOLDER_REFUSED,
+    scan, FileFact, Handled, ScanOutcome, Spool,
+};
+#[cfg(unix)]
+use horch_core::fleetd::fleet_runtime::adapters::request_spool::{
+    FILE_REJECTED, FOLDER_REFUSED, REQUEST_REFUSED,
 };
 use horch_core::fleetd::fleet_runtime::adapters::request_wire::{Outcome, Request};
 use horch_core::fleetd::fleet_runtime::adapters::scans::{requests_dir, ScanClock};
@@ -30,16 +27,16 @@ use horch_core::fleetd::fleet_runtime::domain::authorize::Decision;
 use horch_core::fleetd::fleet_runtime::domain::budget::{Cursor, Deadline, ScanKind};
 use horch_core::fleetd::fleet_runtime::domain::ledger::Generation;
 use horch_core::fleetd::fleet_runtime::domain::requests::{Kind, RequestId};
+use horch_core::runtime::{MapEnv, RuntimeContext};
 use horch_core::taskledger::{schema, util};
 use horch_platform::channel::User;
+use horch_platform::fs as platform;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 
 const ID: &str = "6f1c2a3e-0b9d-4c55-8e7f-1a2b3c4d5e6f";
 const STAMP: &str = "2026-11-18T00:00:00Z";
 
-/// A temp fleet root with its token, and a temp ledger at generation 1 with
-/// the table `probe` of the handler.
 struct World {
     _temp: tempfile::TempDir,
     root: PathBuf,
@@ -77,9 +74,6 @@ fn world() -> World {
     }
 }
 
-/// Handlers with 1 handler for `task_cancel`: it counts its calls, writes 1
-/// row of `probe`, and returns the count. When `panic_at` is that call, it
-/// panics after its row, as a crash of fleetd before the commit.
 fn counting(panic_at: Option<usize>) -> (Handlers, Arc<AtomicUsize>) {
     let calls = Arc::new(AtomicUsize::new(0));
     let seen = Arc::clone(&calls);
@@ -101,7 +95,19 @@ impl World {
         requests_dir(&self.root)
     }
 
-    /// 1 scan with `owner` as the ledger owner and the time of `clock`.
+    fn ctx(&self) -> RuntimeContext {
+        let dir = self._temp.path();
+        let text = |p: PathBuf| p.to_string_lossy().into_owned();
+        let env = MapEnv::new(dir)
+            .with("HOME", &text(dir.to_path_buf()))
+            .with("PATH", "/nonexistent")
+            .with("HORCH_LEDGER_DB", &text(dir.join("ledger.sqlite3")))
+            .with("FLEET_ROOT", &text(self.root.clone()))
+            .with("HORCH_STATE_DIR", &text(dir.join("state")))
+            .with("HORCH_DATA_DIR", &text(dir.join("data")));
+        RuntimeContext::from_env(&env).unwrap()
+    }
+
     fn scan_with(
         &mut self,
         owner: &User,
@@ -118,13 +124,11 @@ impl World {
         scan(&mut self.conn, &spool, cursor, clock, &self.handlers).unwrap()
     }
 
-    /// 1 scan with no deadline in sight.
     fn scan(&mut self, cursor: &mut Cursor) -> ScanOutcome {
         let owner = self.owner.clone();
         self.scan_as(&owner, cursor)
     }
 
-    /// 1 scan as `owner` with no deadline in sight.
     fn scan_as(&mut self, owner: &User, cursor: &mut Cursor) -> ScanOutcome {
         let start = Instant::now();
         let mut now = move || start;
@@ -136,15 +140,15 @@ impl World {
         self.scan_with(owner, cursor, &mut clock)
     }
 
-    /// The request file of `id` with the token of the fleet, as the client
-    /// writes it: `<id>.json.tmp`, then a rename, with mode 0600.
     fn put(&self, id: &str) -> PathBuf {
-        fs::create_dir_all(self.dir()).unwrap();
-        fs::set_permissions(self.dir(), Permissions::from_mode(0o700)).unwrap();
+        platform::create_dir_owner_only(&self.dir()).unwrap();
         let line = request(id, Some(self.token.text())).to_line();
         let path = self.dir().join(format!("{id}.json"));
         let tmp = self.dir().join(format!("{id}.json.tmp"));
-        write_mode(&tmp, line.as_bytes(), 0o600);
+        platform::create_new_owner_only(&tmp)
+            .unwrap()
+            .write_all(line.as_bytes())
+            .unwrap();
         fs::rename(&tmp, &path).unwrap();
         path
     }
@@ -159,7 +163,6 @@ impl World {
             .unwrap()
     }
 
-    /// The state of the `requests` row of `id`, and its caller.
     fn row(&self, id: &str) -> Option<(String, String)> {
         self.conn
             .query_row(
@@ -171,7 +174,6 @@ impl World {
             .unwrap()
     }
 
-    /// The outcome and the reason of the `ingested` row of `path`.
     fn ingested(&self, path: &Path) -> Option<(String, Option<String>)> {
         self.conn
             .query_row(
@@ -196,6 +198,7 @@ fn request(id: &str, token: Option<&str>) -> Request {
     }
 }
 
+#[cfg(unix)]
 fn write_mode(path: &Path, bytes: &[u8], mode: u32) {
     let mut file = OpenOptions::new()
         .write(true)
@@ -204,11 +207,9 @@ fn write_mode(path: &Path, bytes: &[u8], mode: u32) {
         .open(path)
         .unwrap();
     file.write_all(bytes).unwrap();
-    // The umask can narrow the mode of the create; set it exactly.
     fs::set_permissions(path, Permissions::from_mode(mode)).unwrap();
 }
 
-/// The facts of a scan that read the folder.
 fn facts(outcome: ScanOutcome) -> Vec<FileFact> {
     match outcome {
         ScanOutcome::Read(scan) => scan.facts,
@@ -222,6 +223,7 @@ fn names(n: usize) -> Vec<String> {
         .collect()
 }
 
+#[cfg(unix)]
 #[test]
 fn request_file_is_applied_then_archived() {
     let mut w = world();
@@ -254,6 +256,7 @@ fn request_file_is_applied_then_archived() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn request_file_with_no_token_gets_a_refused_row() {
     let mut w = world();
@@ -277,6 +280,7 @@ fn request_file_with_no_token_gets_a_refused_row() {
     assert!(w.archived(ID).is_file());
 }
 
+#[cfg(unix)]
 #[test]
 fn file_with_mode_0644_is_refused_with_its_reason() {
     let mut w = world();
@@ -297,11 +301,11 @@ fn file_with_mode_0644_is_refused_with_its_reason() {
     assert_eq!(w.row(ID), None);
     assert!(path.is_file(), "a rejected file stays where it is");
 
-    // The path is not read again.
     assert_eq!(facts(w.scan(&mut Cursor::new(STAMP))), Vec::new());
     assert_eq!(w.count("ingested"), 1);
 }
 
+#[cfg(unix)]
 #[test]
 fn file_of_another_owner_is_refused() {
     let mut w = world();
@@ -309,8 +313,6 @@ fn file_of_another_owner_is_refused() {
     let User::Uid(uid) = w.owner else {
         panic!("a unix user is a uid")
     };
-    // A test cannot make a file of another user, so the ledger owner of the
-    // scan is a user that does not own the file (Q13).
     let other = User::Uid(uid + 1);
     let outcome = w.scan_as(&other, &mut Cursor::new(STAMP));
 
@@ -327,6 +329,7 @@ fn file_of_another_owner_is_refused() {
     assert_eq!(w.calls.load(Ordering::SeqCst), 0);
 }
 
+#[cfg(unix)]
 #[test]
 fn symlink_request_file_is_rejected() {
     let mut w = world();
@@ -373,6 +376,7 @@ fn file_whose_name_is_not_its_request_id_is_rejected() {
     assert_eq!(w.count("requests"), 0);
 }
 
+#[cfg(unix)]
 #[test]
 fn tmp_file_is_skipped() {
     let mut w = world();
@@ -432,7 +436,6 @@ fn crash_before_commit_reads_the_file_again_with_1_effect() {
 fn crash_after_commit_only_archives() {
     let mut w = world();
     let path = w.put(ID);
-    // fleetd commits the row of the file, then crashes before the archive.
     let decision = Decision::Authorized {
         auth: "token; request file".into(),
     };
@@ -463,6 +466,7 @@ fn crash_after_commit_only_archives() {
     assert!(w.archived(ID).is_file());
 }
 
+#[cfg(unix)]
 #[test]
 fn folder_with_mode_0755_is_refused_and_opens_1_needs_you_item() {
     let mut w = world();
@@ -499,7 +503,6 @@ fn folder_with_mode_0755_is_refused_and_opens_1_needs_you_item() {
         0o755
     );
 
-    // You narrow the mode: the scan reads the folder and ends the item.
     fs::set_permissions(w.dir(), Permissions::from_mode(0o700)).unwrap();
     assert_eq!(facts(w.scan(&mut Cursor::new(STAMP))).len(), 1);
     let still_open: i64 = w
@@ -513,6 +516,7 @@ fn folder_with_mode_0755_is_refused_and_opens_1_needs_you_item() {
     assert_eq!(still_open, 0);
 }
 
+#[cfg(unix)]
 #[test]
 fn missing_folder_is_made_with_mode_0700() {
     let mut w = world();
@@ -532,8 +536,6 @@ fn scan_continues_at_its_cursor() {
     for id in &ids {
         w.put(id);
     }
-    // A test clock: each read is 1 s later, and the deadline is 2 s after
-    // the start, so 1 scan reads 2 files.
     let scan_2 = |w: &mut World, cursor: &mut Cursor| {
         let start = Instant::now();
         let mut ticks = 0u64;
@@ -561,7 +563,6 @@ fn scan_continues_at_its_cursor() {
     cursors_store::save(&tx, ScanKind::Requests.as_str(), &cursor).unwrap();
     tx.commit().unwrap();
 
-    // A new pass loads the cursor and goes on after the last file read.
     let mut cursor = cursors_store::load(&w.conn, ScanKind::Requests.as_str(), STAMP).unwrap();
     let second = scan_2(&mut w, &mut cursor);
 
@@ -575,4 +576,98 @@ fn scan_continues_at_its_cursor() {
     assert_eq!(read, want);
     assert!(!second.stopped_at_budget);
     assert_eq!(w.count("probe"), 3);
+}
+
+#[cfg(unix)]
+fn open_items(w: &World, kind: &str) -> Vec<(String, String)> {
+    let mut stmt = w
+        .conn
+        .prepare("SELECT key, text FROM needs_you WHERE state = 'open' AND kind = ?1")
+        .unwrap();
+    stmt.query_map([kind], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+#[cfg(unix)]
+#[test]
+fn refused_and_rejected_queued_request_files_open_needs_you_items() {
+    let mut w = world();
+    let mut handlers = Handlers::new();
+    handlers.insert(Kind::TaskCancel, |_tx, _payload| {
+        Err(anyhow::anyhow!("the task T-1 is not running"))
+    });
+    w.handlers = handlers;
+    let refused_id = &names(2)[0];
+    let rejected_id = &names(2)[1];
+    w.put(refused_id);
+    let rejected = w.put(rejected_id);
+    fs::set_permissions(&rejected, Permissions::from_mode(0o644)).unwrap();
+
+    let read = facts(w.scan(&mut Cursor::new(STAMP)));
+
+    let refusal = match &read[0] {
+        FileFact {
+            handled: Handled::Archived(Outcome::Refused(reason)),
+            ..
+        } => reason.clone(),
+        other => panic!("expected a refused request, got {other:?}"),
+    };
+    assert!(refusal.contains("is not running"), "{refusal}");
+    let rejection = "mode 0644 is wider than 0600".to_string();
+    assert_eq!(read[1].handled, Handled::Rejected(rejection.clone()));
+    assert_eq!(
+        w.ingested(&rejected),
+        Some(("rejected".into(), Some(rejection.clone())))
+    );
+
+    let refused_items = open_items(&w, REQUEST_REFUSED);
+    assert_eq!(refused_items.len(), 1, "{refused_items:?}");
+    let (key, text) = &refused_items[0];
+    assert_eq!(key, &format!("{REQUEST_REFUSED}:{refused_id}"));
+    let archived = w.archived(refused_id).display().to_string();
+    for part in [refused_id.as_str(), "task_cancel", &archived, &refusal] {
+        assert!(text.contains(part), "{text:?} names {part:?}");
+    }
+    assert!(w.archived(refused_id).is_file(), "the request is kept");
+
+    let rejected_items = open_items(&w, FILE_REJECTED);
+    let path = rejected.display().to_string();
+    assert_eq!(rejected_items.len(), 1, "{rejected_items:?}");
+    let (key, text) = &rejected_items[0];
+    assert_eq!(key, &format!("{FILE_REJECTED}:{path}"));
+    assert!(text.contains(&path), "{text}");
+    assert!(text.contains(&rejection), "{text}");
+
+    assert_eq!(facts(w.scan(&mut Cursor::new(STAMP))), Vec::new());
+    assert_eq!(open_items(&w, REQUEST_REFUSED).len(), 1);
+    assert_eq!(open_items(&w, FILE_REJECTED).len(), 1);
+}
+
+#[test]
+fn valid_owner_only_file_and_request_spool_succeed_on_host_platform() {
+    let mut w = world();
+    let Value::Object(payload) = json!({ "task": "T-1" }) else {
+        unreachable!()
+    };
+    let sent = channel_client::send(&w.ctx(), Kind::TaskCancel, payload).unwrap();
+    let Sent::Queued { request_id, path } = sent else {
+        panic!("expected a request file, got {sent:?}")
+    };
+    let id = request_id.as_str();
+    assert_eq!(path, w.dir().join(format!("{id}.json")));
+
+    let read = facts(w.scan(&mut Cursor::new(STAMP)));
+
+    assert_eq!(
+        read,
+        vec![FileFact {
+            name: format!("{id}.json"),
+            handled: Handled::Archived(Outcome::Applied(json!({ "calls": 1 }))),
+        }]
+    );
+    assert_eq!(w.row(id).unwrap().0, "applied");
+    assert!(!path.exists(), "the file left the request folder");
+    assert!(w.archived(id).is_file(), "the file is in archive/");
 }

@@ -1,11 +1,3 @@
-//! The ingest of `result.json` and of the question files of a push attempt
-//! (docs/tickets/fleetd-p4/13-ingest-result-and-questions.md).
-//!
-//! `docs/specs/fleetd/design.md`, "Workspace layout and file protocol"
-//! (protocol rule 7 and its size table), "Ledger" (`ingested`, I1), "Order
-//! inside 1 pass", SR-6, FM-6 and FM-23. Each test uses a temp ledger and a
-//! temp fleet root. Part 1 of a pass reads the outbox files, and part 2
-//! ingests them in 1 transaction, as the pass does.
 #![cfg(unix)]
 
 use std::collections::BTreeMap;
@@ -30,7 +22,6 @@ use rusqlite::{params, Connection};
 
 const GUARD: Generation = Generation(1);
 
-/// A temp ledger at generation 1 and fleet clock 0, 1 run and a fleet root.
 struct World {
     dir: PathBuf,
     _temp: tempfile::TempDir,
@@ -60,7 +51,6 @@ fn world() -> World {
         },
     )
     .unwrap();
-    // FR-12: a task needs an idea in flight of the feature of its run.
     horch_core::taskledger::schema::run_idea(
         &conn,
         &run.run_id,
@@ -83,8 +73,6 @@ impl World {
         self.dir.join("fleet")
     }
 
-    /// A task bound to a worker at fleet clock 0, with its 1 live push
-    /// attempt `A1` and its lease.
     fn running_task(&self) -> AttemptRef {
         let n: i64 = self
             .conn
@@ -121,11 +109,10 @@ impl World {
         dir
     }
 
-    /// Part 1 and part 2 of 1 pass for `attempts`.
     fn pass(&mut self, attempts: &[AttemptRef]) -> Report {
         let reads = ingest::read(&self.conn, &self.root(), attempts, self.max_bytes).unwrap();
         let tx = self.conn.transaction().unwrap();
-        let report = ingest::ingest(&tx, Some(GUARD), &reads).unwrap();
+        let report = ingest::ingest(&tx, Some(GUARD), &reads, 900).unwrap();
         tx.commit().unwrap();
         report
     }
@@ -138,7 +125,6 @@ impl World {
         tasks::get(&self.conn, &a.task_id).unwrap().attempts
     }
 
-    /// The `ingested` rows: path, sha256, outcome and reason.
     fn ingested(&self) -> Vec<(String, Option<String>, String, Option<String>)> {
         let mut stmt = self
             .conn
@@ -167,7 +153,6 @@ impl World {
     }
 }
 
-/// The text of a valid `result.json` of task `task`, attempt `attempt`.
 fn result_json(task: &str, attempt: &str, summary: &str) -> String {
     ResultFile {
         task: task.into(),
@@ -179,6 +164,7 @@ fn result_json(task: &str, attempt: &str, summary: &str) -> String {
         acceptance_self_check: Vec::new(),
         notes_for_next: None,
         handoff: None,
+        unlanded: None,
     }
     .to_json()
 }
@@ -194,8 +180,6 @@ fn question_json(task: &str, attempt: &str) -> String {
     .to_string()
 }
 
-/// Write `text` to `path` with mode 0600, as the outbox writer does: the
-/// protected file reader refuses a wider mode (ticket 29 of fleetd-p5).
 fn write_0600(path: impl AsRef<std::path::Path>, text: impl AsRef<[u8]>) {
     std::fs::write(&path, text).unwrap();
     set_mode(path.as_ref(), 0o600);
@@ -270,7 +254,6 @@ fn symlinked_result_is_rejected_and_not_read_again() {
     assert_rejected(&w, &path, "no_link");
     assert_eq!(w.status(&a), "running");
 
-    // A valid file at the same path later is not read: the path is done.
     std::fs::remove_file(&path).unwrap();
     write_0600(&path, result_json(&a.task_id, "A1", "done"));
     let report = w.pass(std::slice::from_ref(&a));
@@ -308,8 +291,6 @@ fn result_with_the_attempt_id_of_another_attempt_is_rejected() {
 fn result_outside_its_outbox_is_rejected() {
     let mut w = world();
     let a = w.running_task();
-    // The outbox is a link to a folder of the worker, so the real path of
-    // the file is outside the outbox of its attempt.
     let outbox = w.outbox(&a);
     std::fs::remove_dir(&outbox).unwrap();
     let other = w.dir.join("other-outbox");
@@ -354,13 +335,12 @@ fn result_wins_over_a_lease_expiry_in_the_same_pass() {
         heartbeat_max_age_s: 30,
     };
 
-    // 1 pass far past both leases: ingest first, then the leases.
     let clock = FleetSeconds(10_000);
     w.set_clock(clock.0);
     let attempts = [with_result.clone(), without.clone()];
     let reads = ingest::read(&w.conn, &w.root(), &attempts, w.max_bytes).unwrap();
     let tx = w.conn.transaction().unwrap();
-    ingest::ingest(&tx, Some(GUARD), &reads).unwrap();
+    ingest::ingest(&tx, Some(GUARD), &reads, 900).unwrap();
     let expired =
         lease::renew_or_expire_leases(&tx, Some(GUARD), clock, &BTreeMap::new(), &limits).unwrap();
     tx.commit().unwrap();
@@ -370,7 +350,6 @@ fn result_wins_over_a_lease_expiry_in_the_same_pass() {
     assert_eq!(w.status(&with_result), "verifying");
     assert_eq!(w.status(&without), "stalled");
 
-    // A result of a stalled task moves it to verifying too.
     write_result(&w, &without);
     let report = w.pass(std::slice::from_ref(&without));
     assert_eq!(report.to_verifying, vec![without.task_id.clone()]);

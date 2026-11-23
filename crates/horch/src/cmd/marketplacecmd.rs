@@ -1,6 +1,3 @@
-//! `horch marketplace` - the installed-skill store under the data root
-//! (`${XDG_DATA_HOME:-~/.local/share}/horch/`).
-
 use std::process::ExitCode;
 
 use anyhow::{anyhow, Result};
@@ -32,8 +29,6 @@ pub fn run(ctx: &RuntimeContext, command: MarketplaceCommand) -> Result<ExitCode
     Ok(ExitCode::SUCCESS)
 }
 
-/// JSON: `{"store", "skills": [{id, source, requested_revision,
-/// resolved_commit, version, digest, installed_at, path, present}]}`.
 fn list(ctx: &RuntimeContext, json: bool) -> Result<()> {
     let checks = catalog::check_store(&ctx.paths.data_root)?;
     if json {

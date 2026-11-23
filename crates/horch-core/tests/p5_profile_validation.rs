@@ -1,14 +1,3 @@
-//! Profile validation refuses a worker profile whose sandbox allows an
-//! operator act, or whose sandbox does not exist on this OS (SR-8, A37,
-//! 06 S9; ticket 38 of fleetd-p5). A refused profile gets no dispatch,
-//! opens 1 needs-you item, and `horch status` shows it as "not available
-//! on this OS: no sandbox". Its fallback takes the task when the fallback
-//! has a sandbox here.
-//!
-//! Each test uses a temp ledger and a temp fleet root. The real CLIs never
-//! run here. No test reads the load, the limits or the clock of this
-//! machine.
-
 #![cfg(unix)]
 
 use std::collections::BTreeMap;
@@ -21,10 +10,11 @@ use horch_core::fleetd::worker_profiles::adapters::check_sandbox::{
     WorkerSandboxes, NO_CHECK_SANDBOX_KIND,
 };
 use horch_core::fleetd::worker_profiles::adapters::sandbox_rules::{
-    refusal, refusal_of, refused, NO_SANDBOX,
+    refusal, refusal_of, NO_SANDBOX,
 };
 use horch_core::fleetd::worker_profiles::domain::operator_boundary::{Act, Boundary};
 use horch_core::harness::claude::operator_boundary_on;
+use horch_core::harness::codex::{self, CodexFacts, OPERATOR_BOUNDARY_SINCE};
 use horch_core::harness::HarnessKind;
 use horch_core::roster::{Roster, Teammate};
 use horch_core::taskledger::finish::CodexSandbox;
@@ -34,9 +24,7 @@ use horch_core::taskledger::tasks::{self, NewTask};
 use horch_core::taskledger::{schema, status};
 use rusqlite::{Connection, TransactionBehavior};
 
-/// A Claude worker with a sandbox: its boundary holds on macOS and Linux.
 const BOXED: &str = "claude-boxed";
-/// A pi worker: pi has no sandbox on any OS.
 const PI: &str = "pi-dev";
 
 fn claude(name: &str, sandbox: Option<serde_json::Value>) -> Teammate {
@@ -64,12 +52,11 @@ struct World {
     run: Run,
 }
 
-/// A temp ledger of the current schema, a fleet root and 1 run.
 fn world() -> World {
     let dir = tempfile::tempdir().unwrap();
     let mut conn = Connection::open(dir.path().join("ledger.sqlite3")).unwrap();
     schema::migrate_to(&mut conn, schema::VERSION).unwrap();
-    let top = dir.path().canonicalize().unwrap();
+    let top = horch_platform::path::canonicalize(dir.path()).unwrap();
     let fleet_root = top.join("fleet");
     let project = top.join("repo");
     std::fs::create_dir_all(&fleet_root).unwrap();
@@ -83,7 +70,6 @@ fn world() -> World {
         },
     )
     .unwrap();
-    // FR-12: a task needs an idea in flight of the feature of its run.
     horch_core::taskledger::schema::run_idea(
         &conn,
         &run.run_id,
@@ -100,8 +86,6 @@ fn world() -> World {
 }
 
 impl World {
-    /// The sandboxes of a host with a platform sandbox, with the profile
-    /// refusals of `roster`.
     fn sandboxes(&self, roster: &Roster) -> WorkerSandboxes {
         let codex = CodexSandbox {
             bin: PathBuf::from("/no/codex"),
@@ -110,7 +94,7 @@ impl World {
         };
         WorkerSandboxes {
             gap: None,
-            ..WorkerSandboxes::new(codex, self.fleet_root.clone())
+            ..WorkerSandboxes::on_path(codex, self.fleet_root.clone(), std::env::var_os("PATH"))
         }
         .with_profiles(roster)
     }
@@ -122,9 +106,6 @@ impl World {
             .task_id
     }
 
-    /// 1 dispatch choice pass, the fallback pass and the item pass of the
-    /// held tasks, in 1 transaction. Returns the bound `(task, persona)`
-    /// pairs.
     fn pass(&mut self, sandboxes: &WorkerSandboxes) -> Vec<(String, String)> {
         let tx = self
             .conn
@@ -190,7 +171,6 @@ fn profile_on_an_os_without_its_sandbox_is_refused() {
             "{os}"
         );
     }
-    // pi has no sandbox on any OS, so this OS refuses it too.
     let why = refusal(&pi(None), fleet_root).unwrap();
     assert!(why.starts_with(NO_SANDBOX), "{why}");
     assert!(why.contains("pi"), "{why}");
@@ -212,7 +192,6 @@ fn worker_profile_with_no_sandbox_is_refused() {
 
 #[test]
 fn old_orchestrator_seat_is_refused_like_each_worker_profile() {
-    // Phase 6 removed the orchestrator seat (ticket 44 of fleetd-p6).
     let fleet_root = Path::new("/fleet");
     for seat in ["orchestrator", "orchestrator-codex"] {
         assert!(refusal(&claude(seat, None), fleet_root).is_some(), "{seat}");
@@ -300,7 +279,6 @@ fn fallback_with_a_sandbox_takes_the_task() {
         "a task that its fallback takes opens no item"
     );
 
-    // A fallback that is refused too does not take the task.
     let r = roster(vec![pi(Some("claude-open")), claude("claude-open", None)]);
     let mut w = world();
     let sandboxes = w.sandboxes(&r);
@@ -312,16 +290,30 @@ fn fallback_with_a_sandbox_takes_the_task() {
     assert_eq!(task.claimable_by.as_deref(), Some(PI));
 }
 
-/// Each worker teammate of `teammates/` has a sandbox that denies the 3
-/// operator acts on macOS and Linux (ticket 39). The personas below stay
-/// refused, each with the words its reason must hold:
-/// - the adapter is `NotSupported` on this OS, so the persona never runs
-///   as a worker here (A37);
-/// - the 2 panes of the `horch orchestration` recipe take no ledger task,
-///   so fleetd never dispatches them, and they keep their launch of today;
-/// - `orchestrator` and `orchestrator-codex`, the old orchestrator seats:
-///   Phase 6 removed their exemption (ticket 44 of fleetd-p6), and fleetd
-///   launches no orchestrator.
+fn refused(roster: &Roster, fleet_root: &Path) -> BTreeMap<String, String> {
+    let pinned_codex = CodexFacts {
+        version: Some(format!("codex-cli {OPERATOR_BOUNDARY_SINCE}")),
+        network_proxy: true,
+    };
+    roster
+        .names()
+        .into_iter()
+        .filter_map(|name| {
+            let t = roster.get(name)?;
+            let why = match t.agent {
+                HarnessKind::Codex => refusal_of(&codex::operator_boundary_on(
+                    std::env::consts::OS,
+                    &pinned_codex,
+                    t,
+                    fleet_root,
+                )),
+                _ => refusal(t, fleet_root),
+            };
+            why.map(|why| (name.to_string(), why))
+        })
+        .collect()
+}
+
 #[test]
 fn builtin_roster_has_no_refused_worker_profile_on_macos() {
     let not_supported = |adapter| ("not supported", adapter);

@@ -1,13 +1,3 @@
-//! The next attempt of a task works in the tree of the last attempt: the
-//! bind of fleetd and a handoff give the tree to the new attempt, and an
-//! `orphaned` tree is taken only after its rescue
-//! (docs/specs/fleetd/design.md, "Worktrees: leased, reconciled, never
-//! lost", "Reuse, don't redo"; FM-13, FM-14, FM-25; rows W2 and W3 of
-//! preservation-04-behavior.md; docs/tickets/fleetd-p3/11-claim-reuses-the-tree.md).
-//!
-//! Each test makes its own temporary git repository and ledger. No test
-//! starts a `horch` binary: a job runs in the test process (`TestJobs`).
-
 #![cfg(unix)]
 
 #[path = "common/test_jobs.rs"]
@@ -42,8 +32,6 @@ use test_jobs::TestJobs;
 
 const RUN_BRANCH: &str = "fleet/r1";
 
-// ─── the world of a test ────────────────────────────────────────────────
-
 struct World {
     tmp: tempfile::TempDir,
     root: PathBuf,
@@ -53,8 +41,6 @@ struct World {
     config: FleetConfig,
 }
 
-/// Run git in `dir` for the test itself, with no hook and no config of
-/// the user, and give its trimmed output.
 fn git(dir: &Path, args: &[&str]) -> String {
     let o = Command::new("git")
         .arg("-C")
@@ -91,21 +77,18 @@ fn cause() -> Cause<'static> {
     }
 }
 
-/// The path of the tree of `bound`.
 fn tree_path(bound: &Bound) -> Option<&str> {
     bound.worktree.as_ref().map(|t| t.path.as_str())
 }
 
 impl World {
-    /// A repository with 1 commit on `main` and the run branch, a ledger,
-    /// a run of the repository, and 1 task.
     fn new() -> World {
         assert!(
             std::env::var_os("FLEET_ROOT").is_none(),
             "these tests use the fleet root of their temp ledger"
         );
         let tmp = tempfile::tempdir().unwrap();
-        let top = tmp.path().canonicalize().unwrap();
+        let top = horch_platform::path::canonicalize(tmp.path()).unwrap();
         let root = top.join("repo");
         std::fs::create_dir_all(&root).unwrap();
         git(&root, &["init", "--quiet", "-b", "main"]);
@@ -127,7 +110,6 @@ impl World {
                         ..Default::default()
                     },
                 )?;
-                // FR-12: a task needs an idea in flight of the feature of its run.
                 horch_core::taskledger::schema::run_idea(
                     tx,
                     &run.run_id,
@@ -149,8 +131,6 @@ impl World {
         }
     }
 
-    /// fleetd binds the task to a new started worker of the run and its
-    /// live attempt (FR-5). A refused bind writes nothing.
     fn bind(&mut self) -> anyhow::Result<Bound> {
         let n: i64 = self
             .store
@@ -175,8 +155,6 @@ impl World {
         Ok(bound)
     }
 
-    /// fleetd binds the task to a new worker, which makes its tree; gives
-    /// the worker id and the tree.
     fn first_attempt(&mut self) -> (String, WorktreeRow) {
         let a = self.bind().unwrap().worker_id;
         let wt =
@@ -186,14 +164,11 @@ impl World {
         (a, tree)
     }
 
-    /// The agent of `worker_id` exits with code 1: the supervisor reaps
-    /// the worker, and its task goes back to the queue.
     fn exit(&self, worker_id: &str) {
         horch_core::taskledger::Store::open(self.store.path())
             .and_then(|mut s| {
                 s.immediate(|tx| {
                     let ended = supervisor::settle(tx, worker_id, Some(1))?;
-                    // The pass of fleetd ends the attempt of the exited agent.
                     commands::end_own_attempt(tx, worker_id, "crashed")?;
                     Ok(ended)
                 })
@@ -202,7 +177,6 @@ impl World {
         assert_eq!(self.task_status(), "ready");
     }
 
-    /// The `live` attempt of `worker_id`.
     fn attempt(&self, worker_id: &str) -> String {
         self.store
             .conn()
@@ -225,8 +199,6 @@ impl World {
         trees::get(self.store.conn(), id).unwrap().unwrap()
     }
 
-    /// Move the row `id` to `state` through the door, as the reconciler
-    /// and the rescue job move it.
     fn move_tree(&mut self, id: &str, state: &str) {
         self.store
             .immediate(|tx| {
@@ -244,8 +216,6 @@ impl World {
             .unwrap();
     }
 
-    /// The tree `tree` as a passed rescue leaves it: `orphaned`, then
-    /// `rescued` with a rescue ref at its HEAD. Gives the ref.
     fn rescued(&mut self, tree: &WorktreeRow) -> String {
         let id = tree.worktree_id.as_str();
         self.move_tree(id, "orphaned");
@@ -259,7 +229,6 @@ impl World {
         rescue_ref
     }
 
-    /// Queue the `worktree_remove` run of `tree` with `queue_remove`.
     fn queue_remove(&mut self, tree: &WorktreeRow) -> Result<Queued, String> {
         let row = self.row(&tree.worktree_id);
         let config = self.config.clone();
@@ -275,7 +244,6 @@ impl World {
             .unwrap()
     }
 
-    /// Set the state of the job `id`, as a pass moves it.
     fn set_job_state(&self, id: i64, state: &str) {
         self.store
             .conn()
@@ -293,7 +261,6 @@ impl World {
     }
 }
 
-/// Each file of `tree` with its bytes, but `.git`, in path order.
 fn files(tree: &Path) -> Vec<(String, Vec<u8>)> {
     fn collect(root: &Path, dir: &Path, out: &mut Vec<(String, Vec<u8>)>) {
         for e in std::fs::read_dir(dir).unwrap() {
@@ -314,8 +281,6 @@ fn files(tree: &Path) -> Vec<(String, Vec<u8>)> {
     out.sort();
     out
 }
-
-// ─── FM-25 and FM-13: the next attempt reuses the tree ──────────────────
 
 #[test]
 fn bind_of_a_retried_task_makes_its_tree_active_with_the_new_attempt() {
@@ -362,7 +327,6 @@ fn bind_of_a_task_with_an_orphaned_tree_is_refused_before_the_rescue() {
 
     let e = w.bind().unwrap_err();
 
-    // The bind takes neither the task nor the tree: the rescue comes first.
     assert!(
         format!("{e:#}").contains("is orphaned: its rescue comes first"),
         "{e:#}"
@@ -375,8 +339,6 @@ fn bind_of_a_task_with_an_orphaned_tree_is_refused_before_the_rescue() {
     );
 }
 
-// ─── FM-14: a worktree has 1 owner ──────────────────────────────────────
-
 #[test]
 fn handoff_moves_the_owner_of_the_tree() {
     let mut w = World::new();
@@ -386,13 +348,10 @@ fn handoff_moves_the_owner_of_the_tree() {
     w.store
         .immediate(|tx| {
             tasks::handoff(tx, &a, &file)?;
-            // The pass of fleetd ends the attempt that handed off.
             commands::end_own_attempt(tx, &a, "handed_off")
         })
         .unwrap();
 
-    // The design row `active`: retried -> back to `created`, with no
-    // owner, so the next attempt continues in the same tree.
     let row = w.row(&tree.worktree_id);
     assert_eq!(row.state, WorktreeState::Created);
     assert_eq!(row.owner_attempt, None);
@@ -414,10 +373,6 @@ fn owner_does_not_move_while_the_old_attempt_is_live() {
     let mut w = World::new();
     let (a, tree) = w.first_attempt();
     let owner = w.attempt(&a);
-    // The task is in the queue again while its worker and its attempt are
-    // still live: no handoff, no reap, no lease. The worker row lets go
-    // of the task, so the unique index of `workers.task_id` does not
-    // refuse the bind first. The bind refuses the open attempt (I1).
     w.store
         .immediate(|tx| {
             tx.execute(
@@ -445,8 +400,6 @@ fn owner_does_not_move_while_the_old_attempt_is_live() {
     assert_eq!(row.worker_id.as_deref(), Some(a.as_str()));
     assert_eq!(w.task_status(), "ready", "the refused bind wrote nothing");
 }
-
-// ─── W3: a reap leaves the tree with its files ──────────────────────────
 
 #[test]
 fn reap_leaves_the_tree_and_each_file() {
@@ -477,8 +430,6 @@ fn reap_leaves_the_tree_and_each_file() {
     assert_eq!(files(path), before);
 }
 
-// ─── the bind and the worktree_remove job never both pass ───────────────
-
 #[test]
 fn bind_refuses_a_tree_while_its_worktree_remove_job_is_queued_running_or_passed() {
     let mut w = World::new();
@@ -505,7 +456,6 @@ fn bind_refuses_a_tree_while_its_worktree_remove_job_is_queued_running_or_passed
         );
     }
 
-    // A failed removal keeps the tree: the next bind takes it.
     w.set_job_state(job, "failed");
     let c = w.bind().unwrap();
     assert_eq!(tree_path(&c), Some(tree.path.as_str()));

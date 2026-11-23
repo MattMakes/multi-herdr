@@ -12,9 +12,6 @@ import pytest
 SR = 48000
 
 
-# ---------------------------------------------------------------- stub models
-
-
 def _seeded_unit(text: str, dim: int = 512) -> np.ndarray:
     seed = int(hashlib.sha1(text.encode("utf-8")).hexdigest()[:8], 16)
     v = np.random.default_rng(seed).standard_normal(dim)

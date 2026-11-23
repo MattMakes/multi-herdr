@@ -1,5 +1,3 @@
-//! Non-functional requirements that a test can hold (design section 3, NFR).
-
 mod common;
 
 use std::alloc::{GlobalAlloc, Layout, System};
@@ -11,23 +9,17 @@ use common::*;
 use horch_core::telemetry::collect::{Collector, Probing};
 
 thread_local! {
-    /// The allocations this thread has made, for the NFR-02 guard.
     static ALLOCS: Cell<u64> = const { Cell::new(0) };
-    /// The bytes this thread holds: allocated minus freed, for the RSS guard.
     static LIVE: Cell<i64> = const { Cell::new(0) };
-    /// The most bytes this thread has held at once, since the last
-    /// [`peak_reset`].
     static PEAK: Cell<i64> = const { Cell::new(0) };
 }
 
-/// Start a new [`PEAK`] at the bytes held now; returns them.
 fn peak_reset() -> i64 {
     let live = LIVE.with(Cell::get);
     PEAK.with(|p| p.set(live));
     live
 }
 
-/// The system allocator, counting each thread's allocations and live bytes.
 struct Counting;
 
 // SAFETY: every method forwards to the `System` allocator with the caller's arguments,
@@ -63,7 +55,6 @@ fn repo() -> &'static Path {
         .unwrap()
 }
 
-/// NFR-03: the repo's roster, fallbacks included, passes `--check`.
 #[test]
 fn nfr_03_repo_roster_check_passes() {
     let dir = repo().join("teammates");
@@ -73,7 +64,6 @@ fn nfr_03_repo_roster_check_passes() {
     assert!(problems.is_empty(), "{problems:#?}");
 }
 
-/// The dependency names in one `[...dependencies]` table of a Cargo.toml.
 fn deps(manifest: &Path) -> Vec<String> {
     let text = std::fs::read_to_string(manifest).unwrap();
     let mut out = Vec::new();
@@ -95,9 +85,6 @@ fn deps(manifest: &Path) -> Vec<String> {
     out
 }
 
-/// NFR-05: no new runtime crate beyond crossterm (and ratatui, which the
-/// design allowed but the screen does not need) and the `horch self-update`
-/// crates (operator decision, 2026-10-20), and only in `horch`.
 #[test]
 fn nfr_05_no_new_runtime_crates() {
     let allowed_core = [
@@ -110,14 +97,9 @@ fn nfr_05_no_new_runtime_crates() {
         "libc",
         "sha2",
         "horch-marketplace",
-        // The task ledger (operator decision, 2026-10-27, docs/adr/0001):
-        // SQLite, bundled, for atomic claims across many processes.
         "rusqlite",
-        // Exact process identity on Windows (#29), as libc is on unix.
         "windows-sys",
-        // The workspace leaf crate of fleetd Phase P (docs/specs/fleetd/design.md).
         "horch-platform",
-        // The fleet config file fleet.toml of fleetd (docs/specs/fleetd/design.md).
         "toml",
     ];
     for d in deps(&repo().join("crates/horch-core/Cargo.toml")) {
@@ -137,20 +119,13 @@ fn nfr_05_no_new_runtime_crates() {
         "libc",
         "ratatui",
         "crossterm",
-        // `horch self-update` (operator decision, 2026-10-20): the release
-        // lookup and download, the digest check, and the archive formats.
         "ureq",
         "sha2",
         "flate2",
         "tar",
         "zip",
-        // Same crate and version as horch-core (ADR 0001). The direct
-        // dependency replaces a re-export that arc_25 forbids (ticket 36).
         "rusqlite",
-        // The workspace leaf crate of fleetd Phase P (docs/specs/fleetd/design.md).
         "horch-platform",
-        // The workspace crate of `horch docs sync` and the `docs_sync` job
-        // (fleetd-p7 ticket 22). horch-core has no HTTP crate (NFR-06).
         "agent-docs-sync",
     ];
     for d in deps(&repo().join("crates/horch/Cargo.toml")) {
@@ -158,8 +133,6 @@ fn nfr_05_no_new_runtime_crates() {
     }
 }
 
-/// Every dependency name in every table of a Cargo.toml: normal, dev,
-/// build, target-specific and `[workspace.dependencies]`.
 fn all_deps(manifest: &Path) -> Vec<String> {
     let text = std::fs::read_to_string(manifest).unwrap();
     let mut out = Vec::new();
@@ -179,8 +152,6 @@ fn all_deps(manifest: &Path) -> Vec<String> {
     out
 }
 
-/// The root Cargo.toml and every `crates/*/Cargo.toml`, with the crate's
-/// directory name (`""` for the root).
 fn workspace_manifests() -> Vec<(String, std::path::PathBuf)> {
     let mut out = vec![(String::new(), repo().join("Cargo.toml"))];
     for entry in std::fs::read_dir(repo().join("crates")).unwrap().flatten() {
@@ -192,7 +163,6 @@ fn workspace_manifests() -> Vec<(String, std::path::PathBuf)> {
     out
 }
 
-/// Fails if any workspace Cargo.toml outside `exempt` names one of `banned`.
 fn assert_no_workspace_dep(banned: &[&str], exempt: &[&str], why: &str) {
     for (krate, manifest) in workspace_manifests() {
         if exempt.contains(&krate.as_str()) {
@@ -208,11 +178,6 @@ fn assert_no_workspace_dep(banned: &[&str], exempt: &[&str], why: &str) {
     }
 }
 
-/// NFR-06 (OD6): horch-marketplace stays on its allowed list, and horch-core
-/// and horch-marketplace take no HTTP client. herdr-install and
-/// agent-docs-sync are the standalone download tools; they used ureq before
-/// this rule. horch takes ureq for `horch self-update` (operator decision,
-/// 2026-10-20).
 #[test]
 fn nfr_06_dependency_allowlist() {
     let manifest = repo().join("crates/horch-marketplace/Cargo.toml");
@@ -224,7 +189,6 @@ fn nfr_06_dependency_allowlist() {
             "serde_yaml",
             "sha2",
             "thiserror",
-            // The workspace leaf crate of fleetd Phase P (docs/specs/fleetd/design.md).
             "horch-platform",
         ];
         for d in deps(&manifest) {
@@ -236,39 +200,25 @@ fn nfr_06_dependency_allowlist() {
     }
     assert_no_workspace_dep(
         &["reqwest", "ureq", "hyper", "isahc", "attohttpc", "curl"],
-        // horch: `horch self-update` (operator decision, 2026-10-20).
         &["herdr-install", "agent-docs-sync", "horch"],
         "NFR-06: no HTTP crate",
     );
 }
 
-/// NFR-09: everything is synchronous; no async runtime and no database crate.
 #[test]
 fn nfr_09_no_async_runtime_deps() {
     assert_no_workspace_dep(
-        &[
-            "tokio",
-            "async-std",
-            "smol",
-            "futures",
-            // rusqlite is allowed for the task ledger (operator decision,
-            // 2026-10-27, docs/adr/0001); it is synchronous.
-            "sqlx",
-            "diesel",
-        ],
+        &["tokio", "async-std", "smol", "futures", "sqlx", "diesel"],
         &[],
         "NFR-09: sync only",
     );
 }
 
-/// NFR-11: randomized tests use the in-repo PRNG, not a property-test crate.
 #[test]
 fn nfr_11_no_proptest() {
     assert_no_workspace_dep(&["proptest", "quickcheck"], &[], "NFR-11: in-repo PRNG");
 }
 
-/// NFR-08: `just gate` (scripts/phase-gate.sh) runs every check of the
-/// master plan's section 5, in order.
 #[test]
 fn nfr_08_phase_gate_runs_every_check() {
     let gate = std::fs::read_to_string(repo().join("scripts/phase-gate.sh")).unwrap();
@@ -297,9 +247,6 @@ fn nfr_08_phase_gate_runs_every_check() {
     assert!(gate.contains("set -euo pipefail"));
 }
 
-/// Run the gate's `no_spec_todo` function, copied out of
-/// scripts/phase-gate.sh, in a scratch repository that tracks `files`.
-/// `None` when git is not on PATH (unless `HORCH_REQUIRE_GIT=1`).
 fn marker_scan(files: &[(&str, &str)]) -> Option<(bool, String)> {
     let found = std::env::var_os("PATH").and_then(|path| {
         std::env::split_paths(&path)
@@ -351,8 +298,6 @@ fn marker_scan(files: &[(&str, &str)]) -> Option<(bool, String)> {
     ))
 }
 
-/// U-07, NFR-08: the marker scan fails on a Markdown line that starts with
-/// a pending placeholder and on the spec-todo token in any tracked file.
 #[test]
 fn nfr_08_marker_scan_fails_on_each_marker() {
     let pending = concat!("PEND", "ING:");
@@ -370,8 +315,6 @@ fn nfr_08_marker_scan_fails_on_each_marker() {
     assert!(!ok && err.contains("src/lib.rs:1:"), "{err}");
 }
 
-/// U-07: prose that names the pending marker inside a line, lower-case
-/// "pending", and the token at a line start outside Markdown pass the scan.
 #[test]
 fn nfr_08_marker_scan_passes_legit_prose() {
     let pending = concat!("PEND", "ING:");
@@ -384,8 +327,6 @@ fn nfr_08_marker_scan_passes_legit_prose() {
     assert!(ok, "{err}");
 }
 
-/// The NFR-02 corpus: `sessions` live Claude sessions of about
-/// `bytes_per_file` bytes each, and one ledger that names them all.
 fn perf_corpus(w: &World, sessions: usize, bytes_per_file: u64) {
     let template =
         std::fs::read_to_string(fixtures().join(format!("claude/-work-alpha/{A2}.jsonl"))).unwrap();
@@ -423,12 +364,6 @@ fn perf_corpus(w: &World, sessions: usize, bytes_per_file: u64) {
     .unwrap();
 }
 
-/// NFR-02: a steady-state tick over 50 live sessions under 200 ms, and a cold
-/// start under 30 s. Generates a corpus of `HORCH_PERF_MB` (default 1024) MB.
-/// `HORCH_PERF_BATCH` sets the collector's batch (default [`BATCH`]).
-/// Run with `just verify-perf`.
-///
-/// [`BATCH`]: horch_core::telemetry::collect::BATCH
 #[test]
 #[ignore]
 fn nfr_02_tick_budget() {
@@ -463,14 +398,9 @@ fn nfr_02_tick_budget() {
     assert!(warm.as_millis() < 200, "steady tick {warm:?}");
 }
 
-/// NFR-02 guard for the debug gate, without a clock: a steady tick makes no
-/// allocation per stored event. `nfr_02_tick_budget` runs in release only.
-/// The snapshot once built its 18 rollups (3 windows by 6 groups) with 2
-/// `String`s per event each, and the 1 GB steady tick took 1.6 s.
 #[test]
 fn nfr_02_steady_tick_allocates_nothing_per_event() {
     let now = horch_core::clock::parse("2026-09-28T18:00:00Z").unwrap();
-    // (stored events, allocations in the second tick)
     let steady = |bytes_per_file: u64| {
         let w = world(Part::Whole);
         perf_corpus(&w, 5, bytes_per_file);
@@ -495,13 +425,9 @@ fn nfr_02_steady_tick_allocates_nothing_per_event() {
     );
 }
 
-/// NFR-02 RSS guard for the debug gate: what the collector keeps per stored
-/// event. It kept every `Event` (872 B each on the operator's store of
-/// 111,840 events, 93 MiB) until W15; it keeps about 200 B now.
 #[test]
 fn nfr_02_the_store_keeps_little_per_event() {
     let now = horch_core::clock::parse("2026-09-28T18:00:00Z").unwrap();
-    // (stored events, bytes the reopened collector holds)
     let held = |bytes_per_file: u64| {
         let w = world(Part::Whole);
         perf_corpus(&w, 5, bytes_per_file);
@@ -523,9 +449,6 @@ fn nfr_02_the_store_keeps_little_per_event() {
     );
 }
 
-/// The events stored under `state`, each as its JSON line with the world's
-/// root as `<root>`, sorted, and how many lines the event files hold (an
-/// event stored twice adds a line).
 fn stored(state: &Path) -> (Vec<String>, usize) {
     let dir = horch_core::telemetry::dir(state);
     let root = state.parent().unwrap().to_string_lossy().into_owned();
@@ -543,11 +466,6 @@ fn stored(state: &Path) -> (Vec<String>, usize) {
     (events, lines)
 }
 
-/// NFR-02, L7: a first read goes in batches. A cold tick held every new
-/// event of the corpus (1.5 million, 3.4 GB peak RSS, on the 1 GB corpus)
-/// until W18; it holds at most one batch now. A crash after the first
-/// batch's append, before its cursor save, resumes with no event lost and
-/// none stored twice.
 #[test]
 fn nfr_02_a_cold_read_holds_one_batch() {
     const BATCH: usize = 256;
@@ -558,7 +476,6 @@ fn nfr_02_a_cold_read_holds_one_batch() {
         c
     };
 
-    // The reference: one read with no bound.
     let whole = world(Part::Whole);
     perf_corpus(&whole, 5, 400_000);
     let mut c = open(&whole, usize::MAX);
@@ -600,7 +517,6 @@ fn nfr_02_a_cold_read_holds_one_batch() {
     assert_eq!(got.1, want.1, "an event stored twice");
 }
 
-/// This process's resident set size in MiB, from `ps`.
 fn rss_mib() -> f64 {
     let out = std::process::Command::new("ps")
         .args(["-o", "rss=", "-p", &std::process::id().to_string()])
@@ -613,14 +529,12 @@ fn rss_mib() -> f64 {
     kib / 1024.0
 }
 
-/// This process's peak resident set size in MiB (`getrusage`).
 #[cfg(unix)]
 fn max_rss_mib() -> f64 {
     // SAFETY: an all-zero `rusage` is valid, and `u` is a valid out pointer.
     let mut u: libc::rusage = unsafe { std::mem::zeroed() };
     // SAFETY: `u` is the zeroed `rusage` above, a valid out pointer for the call.
     unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut u) };
-    // Bytes on macOS, KiB on Linux.
     let div = if cfg!(target_os = "macos") {
         1048576.0
     } else {
@@ -634,8 +548,6 @@ fn max_rss_mib() -> f64 {
     0.0
 }
 
-/// This thread's CPU time: other load on the host barely moves it, where it
-/// moves the wall clock a lot.
 #[cfg(unix)]
 fn thread_cpu() -> std::time::Duration {
     let mut t = libc::timespec {
@@ -652,7 +564,6 @@ fn thread_cpu() -> std::time::Duration {
     std::time::Duration::ZERO
 }
 
-/// `HORCH_PERF_TICKS`, default 8.
 fn perf_ticks() -> u32 {
     std::env::var("HORCH_PERF_TICKS")
         .ok()
@@ -660,10 +571,6 @@ fn perf_ticks() -> u32 {
         .unwrap_or(8)
 }
 
-/// NFR-02 on a real store: the collector's RSS and steady tick over a COPY of
-/// a state root (`HORCH_PERF_STATE`; ticks write into it) and the real
-/// transcripts under `$HOME`. Run: `HORCH_PERF_STATE=<copy> cargo test --release
-/// -p horch-core --test nfr -- --ignored --nocapture nfr_02_live_store_rss`.
 #[test]
 #[ignore]
 fn nfr_02_live_store_rss() {
@@ -678,8 +585,6 @@ fn nfr_02_live_store_rss() {
     let now = horch_core::clock::now();
     let live = || LIVE.with(Cell::get);
     let mib = |b: i64| b as f64 / 1048576.0;
-    // The parts of an open and a first tick, each alone: what it holds after
-    // and its peak above the bytes held before it.
     let part = |name: &str, f: &mut dyn FnMut()| {
         let base = peak_reset();
         f();
@@ -690,8 +595,6 @@ fn nfr_02_live_store_rss() {
         );
     };
     let tel = horch_core::telemetry::dir(Path::new(&state));
-    // `HORCH_PERF_PARTS=1`: each part alone, then stop. The parts are
-    // leaked, so a collector after them would show their RSS too.
     if std::env::var_os("HORCH_PERF_PARTS").is_some() {
         part("store", &mut || {
             let s = horch_core::telemetry::store::Store::open(&tel, now, 35).unwrap();
@@ -750,7 +653,6 @@ fn nfr_02_live_store_rss() {
         }
     }
     eprintln!("steady tick, worst after the first: {worst:?}");
-    // The median of each phase over the steady ticks, and the bytes they wrote.
     let median = |mut v: Vec<f64>| {
         v.sort_by(f64::total_cmp);
         v.get(v.len() / 2).copied().unwrap_or(0.0)

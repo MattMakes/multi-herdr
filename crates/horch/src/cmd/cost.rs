@@ -1,22 +1,3 @@
-//! `horch cost` - what a fleet run cost, per worker, read from transcripts.
-//!
-//! Informational: spend telemetry to see where tokens go; not an input to
-//! routing, model or teammate choice. No field of a report recommends
-//! anything.
-//!
-//! Every worker in the project's ledger is priced from its own harness's
-//! transcript (see `horch_core::usage`). Sessions that cannot be priced - no
-//! session id, no transcript, an unread harness, an unknown model - are listed
-//! separately and never folded into a total as zero.
-//!
-//! With no filter the command writes 3 window reports (30d, 7d, 24h, ending
-//! now). A window counts each call by its own time, so a session that
-//! started before the window shows only its calls inside it.
-//!
-//! The same pass audits skills: which skills each worker actually loaded,
-//! and which of the skills its teammate file says it is expected to use it
-//! never touched.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -38,22 +19,15 @@ mod tables;
 pub use render::render;
 pub use tables::{SkillUse, Tables};
 
-/// The windows a run with no filter reports, newest last in the files' order.
 pub const WINDOWS: [(&str, i64); 3] = [("30d", 30 * 24), ("7d", 7 * 24), ("24h", 24)];
 
 pub struct CostArgs {
-    /// Human tables instead of JSON.
     pub text: bool,
-    /// Where report files go.
     pub dir: Option<String>,
     pub reprice: Option<String>,
     pub pricing: Option<String>,
-    /// Only calls at or after this time (RFC 3339, or a date at midnight UTC).
     pub since: Option<String>,
-    /// Only these records (record or session ids).
     pub records: Vec<String>,
-    /// Extra sessions outside the ledger, as `<agent>:<session-id>` - the
-    /// orchestrator's own claude session, say.
     pub sessions: Vec<String>,
 }
 
@@ -68,7 +42,6 @@ pub struct Row {
     pub record_id: String,
     pub teammate: String,
     pub role: String,
-    /// `worker` or `orchestrator`.
     pub kind: String,
     pub agent: String,
     pub model: String,
@@ -76,12 +49,8 @@ pub struct Row {
     pub family: String,
     pub calls: u64,
     pub tokens: Tokens,
-    /// Dollars for the models the price table knows.
     pub cost: f64,
-    /// What the same tokens would cost on `--reprice`'s model.
     pub reprice_cost: Option<f64>,
-    /// Models in the transcript the price table does not know. Their tokens
-    /// are counted but not priced.
     pub unpriced_models: Vec<String>,
     pub transcript: Option<PathBuf>,
     pub skills_used: BTreeMap<String, u64>,
@@ -105,16 +74,13 @@ pub struct Rollup {
     pub reprice_cost: Option<f64>,
 }
 
-/// The time range a report covers. `start` is absent for an open start.
 #[derive(Debug, Clone, Serialize)]
 pub struct Window {
-    /// `30d`, `7d`, `24h`, or `custom` for a filtered run.
     pub name: String,
     pub start: Option<String>,
     pub end: Option<String>,
 }
 
-/// A priced session whose transcript also names a model with no price.
 #[derive(Debug, Serialize)]
 pub struct PartlyPriced {
     pub record_id: String,
@@ -134,10 +100,7 @@ pub struct Report {
     pub by_harness: BTreeMap<String, Rollup>,
     pub by_family: BTreeMap<String, Rollup>,
     pub total: Rollup,
-    /// Per tier (workers only), the orchestrator, and per teammate, with
-    /// means per session: the tables of `ai_docs/reports/wave2/baseline.md`.
     pub tables: Tables,
-    /// Per teammate: how many sessions loaded each expected skill.
     pub skill_use: Vec<SkillUse>,
     pub partly_priced: Vec<PartlyPriced>,
 }
@@ -164,14 +127,10 @@ pub fn cost(ctx: &RuntimeContext, args: CostArgs) -> Result<()> {
     Ok(())
 }
 
-/// The `Ledger:` value of a report: the task ledger file that holds the
-/// session records.
 fn ledger_label(store: &ExecutionStore) -> String {
     format!("{} (task ledger session records)", store.db().display())
 }
 
-/// What `horch cost` prints, after it wrote its files. `now` ends the
-/// windows; its local time names the files.
 pub fn run(
     args: &CostArgs,
     records: Vec<Record>,
@@ -203,7 +162,6 @@ pub fn run(
     }
 }
 
-/// `--since` as a ledger timestamp.
 fn parse_since(since: Option<&str>) -> Result<Option<String>> {
     since
         .map(|s| {
@@ -214,7 +172,6 @@ fn parse_since(since: Option<&str>) -> Result<Option<String>> {
         .transpose()
 }
 
-/// `--reprice` when the price table knows the model.
 fn checked_reprice<'a>(
     prices: &BTreeMap<String, Price>,
     model: Option<&'a str>,
@@ -232,7 +189,6 @@ fn checked_reprice<'a>(
         .transpose()
 }
 
-/// The ledger records the flags name, plus every `--session` record.
 fn select_records(args: &CostArgs, mut records: Vec<Record>) -> Result<Vec<Record>> {
     if !args.records.is_empty() {
         records.retain(|r| {
@@ -250,7 +206,6 @@ fn select_records(args: &CostArgs, mut records: Vec<Record>) -> Result<Vec<Recor
     Ok(records)
 }
 
-/// A session outside the ledger, named by `--session`.
 fn extra_record(agent: &str, id: &str) -> Record {
     Record {
         record_id: format!("extra:{id}"),
@@ -270,7 +225,6 @@ fn extra_record(agent: &str, id: &str) -> Record {
     }
 }
 
-/// What every report of one run shares.
 struct Reports<'a> {
     args: &'a CostArgs,
     read: &'a [(&'a Record, std::result::Result<Session, Missing>)],
@@ -285,7 +239,6 @@ impl Reports<'_> {
         report(self.read, self.roster, self.prices, self.reprice, window)
     }
 
-    /// One report for the filtered range, as JSON or text.
     fn filtered(&self, since: Option<String>, prefix: &str) -> Result<String> {
         let window = Window {
             name: "custom".into(),
@@ -306,7 +259,6 @@ impl Reports<'_> {
         }
     }
 
-    /// One report file per window, then the text of all or the summary.
     fn windows(&self, now: DateTime<Utc>, prefix: &str, project: &Path) -> Result<String> {
         let dir = self
             .args
@@ -353,11 +305,8 @@ impl Reports<'_> {
 
 const PRICES_AS_OF: &str = "2026-09-24";
 
-/// What a run with no filter prints: where the 3 files are and each
-/// window's totals.
 #[derive(Debug, Serialize)]
 pub struct Summary {
-    /// Local time with its offset.
     pub generated_at: String,
     pub project: PathBuf,
     pub prices_as_of: &'static str,
@@ -373,7 +322,6 @@ pub struct WindowTotals {
     pub calls: u64,
     pub tokens: Tokens,
     pub cost: f64,
-    /// Sessions not priced at all, plus priced ones with an unpriced model.
     pub unpriced_sessions: u64,
 }
 
@@ -403,7 +351,6 @@ fn known(prices: &BTreeMap<String, Price>) -> String {
     prices.keys().cloned().collect::<Vec<_>>().join(", ")
 }
 
-/// The role family a phase belongs to, as cezaar#40 groups spend.
 fn family(phase: Option<Phase>, role: &str) -> String {
     match phase {
         _ if role == "extra" => "extra",
@@ -416,9 +363,6 @@ fn family(phase: Option<Phase>, role: &str) -> String {
     .to_string()
 }
 
-/// The skills a teammate is expected to use, as the transcripts name them:
-/// bundled and operator ones bare (`tdd`), plugin ones qualified
-/// (`code:review`).
 fn expected_skills(roster: Option<&Roster>, teammate: &str) -> Vec<String> {
     let Some(t) = roster.and_then(|r| r.get(teammate)) else {
         return Vec::new();
@@ -431,7 +375,6 @@ fn expected_skills(roster: Option<&Roster>, teammate: &str) -> Vec<String> {
     out
 }
 
-/// Every record with its session read once, or why it could not be read.
 pub fn read_all<'a>(
     records: &'a [Record],
     loc: &Locations,
@@ -447,7 +390,6 @@ pub fn read_all<'a>(
         .collect()
 }
 
-/// The whole-history report of `records`: every call, whenever it was made.
 #[cfg(test)]
 pub fn build(
     records: &[Record],
@@ -464,9 +406,6 @@ pub fn build(
     report(&read_all(records, loc), roster, prices, reprice, window)
 }
 
-/// Whether an unreadable record may have run inside `span`: its ledger
-/// life (created to last updated) overlaps it. A record with no times (a
-/// `--session` extra) always may.
 fn may_overlap(r: &Record, span: &Span) -> bool {
     if r.created_at.is_empty() {
         return true;
@@ -479,8 +418,6 @@ fn may_overlap(r: &Record, span: &Span) -> bool {
             .is_none_or(|u| r.created_at.as_str() < u)
 }
 
-/// The report of the calls inside `window`. With a bounded window, a
-/// session appears only when it has a call inside it, with only those calls.
 pub fn report(
     read: &[(&Record, std::result::Result<Session, Missing>)],
     roster: Option<&Roster>,
@@ -543,7 +480,6 @@ pub fn report(
     report
 }
 
-/// The records whose transcript could not be read but may have run in `span`.
 fn not_priced(
     read: &[(&Record, std::result::Result<Session, Missing>)],
     span: &Span,
@@ -560,8 +496,6 @@ fn not_priced(
         .collect()
 }
 
-/// A transcript that never names its model is priced as the model the
-/// ledger launched.
 fn model_or<'a>(model: &'a str, launched: &'a str) -> &'a str {
     if model.is_empty() {
         launched
@@ -570,7 +504,6 @@ fn model_or<'a>(model: &'a str, launched: &'a str) -> &'a str {
     }
 }
 
-/// The cost of `used`, and the models the price table does not know.
 fn price(
     prices: &BTreeMap<String, Price>,
     used: &usage::Usage,
@@ -588,7 +521,6 @@ fn price(
     (cost, unpriced)
 }
 
-/// The skills `used` loaded, with the `horch:` plugin prefix dropped.
 fn skills_loaded(used: &usage::Usage) -> BTreeMap<String, u64> {
     used.skills
         .iter()
@@ -596,7 +528,6 @@ fn skills_loaded(used: &usage::Usage) -> BTreeMap<String, u64> {
         .collect()
 }
 
-/// The distinct models of `used`, sorted and comma-separated.
 fn models_text(used: &usage::Usage, launched: &str) -> String {
     let models: BTreeSet<&str> = used
         .by_model
@@ -607,7 +538,6 @@ fn models_text(used: &usage::Usage, launched: &str) -> String {
 }
 
 impl Report {
-    /// Fold `row` into the rollups, then keep it.
     fn add_row(&mut self, row: Row) {
         for (map, key) in [
             (&mut self.by_teammate, row.teammate.clone()),
@@ -668,8 +598,6 @@ mod tests {
         }
     }
 
-    /// Priced rows roll up per family and harness; everything that cannot be
-    /// priced is listed with its reason, and never counted as $0.
     #[test]
     fn a_run_is_priced_per_worker_and_the_rest_is_listed_not_zeroed() {
         let tmp = tempfile::tempdir().unwrap();
@@ -749,9 +677,6 @@ mod tests {
         assert!((report.total.cost - sum).abs() < 1e-12);
         assert!(report.total.reprice_cost.is_some());
 
-        // The expected skills come from the roster that `build` read, so a
-        // roster edit does not break this test. The transcript loaded tdd
-        // only, so every other expected skill is reported unused.
         let backend = &report.rows[0];
         assert_eq!(backend.skills_used.get("tdd"), Some(&1));
         let backend_unused: Vec<String> = expected_skills(Some(&roster), "backend-developer")
@@ -760,7 +685,6 @@ mod tests {
             .collect();
         assert!(backend_unused.contains(&"security-review".to_string()));
         assert_eq!(backend.expected_unused, backend_unused);
-        // The codex transcript loaded code-review and never security-review.
         let reviewer = &report.rows[1];
         let reviewer_unused: Vec<String> = expected_skills(Some(&roster), "codex-reviewer")
             .into_iter()
@@ -801,12 +725,6 @@ mod tests {
         .to_string()
     }
 
-    /// A home with 2 Claude sessions, and their ledger records:
-    /// - `w1`, a worker that started 40 days before NOW (its ledger record
-    ///   last updated 2 hours ago), with calls at -40d,
-    ///   -10d, -3d and -2h, and a skill load at -40d and at -2h;
-    /// - `o1`, the orchestrator, with 1 call at -1h;
-    /// - `gone`, a worker with no session id, last updated 20 days ago.
     fn fleet(root: &Path) -> (Locations, Vec<Record>) {
         let home = root.join("home");
         let dir = home.join(".claude/projects/-p");
@@ -891,11 +809,6 @@ mod tests {
         serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
     }
 
-    /// No filter: 3 files named `<local prefix>_30d.json`, `_7d.json` and
-    /// `_24h.json` under `<project>/ai_docs/reports/cost`, and a JSON
-    /// summary on stdout. Each window counts calls by their own time: the
-    /// worker that started 40 days ago is in the 24h report with only its
-    /// last call.
     #[test]
     fn tel_13_no_filter_writes_3_window_files_that_count_calls_by_their_own_time() {
         let tmp = tempfile::tempdir().unwrap();
@@ -919,7 +832,6 @@ mod tests {
         );
         assert!(!generated.ends_with('Z') || Local::now().offset().local_minus_utc() == 0);
 
-        // Calls per window: 24h = a4 + b1, 7d = a3 + a4 + b1, 30d = a2..a4 + b1.
         for (name, calls, sessions) in [("24h", 2, 2), ("7d", 3, 2), ("30d", 4, 2)] {
             let w = &summary["windows"][name];
             assert_eq!(w["calls"], calls, "{name}");
@@ -942,16 +854,11 @@ mod tests {
         assert_eq!(w1["calls"], 1);
         assert_eq!(w1["tokens"]["output"], 400);
         assert_eq!(w1["skills_used"], serde_json::json!({"check": 1}));
-        // The worker with no session id last ran 20 days ago: listed in the
-        // 30d report, not in the 24h one.
         assert_eq!(day["not_priced"].as_array().unwrap().len(), 0);
         let month = read_json(&dir.join(format!("{}_30d.json", prefix())));
         assert_eq!(month["not_priced"][0]["record_id"], "gone");
         assert_eq!(summary["windows"]["30d"]["unpriced_sessions"], 1);
 
-        // The tables: tier (workers only) with an `all` line, the
-        // orchestrator apart, per teammate with every session; means per
-        // session.
         let tiers = day["tables"]["tiers"].as_array().unwrap();
         assert_eq!(tiers.len(), 2);
         assert_eq!(tiers[0]["key"], "claude claude-opus-5-5 medium");
@@ -985,7 +892,6 @@ mod tests {
         assert!(day["skill_use"].is_array());
     }
 
-    /// Every key in a report and in the summary, at any depth.
     fn keys(v: &serde_json::Value, out: &mut Vec<String>) {
         match v {
             serde_json::Value::Object(m) => {
@@ -999,8 +905,6 @@ mod tests {
         }
     }
 
-    /// The reports are informational: no field names a recommendation, a
-    /// ranking or a choice, and the text says what the numbers are for.
     #[test]
     fn tel_15_no_report_field_recommends_anything() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1041,8 +945,6 @@ mod tests {
         );
     }
 
-    /// `--text` prints the tables of each window and still writes the
-    /// files; `--dir` moves them.
     #[test]
     fn tel_12_text_prints_the_tables_and_dir_moves_the_files() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1082,15 +984,11 @@ mod tests {
             out.contains("| backend-developer | 1 | 1 | 2 | 400 | 1,000 | 50 | $"),
             "{out}"
         );
-        // tdd was loaded 40 days ago, outside every window; check 2 hours ago.
         assert!(out.contains("tdd 0/1"), "{out}");
         assert!(!out.contains("tdd 1/1"), "{out}");
         assert!(out.contains("check 1/1"), "{out}");
     }
 
-    /// A filter makes 1 ad-hoc report on stdout, the full JSON by default,
-    /// and no file unless `--dir` is given. `--since` counts calls by their
-    /// own time too.
     #[test]
     fn tel_14_a_filter_prints_one_report_and_writes_only_with_dir() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1131,8 +1029,6 @@ mod tests {
         assert!(err.to_string().contains("--since"), "{err}");
     }
 
-    /// Each bad flag stops the run with its own message, and `--session`
-    /// adds a record outside the ledger.
     #[test]
     fn the_flags_fail_with_their_messages_and_session_adds_a_record() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1184,9 +1080,6 @@ mod tests {
         assert_eq!(r["not_priced"][0]["agent"], "claude");
     }
 
-    /// TEL-10 per window: the collector's stored events in the 24h span,
-    /// summed per record, equal the 24h report's rows, class by class and
-    /// cost to 1e-6 USD.
     #[test]
     fn tel_10_a_window_equals_horch_usage_over_the_same_range() {
         use horch_core::telemetry::collect::{Collector, Probing};
@@ -1232,8 +1125,6 @@ mod tests {
         }
     }
 
-    /// TRF-45: the `Ledger:` value of a cost report is the task ledger file
-    /// that holds the session records, not the retired JSON session ledger.
     #[test]
     fn trf_45_cost_ledger_label_names_the_task_ledger() {
         let tmp = tempfile::tempdir().unwrap();

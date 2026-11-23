@@ -1,44 +1,14 @@
-//! The capped waits of a task (FM-3; `docs/tickets/fleetd-p2/MAP.md`, Q23).
-//!
-//! Facts in, 1 verdict out. No I/O. A declared wait of an interactive
-//! persona counts as activity only while something live is behind it, and
-//! at most `max_wait_s` on the fleet clock after the last read that saw a
-//! proof of work:
-//! - a question wait: its `questions` row is `open`;
-//! - a reviewers wait: 1 of its review tasks is live;
-//! - a background wait: a child of the agent, a running finish step, or a
-//!   live review task of the task.
-//!
-//! Only an interactive attempt declares a background wait. An exec
-//! attempt has none: its process runs until it exits, and the wrapper sees
-//! the exit (`docs/tickets/fleetd-p7/MAP.md`, Q3; `Mode::has_background_wait`).
-//!
-//! A read that sees a proof moves `due_at` to the fleet clock plus
-//! `max_wait_s`. With no proof, the wait ends at `due_at`. A background
-//! wait whose agent child is gone, with no other proof, ends at once
-//! (MAP.md, Q23). A question wait
-//! and a held reviewers wait have no proof: each ends at its first
-//! `due_at`.
-
-/// The child process fact of a background wait: a member of the process
-/// group of the agent, other than the agent itself.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Child {
     Alive,
     Gone,
-    /// The platform cannot tell (Windows has no process groups). An
-    /// unknown fact is no proof, and ends no wait before its cap.
     Unknown,
 }
 
-/// The proof of work behind a background wait, as the read saw it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Proof {
     pub child: Child,
-    /// A finish step of the task of the worker is `running`.
     pub step_running: bool,
-    /// A review task of the task of the worker is `ready`, `leased` or
-    /// `running`.
     pub review_live: bool,
 }
 
@@ -47,67 +17,42 @@ impl Proof {
         self.child == Child::Alive || self.step_running || self.review_live
     }
 
-    /// The child of the agent is gone, and no other proof holds the wait:
-    /// the wait ends at once. An unknown child keeps the wait to its cap.
     fn child_gone_alone(self) -> bool {
         self.child == Child::Gone && !self.step_running && !self.review_live
     }
 }
 
-/// What is behind 1 wait.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Behind {
-    /// A question wait. `open`: its `questions` row is `open`.
     Question { open: bool },
-    /// A reviewers wait with review task ids. `working`: 1 of them is
-    /// `ready`, `leased` or `running`, a proof of work. `ended`: each of
-    /// them is `done` or `cancelled`. A review in another state (`failed`,
-    /// `waiting_quota`) holds the wait only to its cap.
     Reviews { working: bool, ended: bool },
-    /// A reviewers wait with no task ids: the reviews are in, and the
-    /// author has yet to run `horch ledger finish` (#177).
     HeldForFinish,
-    /// A background wait: a long command or a detached finish.
     Background(Proof),
 }
 
-/// 1 wait, as the read saw it. Each time is on the fleet clock.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Wait {
     pub behind: Behind,
-    /// `worker_waits.due_at`.
     pub due_at: i64,
-    /// The calendar `deadline` of the wait has passed.
     pub deadline_passed: bool,
 }
 
-/// The facts of the read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Facts {
-    /// The fleet clock of the read.
     pub clock: i64,
-    /// `liveness.max_wait_s` of the profile of the worker.
     pub max_wait_s: i64,
 }
 
-/// Why a wait ends: the cause of its `wait_ended` event.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum End {
-    /// The fleet clock reached `due_at`.
     MaxWaitReached,
-    /// The `questions` row is no longer `open`.
     QuestionClosed,
-    /// Each review task of the wait has ended.
     ReviewsDone,
-    /// The calendar `deadline` of the wait passed first.
     DeadlinePassed,
-    /// The child process of the agent behind a background wait is gone,
-    /// and no other proof of work holds it (MAP.md, Q23).
     ChildGone,
 }
 
 impl End {
-    /// The cause word.
     pub fn as_str(self) -> &'static str {
         match self {
             End::MaxWaitReached => "max_wait_reached",
@@ -119,17 +64,12 @@ impl End {
     }
 }
 
-/// The verdict on 1 wait.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Verdict {
-    /// The wait holds until `due_at`, which a proof can move later.
-    Holds {
-        due_at: i64,
-    },
+    Holds { due_at: i64 },
     Ends(End),
 }
 
-/// The verdict on `wait` at the read `facts`.
 pub fn judge(wait: &Wait, facts: &Facts) -> Verdict {
     if wait.deadline_passed {
         return Verdict::Ends(End::DeadlinePassed);
@@ -154,8 +94,6 @@ pub fn judge(wait: &Wait, facts: &Facts) -> Verdict {
     Verdict::Holds { due_at }
 }
 
-/// The fleet clock at which `wait` stops counting as activity, or `None`
-/// when it is not valid now. The stall ladder reads it.
 pub fn waiting_until(wait: &Wait, facts: &Facts) -> Option<i64> {
     match judge(wait, facts) {
         Verdict::Holds { due_at } => Some(due_at),

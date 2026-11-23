@@ -1,14 +1,3 @@
-//! The user PATH entry of the Windows install: the order of the entries.
-//!
-//! The registry write and the directory junctions are in the concerns `rest`
-//! and `path` of `horch_platform`. This string logic is compiled everywhere,
-//! so it is tested on each platform.
-
-/// Prepend `entry` to a PATH-style string, returning `None` when it is already
-/// first.
-///
-/// PATH order decides which `herdr` wins, so the managed directory goes first. An
-/// existing occurrence elsewhere in the list is removed rather than duplicated.
 pub fn prepend_path_entry(current: &str, entry: &str) -> Option<String> {
     let normalize = |s: &str| s.trim().trim_end_matches('\\').to_ascii_lowercase();
     let target = normalize(entry);
@@ -22,7 +11,6 @@ pub fn prepend_path_entry(current: &str, entry: &str) -> Option<String> {
         .copied()
         .filter(|p| normalize(p) != target)
         .collect();
-    // A leading empty part means the entry is not first, so test the raw first part.
     let already_first = current
         .split(';')
         .next()
@@ -58,7 +46,6 @@ mod tests {
         );
     }
 
-    /// Case and trailing backslashes are insignificant on Windows.
     #[test]
     fn prepend_matches_case_insensitively_and_ignores_trailing_slashes() {
         assert_eq!(
@@ -67,7 +54,6 @@ mod tests {
         );
     }
 
-    /// An entry further down the list is moved to the front, not duplicated.
     #[test]
     fn prepend_moves_an_existing_entry_rather_than_duplicating_it() {
         let next = prepend_path_entry(r"C:\Windows;C:\herdr\bin", r"C:\herdr\bin").unwrap();
@@ -84,8 +70,6 @@ mod tests {
         );
     }
 
-    /// Only an entry at index 0 of the raw list counts as first: a leading empty
-    /// part pushes it to index 1, so the list is rewritten.
     #[test]
     fn prepend_rewrites_when_a_leading_empty_part_precedes_the_entry() {
         assert_eq!(
@@ -94,7 +78,6 @@ mod tests {
         );
     }
 
-    /// First is not enough: a later duplicate must still be removed.
     #[test]
     fn prepend_removes_a_later_duplicate_of_the_first_entry() {
         assert_eq!(
@@ -128,7 +111,6 @@ mod tests {
         assert_eq!(inspect_junction_target(&dir), JunctionAction::Replace);
     }
 
-    /// The user's own files must never be deleted to make room for a junction.
     #[test]
     fn inspecting_a_directory_with_files_says_refuse() {
         let tmp = tempfile::tempdir().unwrap();

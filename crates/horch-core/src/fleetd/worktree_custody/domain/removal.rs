@@ -1,62 +1,42 @@
-//! The guard of a worktree removal (RR-9, RR-13, FM-27). No I/O.
-//!
-//! `docs/specs/fleetd/design.md`, "Worktrees: leased, reconciled, never
-//! lost" (rows `landed`, `rescued`, `removed`) and "Rescue before any
-//! cleanup"; MAP.md of fleetd-p3, Q7. A tree may be removed only when its
-//! work is landed, or on a rescue ref that holds exactly the folder now;
-//! no stash entry names its branch; its HEAD did not move during the
-//! checks; and each fact was read.
-
 use std::path::{Path, PathBuf};
 
 use super::rescue;
 
-/// The quarantine folder of the rescued tree `id` at `tree`: a folder that
-/// fleetd owns, beside the tree, so a rename moves the tree there on the
-/// same file system. The job moves a rescued tree there before its last
-/// checks and its removal; a process that writes through the old path can
-/// no longer change it. A tree whose job ended between the move and the
-/// removal is in this folder, and the next run moves it back first.
 pub fn quarantine_path(tree: &Path, id: &str) -> PathBuf {
     let parent = tree.parent().unwrap_or(Path::new(""));
     parent.join(format!("{QUARANTINE_PREFIX}{id}"))
 }
 
-/// The start of the name of each quarantine folder.
 pub const QUARANTINE_PREFIX: &str = ".horch-removing-";
 
-/// The `kind` column of the needs-you item of a failed removal.
 pub const NEEDS_YOU_KIND: &str = "remove_failed";
 
-/// The key of the needs-you item of a failed removal of the worktree `id`.
 pub fn needs_you_key(id: &str) -> String {
     format!("{NEEDS_YOU_KIND}:{id}")
 }
 
-/// A fact that the executor read. `Err` holds why it could not be read.
+pub const OWNER_LIVE: &str = "a process of the owner attempt is live";
+
+pub const IN_THE_TREE: &str = "have their working folder in the tree";
+
+pub fn transient(reason: &str) -> bool {
+    reason.contains(OWNER_LIVE) || reason.contains(IN_THE_TREE)
+}
+
 pub type Fact<T> = Result<T, String>;
 
-/// Why a row may be removed at all: its state and the record of that
-/// state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Basis {
-    /// The row is `landed` at this commit.
     Landed { landed_commit: String },
-    /// The row is `rescued` on this rescue ref.
     Rescued { rescue_ref: String },
 }
 
 impl Basis {
-    /// Whether `git worktree remove` gets 1 `--force`. Only a rescued tree,
-    /// after the guard showed that its rescue ref holds exactly the folder.
-    /// Git refuses to remove a tree with a modified or untracked file
-    /// without it.
     pub fn force(&self) -> bool {
         matches!(self, Basis::Rescued { .. })
     }
 }
 
-/// `Ok` when a row in `state` may get a `worktree_remove` job.
 pub fn removable(id: &str, state: &str) -> Result<(), String> {
     match state {
         "landed" | "rescued" => Ok(()),
@@ -66,8 +46,6 @@ pub fn removable(id: &str, state: &str) -> Result<(), String> {
     }
 }
 
-/// The basis of the row `id` in `state`, with its landed commit and its
-/// rescue ref.
 pub fn basis(
     id: &str,
     state: &str,
@@ -97,42 +75,27 @@ pub fn basis(
         .ok_or_else(|| format!("worktree {id} is rescued but has no rescue ref of its own"))
 }
 
-/// Whether the line `entry` of `git stash list` names the branch `branch`:
-/// the rule of today's drop (`Git::stashes_on`).
 pub fn names_branch(entry: &str, branch: &str) -> bool {
     entry.contains(&format!("On {branch}:")) || entry.contains(&format!("WIP on {branch}:"))
 }
 
-/// The facts that show that the work of the tree is saved.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Saved {
-    /// The tree is `landed`.
     Landed {
         landed_commit: String,
-        /// `git status` lists a modified or untracked file.
         dirty: Fact<bool>,
     },
-    /// The tree is `rescued`.
     Rescued {
         rescue_ref: String,
-        /// The commit that the rescue ref names when it is read back.
         read_back: Fact<String>,
-        /// The tree of that commit.
         commit_tree: Fact<String>,
-        /// The parent of that commit.
         commit_parent: Fact<String>,
-        /// Whether a process of the owner attempt runs.
         owner_live: Fact<bool>,
-        /// The processes with their working folder in the tree.
         cwd_pids: Fact<Vec<u32>>,
-        /// The tree of a new private index of the folder on its HEAD, the
-        /// last snapshot before the removal.
         disk_tree: Fact<String>,
     },
 }
 
-/// What the ledger records of the tree and what the removal relies on: its
-/// state, its owner attempt and its rescue ref.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Record {
     pub state: String,
@@ -140,24 +103,14 @@ pub struct Record {
     pub rescue_ref: Option<String>,
 }
 
-/// Each fact of 1 removal, in the order that the executor reads them. The
-/// facts of [`Saved`] come after `ignored_files`; for a rescued tree the
-/// snapshot of the folder is the last of them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Facts {
-    /// The record of the row when the job started.
     pub record_before: Record,
-    /// The HEAD at the start of the checks.
     pub head_before: Fact<String>,
-    /// The lines of `git stash list` that name the branch of the tree.
     pub stashes: Fact<Vec<String>>,
-    /// The count of ignored files that the removal deletes.
     pub ignored_files: Fact<u64>,
     pub saved: Saved,
-    /// The HEAD at the end of the checks.
     pub head_after: Fact<String>,
-    /// The record of the row at the end of the checks, read again from the
-    /// ledger: an attempt that took the tree changes it.
     pub record_after: Fact<Record>,
 }
 
@@ -166,8 +119,6 @@ fn known<'a, T>(what: &str, fact: &'a Fact<T>) -> Result<&'a T, String> {
         .map_err(|e| format!("the fact {what} is unknown: {e}"))
 }
 
-/// `Ok` when the facts allow the removal; else the first reason that
-/// refuses it. A fact that could not be read refuses it.
 pub fn decide(f: &Facts) -> Result<(), String> {
     let head = known("the HEAD at the start of the checks", &f.head_before)?;
     let after = known("the HEAD at the end of the checks", &f.head_after)?;
@@ -222,14 +173,11 @@ pub fn decide(f: &Facts) -> Result<(), String> {
                 ));
             }
             if owner_live {
-                return Err("a process of the owner attempt is live".to_string());
+                return Err(OWNER_LIVE.to_string());
             }
             if !cwd_pids.is_empty() {
                 let pids: Vec<String> = cwd_pids.iter().map(u32::to_string).collect();
-                return Err(format!(
-                    "the processes {} have their working folder in the tree",
-                    pids.join(", ")
-                ));
+                return Err(format!("the processes {} {IN_THE_TREE}", pids.join(", ")));
             }
         }
     }
@@ -255,6 +203,24 @@ fn landed(head: &str, landed_commit: &str, dirty: bool) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_process_in_the_tree_is_a_refusal_that_can_go_away() {
+        assert!(transient(
+            "the processes 7, 9 have their working folder in the tree"
+        ));
+        assert!(transient(
+            "in quarantine, a process of the owner attempt is live"
+        ));
+        for reason in [
+            "the folder differs from the rescue ref refs/horch/rescue/a/1: a file changed after the rescue",
+            "the tree has a modified or untracked file",
+            "a stash entry names the branch: stash@{0}: On b: x",
+            "the HEAD moved during the checks: a -> b",
+        ] {
+            assert!(!transient(reason), "{reason}");
+        }
+    }
 
     fn ok<T>(v: T) -> Fact<T> {
         Ok(v)

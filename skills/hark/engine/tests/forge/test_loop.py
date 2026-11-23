@@ -26,8 +26,6 @@ def _quiet(*_a, **_k):
     return None
 
 
-# ---------------------------------------------------------------- family_box
-
 def test_L2_family_box_widths():
     rec = types.SimpleNamespace(SPACE=BOX_SPACE)
     b = loop.family_box(rec, {"f": 1000, "g": 0.5, "n": 3, "k": "x"}, 0.15)
@@ -50,8 +48,6 @@ def test_L3_family_box_edges_and_zero_width():
     assert set(out) == {"f"} and out["f"][1] <= 10000
 
 
-# ---------------------------------------------------------------- palette
-
 MEMBERS = [{"params": {"tau": 0.02}, "seed": 1, "family": "short"},
            {"params": {"tau": 0.08}, "seed": 2, "family": "mid"},
            {"params": {"tau": 0.2, "noise": 0.0}, "seed": 3, "family": "long"}]
@@ -63,7 +59,6 @@ def test_L4_palette_matches_loudness_and_peak(tiny, toy_critic):
     assert r["loudness"]["after"]["spread_lu"] < 0.5
     assert len(r["picks"]) == 3 and [p["family"] for p in r["picks"]] == ["short", "mid", "long"]
     peaks = [p["gain_db"] for p in r["picks"]]
-    # every render is at -1 dBFS before gain, so the loudest peak is -1 + max gain_db
     assert -1.0 + max(peaks) == pytest.approx(-1.0, abs=0.01)
 
 
@@ -84,8 +79,6 @@ def test_palette_drops_failed_member(tiny, toy_critic):
     assert len(r["picks"]) == 1 and r["picks"][0]["seed"] == 0
     assert any("1" in ln and "removed" in ln for ln in lines)
 
-
-# ---------------------------------------------------------------- forge
 
 @pytest.fixture
 def run(tiny, toy_critic, tmp_path):
@@ -161,8 +154,6 @@ def test_forge_bank_round_trip(tiny, toy_critic, tmp_path):
     assert r["n_bank"] >= 1
 
 
-# ---------------------------------------------------------------- families
-
 def test_L6_families_give_a_palette(tiny, toy_critic, tmp_path):
     fam = {"a": {"freq": 400.0, "tau": 0.03}, "b": {"init": {"freq": 1500.0}, "fixed": {"shape": "tri"}}}
     r = loop.forge(tiny, budget=16, pop=8, families=fam, critic=toy_critic(), out=tmp_path, log=_quiet,
@@ -179,8 +170,6 @@ def test_family_member_keeps_its_value_outside_the_box(tiny, toy_critic):
     r = loop.forge(tiny, budget=16, pop=8, families=fam, critic=toy_critic(), log=_quiet, outputs=False)
     assert r["picks"][0]["params"]["noise"] == 0.9
 
-
-# ---------------------------------------------------------------- audition
 
 def test_L7_audition_length_and_cues(tmp_path):
     x = np.sin(np.arange(4800) * 0.05)
@@ -200,8 +189,6 @@ def test_audition_empty_and_keep_levels(tmp_path):
     loop.audition(tmp_path / "k.wav", [("m", 0.1 * np.ones(480))], [], [None], keep_made_levels=True)
     assert np.max(np.abs(_wav(tmp_path / "k.wav"))) == pytest.approx(0.1, abs=1e-4)
 
-
-# ---------------------------------------------------------------- render_params
 
 def test_L9_render_params_matches_forge_picks(run, tiny, tmp_path):
     r, out = run
@@ -229,8 +216,6 @@ def test_render_params_plain_list_and_seeds(tiny, tmp_path):
     assert bad["files"][0]["file"] is None
 
 
-# ---------------------------------------------------------------- variant recipe
-
 def test_variant_recipe_and_block(tiny):
     v = loop.variant_recipe(tiny.render, [{**tiny.DEFAULTS, "freq": 300.0}, {**tiny.DEFAULTS, "freq": 900.0}],
                             names=["low", "high"], TARGET="t")
@@ -239,8 +224,6 @@ def test_variant_recipe_and_block(tiny):
     assert b["fn"] == "render" and b["params"]["freq"] == 900.0 and b["member"] == "high" and b["seed"] == 7
     assert loop.variant_recipe(lambda p, r: 0, [{}]).__name__ == __name__
 
-
-# ---------------------------------------------------------------- refs
 
 def _write_ref(path):
     sf.write(str(path), 0.1 * np.sin(np.arange(4800) * 0.1), SR)
@@ -262,8 +245,6 @@ def test_pick_refs_drops_held_out(tmp_path, monkeypatch):
     assert loop.resolve_refs(recipe=rec) is None
 
 
-# ---------------------------------------------------------------- report text
-
 def test_report_md_sections(run):
     r, _ = run
     md = loop.report_md(r)
@@ -279,8 +260,6 @@ def test_palette_md(tiny, toy_critic):
     assert md.startswith("# palette pings (forgetest_tiny)") and "## Critic words" in md
     assert r["summary"].startswith("palette pings: 3 members")
 
-
-# ---------------------------------------------------------------- CLI
 
 def _cli(argv):
     ap = argparse.ArgumentParser(prog="hark")
@@ -312,14 +291,11 @@ def test_cli_check_runs_schema(run):
 
 
 def test_cli_check_missing_folder_exits_1(tmp_path, capsys):
-    # T-41: a folder with no forge output is an error: exit 1 and 1 line on stderr
     missing = tmp_path / "nope"
     assert _cli(["--check", str(missing)]) == 1
     got = capsys.readouterr()
     assert got.out == "" and got.err == f"{missing}: no forge output folder (no report.json)\n"
 
-
-# ---------------------------------------------------------------- lazy entry module
 
 def test_hark_forge_lazy_names(tiny):
     import hark.forge as hf

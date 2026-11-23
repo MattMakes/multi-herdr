@@ -1,21 +1,9 @@
-//! The rescue of a worktree: its ref name, its verification and its
-//! needs-you item. No I/O.
-//!
-//! `docs/specs/fleetd/design.md`, "Rescue before any cleanup", RR-9 and
-//! RR-16; MAP.md of fleetd-p3, Q5 and Q6.
-
-/// The namespace of each rescue ref.
 pub const REF_PREFIX: &str = "refs/horch/rescue/";
 
-/// The `kind` column of the needs-you item of a failed rescue.
 pub const NEEDS_YOU_KIND: &str = "rescue_failed";
 
-/// The longest worktree id that names a rescue ref, in bytes.
 pub const MAX_ID_LEN: usize = 128;
 
-/// Whether `id` can name a rescue ref, a manifest and an index file: 1 to
-/// [`MAX_ID_LEN`] ASCII letters, digits, `.`, `_` and `-`, with no `..`, not starting
-/// with `.` or `-`, and not ending with `.lock`.
 pub fn valid_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= MAX_ID_LEN
@@ -27,19 +15,14 @@ pub fn valid_id(id: &str) -> bool {
         && !id.ends_with(".lock")
 }
 
-/// The folder of the rescue refs of the worktree `id`, with its last `/`.
 pub fn ref_folder(id: &str) -> String {
     format!("{REF_PREFIX}{id}/")
 }
 
-/// The rescue ref `n` of the worktree `id`.
 pub fn ref_name(id: &str, n: u64) -> String {
     format!("{}{n}", ref_folder(id))
 }
 
-/// The next `n` of the worktree `id`: 1 + the highest `n` of `refs`, the
-/// full names of the refs that exist. A name that is not a rescue ref of
-/// `id` with a number does not count.
 pub fn next_n(id: &str, refs: &[String]) -> u64 {
     let folder = ref_folder(id);
     refs.iter()
@@ -48,40 +31,26 @@ pub fn next_n(id: &str, refs: &[String]) -> u64 {
         .map_or(1, |n| n.saturating_add(1))
 }
 
-/// The message of the rescue commit of the worktree `id`.
 pub fn commit_message(id: &str, attempt: Option<&str>) -> String {
     format!("horch rescue {id} attempt {}", attempt.unwrap_or("none"))
 }
 
-/// The key of the needs-you item of a failed rescue of the worktree `id`.
 pub fn needs_you_key(id: &str) -> String {
     format!("{NEEDS_YOU_KIND}:{id}")
 }
 
-/// The facts that verify a rescue (step 4). A fact that git could not give
-/// is `None`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Facts {
-    /// The rescue commit.
     pub commit: String,
-    /// The tree of the private index of step 1.
     pub saved_tree: String,
-    /// The HEAD of the tree at step 1.
     pub head_before: String,
-    /// What the rescue ref names when it is read back.
     pub read_back: Option<String>,
-    /// The tree of the rescue commit.
     pub commit_tree: Option<String>,
-    /// The parent of the rescue commit.
     pub commit_parent: Option<String>,
-    /// The tree of a second new private index of the folder.
     pub disk_tree: Option<String>,
-    /// The HEAD of the tree at step 4.
     pub head_after: Option<String>,
 }
 
-/// `Ok` when `f` shows that the rescue ref holds exactly the folder on its
-/// HEAD; else the first fact that fails.
 pub fn verify(f: &Facts) -> Result<(), String> {
     let checks = [
         (

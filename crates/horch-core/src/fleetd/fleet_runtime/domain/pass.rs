@@ -1,64 +1,33 @@
-//! The 3-part reconcile pass: intended rows and attempts in `launching` (RR-4, RR-7, FM-11).
-//!
-//! `docs/specs/fleetd/design.md`, "The reconcile pass": part 1 reads the
-//! facts, part 2 writes each effect as a row in an intended state in 1
-//! transaction, and part 3 does the effects after the commit. These are the
-//! rules of part 2 and part 3, with no I/O:
-//!
-//! - [`observe_launch`]: the next step of an attempt in `launching`.
-//! - [`stop_step`]: the signal of a stop, with its grace on the fleet clock.
-//! - [`EffectKind`]: stops come before launches.
-//! - [`breaches`]: the breaches of I1 and I4 that no step repairs.
-
 use std::collections::BTreeMap;
 
 use crate::fleetd::fleet_runtime::domain::clock::FleetSeconds;
 
-/// The start timeout of an attempt, in seconds on the fleet clock: an
-/// attempt in `launching` with no process this long after its launch ends
-/// `timed_out`.
 pub const START_TIMEOUT_S: i64 = 90;
 
-/// The outcome of an attempt that ends at its start timeout.
 pub const TIMED_OUT: &str = "timed_out";
 
-/// What part 1 of a pass saw of 1 process.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Proc {
-    /// No process is recorded.
     Absent,
     Alive,
     Dead,
-    /// The scan did not reach it, or could not tell.
     Unknown,
 }
 
-/// The launch of an attempt: when it was done, on the fleet clock, and
-/// what part 1 saw of its process. The process is [`Proc::Absent`] when
-/// the launch did not record one: it failed, or fleetd died within it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Launch {
     pub at: FleetSeconds,
     pub process: Proc,
 }
 
-/// The next step of an attempt in `launching`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LaunchStep {
-    /// No launch yet: launch it in part 3.
     Launch,
-    /// Wait for a later pass.
     Wait,
-    /// A live process has the attempt id: the attempt is `live`.
     Live,
-    /// No process past the start timeout: the attempt ends `timed_out`.
     TimedOut,
 }
 
-/// The next step of an attempt in `launching` at `clock`. `row` is the
-/// process that its row names, and `launch` its launch. An attempt is
-/// launched at most once, so its id never names a second process. A fact
-/// that the pass could not read makes it wait.
 pub fn observe_launch(row: Proc, launch: Option<Launch>, clock: FleetSeconds) -> LaunchStep {
     let launched = launch.map_or(Proc::Absent, |l| l.process);
     if row == Proc::Alive || launched == Proc::Alive {
@@ -74,20 +43,13 @@ pub fn observe_launch(row: Proc, launch: Option<Launch>, clock: FleetSeconds) ->
     }
 }
 
-/// The signal that a stop sends in this pass.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StopStep {
-    /// The polite stop that the process can catch.
     Polite,
-    /// The polite stop was sent, and its grace has not ended.
     Wait,
-    /// The grace ended: the kill.
     Kill,
 }
 
-/// The signal of a stop at `clock`, where the polite stop was sent at
-/// `polite_at` (`None`: not yet). The grace is `grace_s` on the fleet
-/// clock, so a pass never waits for it.
 pub fn stop_step(polite_at: Option<FleetSeconds>, clock: FleetSeconds, grace_s: u64) -> StopStep {
     let grace = i64::try_from(grace_s).unwrap_or(i64::MAX);
     match polite_at {
@@ -97,19 +59,13 @@ pub fn stop_step(polite_at: Option<FleetSeconds>, clock: FleetSeconds, grace_s: 
     }
 }
 
-/// The kinds of effect of part 3, in the order of part 3: each stop runs
-/// before each launch, and a job starts after the attempts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum EffectKind {
-    /// Stop a process or close a pane.
     Stop,
-    /// Launch an attempt.
     Launch,
-    /// Start the process of a job.
     StartJob,
 }
 
-/// 1 attempt that holds its worker and its task.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Holding<'a> {
     pub attempt: &'a str,
@@ -117,20 +73,18 @@ pub struct Holding<'a> {
     pub task: Option<&'a str>,
 }
 
-/// A breach of an invariant that no step of the pass repairs.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Breach {
-    /// I4: the worker holds more than 1 attempt.
     WorkerAttempts {
         worker: String,
         attempts: Vec<String>,
     },
-    /// I1: the task has more than 1 attempt that holds it.
-    TaskAttempts { task: String, attempts: Vec<String> },
+    TaskAttempts {
+        task: String,
+        attempts: Vec<String>,
+    },
 }
 
-/// The breaches of I4 and of I1 in `holding`, each attempt that is not
-/// `ended`: a worker or a task with more than 1 of them.
 pub fn breaches(holding: &[Holding<'_>]) -> Vec<Breach> {
     let mut by_worker: BTreeMap<&str, Vec<String>> = BTreeMap::new();
     let mut by_task: BTreeMap<&str, Vec<String>> = BTreeMap::new();

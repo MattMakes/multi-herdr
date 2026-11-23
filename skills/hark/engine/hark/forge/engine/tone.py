@@ -56,8 +56,6 @@ OUT_MARGIN = 6.0
 _SOS_CACHE: list | None = None
 
 
-# ---------------------------------------------------------------- input
-
 def as_mono(x: Any) -> ndarray:
     """Load a path (resampled to 48 kHz) or take an array, and average stereo down to one channel."""
     src = x
@@ -78,8 +76,6 @@ def _freqs_and_power(sig: ndarray) -> tuple[ndarray, ndarray]:
     spec = np.fft.rfft(sig)
     return np.fft.rfftfreq(len(sig), 1.0 / SR), np.abs(spec) ** 2
 
-
-# ---------------------------------------------------------------- spectrum
 
 def profile(x: Any) -> ndarray:
     """Level of each of the 28 third-octave bands in dB re their summed power, never below -60."""
@@ -114,8 +110,6 @@ def t40_ms(x: Any, db: float = 40.0, ms: float = 5.0) -> float:
     after = int(quiet[0]) if len(quiet) else count - loud_at
     return float(after * ms)
 
-
-# ---------------------------------------------------------------- ToneRef
 
 def _fround(v: Any, digits: int) -> float:
     return round(float(v), digits)
@@ -259,8 +253,6 @@ def _extra_notes(rep: dict) -> str:
     return _decay_note(rep) + _region_note(rep) + _duration_note(rep)
 
 
-# ---------------------------------------------------------------- bandgram
-
 def _third_octave_bank() -> list:
     global _SOS_CACHE
     if _SOS_CACHE is None:
@@ -386,8 +378,6 @@ def _offset_window(marks_a: dict, marks_b: dict, mark: str) -> ndarray:
     stop = min(600, max(marks_a["hi"] - anchor_a, marks_b["hi"] - anchor_b)) + 4
     return arange(start, stop)
 
-
-# ---------------------------------------------------------------- EnvRef
 
 def _ref_label(ref_sh: Any, idx: int) -> str:
     return str(ref_sh) if isinstance(ref_sh, (str, os.PathLike)) else f"ref{idx}"

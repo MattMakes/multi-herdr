@@ -1,18 +1,3 @@
-//! The last direct writers of the CLI send requests (T-885; RR-5, FM-24):
-//! `horch rescue drop`, `horch ledger status` (the workspace adoption),
-//! `horch ledger import --dry-run`, `horch note` of a worker with no live
-//! attempt, `horch ledger unfinished` and the refusal of the triage
-//! decisions that no fleetd job does yet.
-//!
-//! Each test runs the development `horch` with the seam
-//! `HORCH_TEST_ASSERT_READ_ONLY=1`: a writable open of the ledger in that
-//! process panics. The test process plays fleetd: it writes the `fleetd`
-//! row with its own PID and start time, makes the operator token, and
-//! serves the channel in-process with the handlers of fleetd. All folders
-//! are temporary.
-//!
-//! The tests are unix only: the socket path must be short.
-
 #![cfg(unix)]
 
 use std::os::unix::fs::PermissionsExt;
@@ -22,7 +7,7 @@ use std::sync::Arc;
 
 use horch_core::fleetd::fleet_runtime::adapters::channel_server::ChannelServer;
 use horch_core::fleetd::fleet_runtime::adapters::token_file;
-use horch_core::fleetd::fleet_runtime::application::handlers_cli::{self, CliHandlers};
+use horch_core::fleetd::fleet_runtime::application::handlers_cli;
 use horch_core::fleetd::fleet_runtime::application::handlers_custody::{self, Custody};
 use horch_core::fleetd::fleet_runtime::application::handlers_run;
 use horch_core::fleetd::fleet_runtime::application::requests::Handlers;
@@ -45,9 +30,6 @@ struct Out {
     err: String,
 }
 
-/// A fleet in temporary folders: a git project with 1 commit on `main`, a
-/// ledger with the run `r1`, and the channel served by this process as
-/// fleetd.
 struct World {
     _tmp: tempfile::TempDir,
     root: PathBuf,
@@ -57,13 +39,12 @@ struct World {
 
 impl World {
     fn new() -> World {
-        // A short folder: `sun_path` holds about 104 bytes on macOS.
         let tmp = tempfile::Builder::new()
             .prefix("cw")
             .permissions(std::fs::Permissions::from_mode(0o700))
             .tempdir_in("/tmp")
             .unwrap();
-        let root = tmp.path().canonicalize().unwrap();
+        let root = horch_platform::path::canonicalize(tmp.path()).unwrap();
         for dir in ["home", "fleet", "proj", "state"] {
             std::fs::create_dir_all(root.join(dir)).unwrap();
         }
@@ -105,16 +86,10 @@ impl World {
         w
     }
 
-    /// The channel with the handlers of fleetd that these commands use.
     fn serve(&self) -> ChannelServer {
         let mut handlers = Handlers::new();
         handlers_run::register(&mut handlers);
-        handlers_cli::register(
-            &mut handlers,
-            CliHandlers {
-                state_root: self.root.join("state"),
-            },
-        );
+        handlers_cli::register(&mut handlers);
         let refs = CliWorktreeGit::new(GIT, self.fleet()).reading(&[self.proj()]);
         handlers_custody::register(
             &mut handlers,
@@ -142,7 +117,6 @@ impl World {
         self.root.join("proj")
     }
 
-    /// `horch` with `args` and the environment `extra`, under the seam.
     fn horch(&self, args: &[&str], extra: &[(&str, &str)]) -> Out {
         let root = &self.root;
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_horch"));
@@ -173,7 +147,6 @@ impl World {
         }
     }
 
-    /// `horch` with `args`, which must exit 0 and must not panic.
     fn ok(&self, args: &[&str], extra: &[(&str, &str)]) -> Out {
         let o = self.horch(args, extra);
         assert_eq!(
@@ -188,7 +161,6 @@ impl World {
         Connection::open(self.ledger()).unwrap()
     }
 
-    /// The kind and state of each `requests` row, in the order of receipt.
     fn requests(&self) -> Vec<(String, String)> {
         let conn = self.conn();
         let mut stmt = conn
@@ -300,7 +272,6 @@ fn status_in_an_orchestrator_pane_sends_run_adopt() {
         .as_deref(),
         Some("w1")
     );
-    // The run has its workspace now: a second status sends nothing.
     w.horch(&["ledger", "status"], &pane);
     assert_eq!(w.requests(), applied(&["run_adopt"]));
 }
@@ -338,9 +309,6 @@ fn note_of_a_worker_with_no_attempt_sends_worker_progress() {
     );
 }
 
-/// The fix of T-880: `horch ledger unfinished` wrote the findings of native
-/// runs, and failed with "attempt to write a readonly database". It only
-/// reads now, and the pass of fleetd writes the findings.
 #[test]
 fn unfinished_reads_only_and_lists_what_the_pass_wrote() {
     let w = World::new();
@@ -367,7 +335,6 @@ fn unfinished_reads_only_and_lists_what_the_pass_wrote() {
     let all = ["ledger", "unfinished", "--project", "all"];
     let o = w.ok(&all, &[]);
     assert_eq!(o.out, "No unfinished work.\n");
-    // The pass of fleetd writes the finding; the command lists it.
     horch_core::taskledger::import::sync_native(&c).unwrap();
     let o = w.ok(&all, &[]);
     assert!(o.out.contains("reaped_never_finished"), "{}", o.out);
@@ -375,7 +342,7 @@ fn unfinished_reads_only_and_lists_what_the_pass_wrote() {
 }
 
 #[test]
-fn triage_archive_is_refused_with_a_later_task() {
+fn triage_delete_queues_1_triage_apply_job() {
     let w = World::new();
     let proj = w.proj();
     let tree = proj.join(".worktrees").join("feat");
@@ -396,22 +363,30 @@ fn triage_archive_is_refused_with_a_later_task() {
         "| ID | Worktree | Suggested | Decision | Direction |\n|----|----|----|----|----|\n| W1 | feat | | DELETE | |\n",
     )
     .unwrap();
-    let o = w.horch(
+    let o = w.ok(
         &["worktree", "triage", "apply", reply.to_str().unwrap()],
         &[],
     );
-    assert_eq!(o.code, 1, "{}{}", o.out, o.err);
     assert!(
-        o.err
-            .contains("the decisions DELETE in this version, and nothing ran")
-            && o.err
-                .contains("They return in a later task as a fleetd job"),
-        "{}",
+        o.out
+            .contains("W1 feat DELETE: queued in the triage_apply job 1"),
+        "{}{}",
+        o.out,
         o.err
     );
-    assert!(w.requests().is_empty());
+    assert_eq!(
+        w.count("SELECT COUNT(*) FROM jobs WHERE kind = 'triage_apply' AND state = 'queued'"),
+        1
+    );
+    assert_eq!(
+        w.requests()
+            .into_iter()
+            .map(|(kind, _)| kind)
+            .collect::<Vec<_>>(),
+        vec!["worktree_triage".to_string()]
+    );
     assert!(tree.exists());
-    // The listing reads the ledger read-only.
+    git(&proj, &["rev-parse", "--verify", "refs/heads/feat"]);
     let o = w.ok(&["worktree", "triage", "--json"], &[]);
     assert!(o.out.contains("feat"), "{}", o.out);
 }

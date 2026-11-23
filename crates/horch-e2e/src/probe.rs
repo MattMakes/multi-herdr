@@ -1,20 +1,3 @@
-//! The probes of the conformance suite in the fake agents (fleetd-p7
-//! ticket 16, `docs/tickets/fleetd-p7/MAP.md` Q6).
-//!
-//! - `version:<text>`: `--version` prints `<text>` ([`version_or`]).
-//! - `conformance`: the fake reports what it sees ([`report`]): the skills
-//!   and the rules in its private config home, the MCP servers of its
-//!   config, the effective compaction setting and the hook events that it
-//!   sent to the wrapper. It also tries a write outside the allowed paths,
-//!   a write inside them, and the 3 operator acts, each in a child under
-//!   [`horch_platform::sandbox::sandboxed`] with the rules of its rendered
-//!   config, and records each result ([`operator_boundary`]). A config that
-//!   renders no sandbox rule runs the child with no sandbox. It then writes
-//!   `outbox/result.json` of its task folder the same way ([`write_result`]).
-//!
-//! Each result is `allowed` or `refused: <why>`. The probe removes each
-//! file that a write made. It never prints the token.
-
 use std::path::{Path, PathBuf};
 
 use horch_core::fleetd::worker_profiles::domain::operator_boundary::OperatorPaths;
@@ -25,10 +8,10 @@ use serde_json::{json, Map, Value};
 use crate::exec::Cli;
 use crate::{scenarios, Call};
 
-/// The first argument of the probe child: the fake does 1 act and exits.
 const CHILD: &str = "__horch_probe_act";
 
-/// The text of the scenario key `version:<text>`, else `default`.
+const ORPHAN: &str = "__horch_probe_orphan";
+
 pub fn version_or(default: &str) -> String {
     scenarios()
         .iter()
@@ -36,18 +19,64 @@ pub fn version_or(default: &str) -> String {
         .unwrap_or_else(|| default.to_owned())
 }
 
-/// When the fake runs as the probe child, do its act and exit. Call it
-/// first in `main`.
 pub fn child_entry() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if let [first, act, path, out] = args.as_slice() {
+        if first == ORPHAN {
+            orphan_entry(act, Path::new(path), Path::new(out));
+        }
+    }
     let [first, act, path] = args.as_slice() else {
         return;
     };
     if first != CHILD {
         return;
     }
-    let path = Path::new(path);
-    let done = match act.as_str() {
+    match do_act(act, Path::new(path)) {
+        Ok(()) => std::process::exit(0),
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+#[cfg(unix)]
+fn orphan_entry(act: &str, path: &Path, out: &Path) -> ! {
+    // SAFETY: the fake is 1 thread here; each branch only calls exit,
+    // setsid, waitpid or plain Rust code.
+    unsafe {
+        let child = libc::fork();
+        if child > 0 {
+            let mut status = 0;
+            libc::waitpid(child, &mut status, 0);
+            std::process::exit(0);
+        }
+        if child < 0 {
+            std::process::exit(1);
+        }
+        libc::setsid();
+        if libc::fork() != 0 {
+            libc::_exit(0);
+        }
+    }
+    let result = match do_act(act, path) {
+        Ok(()) => "allowed".to_owned(),
+        Err(e) => format!("refused: {e}"),
+    };
+    let tmp = out.with_extension("tmp");
+    let _ = std::fs::write(&tmp, result).and_then(|()| std::fs::rename(&tmp, out));
+    std::process::exit(0);
+}
+
+#[cfg(not(unix))]
+fn orphan_entry(_act: &str, _path: &Path, _out: &Path) -> ! {
+    std::process::exit(1);
+}
+
+fn do_act(act: &str, path: &Path) -> Result<(), String> {
+    match act {
+        "stat" => identity(path).map(|id| print!("{id}")),
         "write" => std::fs::write(path, "horch probe\n").map_err(|e| e.to_string()),
         "read" => match std::fs::read(path) {
             Ok(bytes) if bytes.is_empty() => Err("the read gave no bytes".to_owned()),
@@ -56,14 +85,20 @@ pub fn child_entry() {
         },
         "connect" => connect(path),
         other => Err(format!("unknown act {other}")),
-    };
-    match done {
-        Ok(()) => std::process::exit(0),
-        Err(e) => {
-            eprintln!("{e}");
-            std::process::exit(1);
-        }
     }
+}
+
+#[cfg(unix)]
+fn identity(path: &Path) -> Result<String, String> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(path)
+        .map(|m| format!("{}:{}", m.dev(), m.ino()))
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(not(unix))]
+fn identity(_path: &Path) -> Result<String, String> {
+    Err("no device and inode on this OS".to_owned())
 }
 
 #[cfg(unix)]
@@ -78,9 +113,6 @@ fn connect(_path: &Path) -> Result<(), String> {
     Err("no Unix socket on this OS".to_owned())
 }
 
-/// For a fake with no exec mode (OpenCode, pi, Prime): with the key
-/// `conformance`, record the operator boundary probe in the log. These
-/// CLIs render no sandbox rule (MAP.md Q5).
 pub fn record_operator_boundary(call: &mut Call) {
     if crate::scenario_has("conformance") {
         let probe = json!({"operator_boundary": operator_boundary(None)});
@@ -88,8 +120,6 @@ pub fn record_operator_boundary(call: &mut Call) {
     }
 }
 
-/// The report of 1 conformance run of `cli` with `argv`. `hooks` are the
-/// hook events that the fake printed to the wrapper.
 pub fn report(cli: Cli, argv: &[String], hooks: Vec<String>) -> Value {
     let seen = config(cli, argv);
     json!({
@@ -102,10 +132,6 @@ pub fn report(cli: Cli, argv: &[String], hooks: Vec<String>) -> Value {
     })
 }
 
-/// The shared write of a conformance run: write `outbox/result.json` of
-/// the task folder of `prompt` (`<task>/inbox/START.md`) in a child under
-/// the sandbox rules of the config, as the agent does. The file stays, so
-/// the wrapper finds it. The result is `allowed` or `refused: <why>`.
 pub fn write_result(cli: Cli, argv: &[String], prompt: &str) -> String {
     let Some(task) = Path::new(prompt).parent().and_then(Path::parent) else {
         return "not run: the prompt is not in a task folder".to_owned();
@@ -126,7 +152,6 @@ fn config(cli: Cli, argv: &[String]) -> Seen {
     }
 }
 
-/// What the fake sees in its config.
 #[derive(Default)]
 struct Seen {
     skills: Vec<String>,
@@ -136,7 +161,6 @@ struct Seen {
     rules_of_sandbox: Option<Rules>,
 }
 
-/// The sandbox rules of a rendered config.
 struct Rules {
     writable: Vec<PathBuf>,
     denials: Denials,
@@ -156,7 +180,6 @@ fn cwd() -> PathBuf {
     std::env::current_dir().unwrap_or_default()
 }
 
-/// The names of the entries of `dir`, or none.
 fn names_in(dir: &Path) -> Vec<String> {
     std::fs::read_dir(dir)
         .map(|entries| {
@@ -174,8 +197,6 @@ fn sorted(mut names: Vec<String>) -> Vec<String> {
     names
 }
 
-/// The values of each `flag` of `argv`. A variadic flag takes each value up
-/// to the next flag.
 fn values_of(argv: &[String], flag: &str, variadic: bool) -> Vec<String> {
     let mut out = Vec::new();
     let mut i = 0;
@@ -197,7 +218,6 @@ fn values_of(argv: &[String], flag: &str, variadic: bool) -> Vec<String> {
     out
 }
 
-/// A JSON value given inline or as a file path.
 fn json_arg(text: &str) -> Value {
     let text = if text.trim_start().starts_with('{') {
         text.to_owned()
@@ -288,7 +308,6 @@ fn codex_config(argv: &[String]) -> Seen {
         .filter_map(|(k, _)| k.strip_prefix("mcp_servers.")?.split('.').next())
         .map(str::to_owned)
         .collect();
-    // `-c mcp_servers={}` empties the table of `config.toml`.
     if !pairs.iter().any(|(k, _)| k == "mcp_servers") {
         mcp_servers.extend(toml.lines().filter_map(|l| {
             let name = l.trim().strip_prefix("[mcp_servers.")?;
@@ -316,10 +335,6 @@ fn codex_config(argv: &[String]) -> Seen {
     }
 }
 
-/// The rules of the `-c permissions.<profile>.*` pairs: a path of
-/// `filesystem` with `"none"` is denied, a path with `"write"` and a path of
-/// `workspace_roots` with `true` are writable. No `filesystem` pair is no
-/// sandbox rule.
 fn codex_rules(pairs: &[(String, String)]) -> Option<Rules> {
     let of = |suffix: &str| {
         pairs
@@ -360,8 +375,6 @@ fn codex_rules(pairs: &[(String, String)]) -> Option<Rules> {
     })
 }
 
-/// The `"<absolute path>"=<value>` pairs of an inline TOML table. A nested
-/// table is not a value: its own pairs are read as pairs.
 fn path_pairs(text: &str) -> Vec<(PathBuf, String)> {
     let mut out = Vec::new();
     let mut rest = text;
@@ -403,8 +416,6 @@ fn agy_config() -> Seen {
     }
 }
 
-/// Try each act in a child under `rules` (no sandbox for `None`), and give
-/// the result of each.
 fn operator_boundary(rules: Option<&Rules>) -> Value {
     let paths = OperatorPaths::of(&Paths::from_env(&ProcessEnv).fleet_root);
     let cwd = cwd();
@@ -423,14 +434,102 @@ fn operator_boundary(rules: Option<&Rules>) -> Value {
         "sandbox".into(),
         json!(if rules.is_some() { "on" } else { "none" }),
     );
+    let fleet_root = paths.run.parent().unwrap_or(&paths.run);
+    report.insert("fleet_root".into(), json!(seen_in_child(rules, fleet_root)));
+    let mut orphan = Map::new();
     for (name, act, path) in acts {
-        let result = in_child(rules, act, &path);
+        let result = match name {
+            "write_outside" => write_outside(rules, &path),
+            _ => in_child(rules, act, &path),
+        };
         if act == "write" {
             let _ = std::fs::remove_file(&path);
         }
+        if matches!(name, "read_token" | "connect_channel" | "write_requests") {
+            let escapes = crate::scenario_has("orphan_escapes");
+            let out = cwd.join(format!("{tag}-orphan-{name}"));
+            let result = in_orphan(rules.filter(|_| !escapes), act, &path, &out);
+            if act == "write" {
+                let _ = std::fs::remove_file(&path);
+            }
+            orphan.insert(name.into(), Value::String(result));
+        }
         report.insert(name.into(), Value::String(result));
     }
+    report.insert("orphan".into(), Value::Object(orphan));
     Value::Object(report)
+}
+
+fn write_outside(rules: Option<&Rules>, path: &Path) -> String {
+    let folder = path.parent().unwrap_or(path);
+    let host = identity(folder);
+    let seen = seen_in_child(rules, folder);
+    if host.as_deref() != Ok(seen.as_str()) {
+        return format!(
+            "not run: the sandbox does not see the real {}: it sees {seen}, the host has {}",
+            folder.display(),
+            host.unwrap_or_else(|e| format!("refused: {e}"))
+        );
+    }
+    let result = in_child(rules, "write", path);
+    if result.starts_with("refused") && path.exists() {
+        return format!(
+            "allowed: {} is on the host, the child said {result}",
+            path.display()
+        );
+    }
+    result
+}
+
+fn seen_in_child(rules: Option<&Rules>, path: &Path) -> String {
+    let exe = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(e) => return format!("not run: {e}"),
+    };
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg(CHILD).arg("stat").arg(path);
+    if let Some(rules) = rules {
+        cmd = match sandboxed(cmd, &rules.writable, &rules.denials) {
+            Ok(cmd) => cmd,
+            Err(e) => return format!("not run: {e}"),
+        };
+    }
+    cmd.stdin(std::process::Stdio::null());
+    match cmd.output() {
+        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).trim().to_owned(),
+        Ok(out) => format!("refused: {}", String::from_utf8_lossy(&out.stderr).trim()),
+        Err(e) => format!("not run: {e}"),
+    }
+}
+
+fn in_orphan(rules: Option<&Rules>, act: &str, path: &Path, out: &Path) -> String {
+    let exe = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(e) => return format!("not run: {e}"),
+    };
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg(ORPHAN).arg(act).arg(path).arg(out);
+    if let Some(rules) = rules {
+        cmd = match sandboxed(cmd, &rules.writable, &rules.denials) {
+            Ok(cmd) => cmd,
+            Err(e) => return format!("not run: {e}"),
+        };
+    }
+    cmd.stdin(std::process::Stdio::null());
+    if let Err(e) = cmd.output() {
+        return format!("not run: {e}");
+    }
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if let Ok(result) = std::fs::read_to_string(out) {
+            let _ = std::fs::remove_file(out);
+            return result;
+        }
+        if std::time::Instant::now() >= end {
+            return "not run: the orphan wrote no result in 10 s".to_owned();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
 }
 
 fn in_child(rules: Option<&Rules>, act: &str, path: &Path) -> String {

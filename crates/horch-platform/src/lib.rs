@@ -1,12 +1,3 @@
-//! The platform layer: the one place in the workspace that holds OS code
-//! (PL-2). It has 1 interface file for each concern and 1 module for each
-//! OS: `mac`, `linux` and `windows`. `unix` holds the code that `mac` and
-//! `linux` share. Where an OS has no equivalent, a function of a concern
-//! returns the explicit value [`NotSupported`] (PL-6), and core code decides
-//! what to do with it.
-//!
-//! This crate depends on no other crate of the workspace.
-
 use std::fmt;
 
 pub mod awake;
@@ -38,8 +29,6 @@ mod windows;
 #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 compile_error!("horch-platform supports macOS, Linux and Windows");
 
-// The module of the build target. The concern files call the OS through
-// this alias only. No concern uses it until tickets 03 to 09 fill them.
 #[cfg(target_os = "linux")]
 #[allow(unused_imports)]
 use linux as os;
@@ -50,28 +39,15 @@ use mac as os;
 #[allow(unused_imports)]
 use windows as os;
 
-/// A concern that this host cannot give. With no [`reason`](Self::reason),
-/// the OS of the build target has no equivalent for the concern at all.
-/// With a reason, the gap belongs to this host, for example a tool that is
-/// not installed.
-///
-/// Build it with [`NotSupported::new`], and add a reason with
-/// [`NotSupported::because`]. The type is `non_exhaustive`, so a new field
-/// needs no edit at the sites that build it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct NotSupported {
-    /// The concern, for example `"signal"`.
     pub concern: &'static str,
-    /// The OS, for example `"windows"`.
     pub os: &'static str,
-    /// Why this host does not give the concern, for example `"bwrap is not
-    /// on PATH"`. `None` when the OS has no equivalent at all.
     pub reason: Option<&'static str>,
 }
 
 impl NotSupported {
-    /// The gap of `concern` on `os`, with no reason.
     pub const fn new(concern: &'static str, os: &'static str) -> Self {
         NotSupported {
             concern,
@@ -80,7 +56,6 @@ impl NotSupported {
         }
     }
 
-    /// This gap with `reason`.
     pub const fn because(self, reason: &'static str) -> Self {
         NotSupported {
             reason: Some(reason),

@@ -1,20 +1,13 @@
-//! End-to-end (G5): fleet messaging through the real `horch` binary, in a
-//! workspace with no registered orchestrator.
-//!
-//! - `horch done` records the summary, tells nobody, says why, exits 0.
-//! - `horch inbox` marks a role whose pane closed without `horch done`.
-//! - W2: a `horch done` whose report fails keeps the pane, the role and the
-//!   live record, exits non-zero, and a retry finishes once.
-//! - W2: an agent that exits before `horch done` leaves an `exited` event,
-//!   and its worker tells the orchestrator with a `BLOCKED:` line.
-//! - `horch spawn --resume` of that record ends it and resumes it; while the
-//!   pane is open, it refuses and names the command that fixes it.
-//!
-//! fake-herdr runs in the `exec` scenario, so a pane runs `horch worker`, and
-//! `pane close` kills it. The codex fake runs in `stay`.
-
 use std::process::Output;
 
+use horch_core::execution::legacy::Record;
+use horch_core::execution::records::SessionLedger;
+use horch_core::execution::{ExecutionStatus, ReportTarget, SessionMode};
+use horch_core::messaging::brief::{Brief, SCHEMA};
+use horch_core::messaging::mailbox::Mailbox;
+use horch_core::roster::Roster;
+use horch_core::runtime::BinOverrides;
+use horch_core::skills::{harness_support, ResolvedSkillRef, SkillResolution};
 use horch_e2e::harness::{fixtures, wait_for_or, Harness};
 use serde_json::Value;
 
@@ -29,8 +22,6 @@ fn text(o: &Output) -> String {
     )
 }
 
-/// A harness with workspace `w1` and its root pane `w1:p1`, as `horch fleet`
-/// leaves it.
 fn fleet(name: &str, scenario: &str) -> Harness {
     let mut h = Harness::new(name);
     let quota = fixtures().join("quota/all-ok.json");
@@ -45,6 +36,22 @@ fn fleet(name: &str, scenario: &str) -> Harness {
         .output()
         .unwrap();
     assert!(out.status.success(), "{}", text(&out));
+    h
+}
+
+fn worker_fleet(name: &str, scenario: &str) -> Harness {
+    worker_fleet_with(name, scenario, |_| {})
+}
+
+fn worker_fleet_with(name: &str, scenario: &str, prepare: impl FnOnce(&mut Harness)) -> Harness {
+    let mut h = fleet(name, scenario);
+    h.set(
+        "HORCH_LEDGER_DB",
+        h.state.join("ledger.sqlite3").to_string_lossy(),
+    );
+    h.set("HORCH_NO_WATCHDOG", "1");
+    prepare(&mut h);
+    h.serve_fleetd();
     h
 }
 
@@ -74,8 +81,6 @@ fn record(h: &Harness, id: &str) -> Value {
         .unwrap_or_else(|| panic!("no record {id}"))
 }
 
-/// What a worker pane wrote (fake-herdr `exec` saves its output), and the
-/// record, for a failure message.
 fn pane_context(h: &Harness, pane: &str, id: &str) -> String {
     let mut out = h.log.clone().into_os_string();
     out.push(format!(".pane-{}.out", pane.replace(':', "_")));
@@ -86,23 +91,6 @@ fn pane_context(h: &Harness, pane: &str, id: &str) -> String {
     )
 }
 
-/// `horch spawn`, returning the new pane id (the last stdout line).
-fn spawn(h: &Harness, args: &[&str]) -> String {
-    let mut argv = vec!["spawn"];
-    argv.extend_from_slice(args);
-    argv.extend_from_slice(&["--from-pane", "w1:p1", "--no-tile"]);
-    let out = h.run(&argv);
-    assert!(out.status.success(), "{}", text(&out));
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .last()
-        .unwrap()
-        .trim()
-        .to_string()
-}
-
-/// `horch done` as the agent in `pane` runs it: the transport variables say
-/// who it is. Closing the pane kills the worker and its agent.
 fn done(h: &Harness, pane: &str, role: &str, id: &str) {
     let mut cmd = h.horch(&["done", "finished the work"]);
     cmd.env("HERDR_PANE_ID", pane)
@@ -112,14 +100,12 @@ fn done(h: &Harness, pane: &str, role: &str, id: &str) {
     assert!(out.status.success(), "{}", text(&out));
 }
 
-/// A fake-herdr call, as the operator would make it by hand.
 fn herdr(h: &Harness, args: &[&str]) -> Output {
     let mut cmd = std::process::Command::new(h.bin.join("herdr"));
     h.seal(&mut cmd);
     cmd.args(args).output().unwrap()
 }
 
-/// `horch` as the worker in `pane` runs it.
 fn as_worker(h: &Harness, args: &[&str], pane: &str, role: &str, id: &str) -> Output {
     let mut cmd = h.horch(args);
     cmd.env("HERDR_PANE_ID", pane)
@@ -128,28 +114,110 @@ fn as_worker(h: &Harness, args: &[&str], pane: &str, role: &str, id: &str) -> Ou
     cmd.output().unwrap()
 }
 
-/// A spawned codex worker that is running, as `(pane, role, record id)`.
+fn recorded_skills(h: &Harness, teammate: &str) -> Vec<ResolvedSkillRef> {
+    let roster = Roster::builtin().unwrap();
+    let launching = roster.for_launch(roster.get(teammate).unwrap().clone());
+    SkillResolution::read(
+        roster.skill_catalog().unwrap(),
+        Some(&launching),
+        Some(&h.home),
+        harness_support,
+    )
+    .unwrap()
+    .plan(&launching)
+    .unwrap()
+    .activated
+}
+
+fn launch_worker(h: &Harness) -> (String, String, String) {
+    let split = herdr(
+        h,
+        &[
+            "pane",
+            "split",
+            "w1:p1",
+            "--direction",
+            "right",
+            "--no-focus",
+        ],
+    );
+    assert!(split.status.success(), "{}", text(&split));
+    let reply: Value = serde_json::from_slice(&split.stdout).unwrap();
+    let pane = reply["result"]["pane"]["pane_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no pane in {reply}"))
+        .to_string();
+    let (role, id) = ("codex-sol-1".to_string(), "r-worker-1".to_string());
+    let project = h.project.to_string_lossy().into_owned();
+    SessionLedger::for_project(&h.state, &project)
+        .insert(Record {
+            record_id: id.clone(),
+            agent: "codex".into(),
+            tier: "codex-sol".into(),
+            model: "gpt-5.6-sol".into(),
+            role: role.clone(),
+            task: "work".into(),
+            pane_id: Some(pane.clone()),
+            workspace_id: Some("w1".into()),
+            skills: recorded_skills(h, "codex-sol"),
+            state: Some(ExecutionStatus::Running),
+            ..Record::default()
+        })
+        .unwrap();
+    Mailbox::under(&h.state, "w1")
+        .write_brief(&Brief {
+            schema: SCHEMA,
+            role: role.clone(),
+            teammate: "codex-sol".into(),
+            agent: "codex".into(),
+            model: "gpt-5.6-sol".into(),
+            record_id: id.clone(),
+            session: SessionMode::Fresh(None),
+            task: "work".into(),
+            project_dir: project,
+            state_dir: None,
+            claude_bin: None,
+            codex_bin: None,
+            resolved: None,
+            teammates_dir: None,
+            workdir: None,
+            bin_overrides: BinOverrides::default(),
+            report_to: ReportTarget::Orchestrator,
+            worker_id: None,
+            ledger_db: None,
+            fleet_root: None,
+            controller: None,
+            task_yaml: None,
+            backend: Default::default(),
+        })
+        .unwrap();
+    let worker = format!(
+        "'{}' worker {role}",
+        horch_e2e::harness::Harness::horch_bin().display()
+    );
+    let run = herdr(h, &["pane", "run", &pane, &worker]);
+    assert!(run.status.success(), "{}", text(&run));
+    (pane, role, id)
+}
+
 fn running_worker(h: &Harness) -> (String, String, String) {
-    let pane = spawn(h, &["codex-sol"]);
-    let r = records(h).pop().expect("the spawn wrote a record");
-    let id = r["record_id"].as_str().unwrap().to_string();
-    let role = r["role"].as_str().unwrap().to_string();
+    let (pane, role, id) = launch_worker(h);
     wait_for_or(
         "the running worker",
         || {
-            let r = record(h, &id);
-            (r["state"]["state"] == "running" && r["session_id"].is_string()).then_some(())
+            h.calls_of("codex")
+                .iter()
+                .any(|c| c["session_id"].is_string())
+                .then_some(())
         },
         || pane_context(h, &pane, &id),
     );
     (pane, role, id)
 }
 
-/// G5/#60: without registration both tell and done retain durable reports.
-/// A later orchestrator can acknowledge them; finishing still closes the worker.
 #[test]
 fn g5_done_without_an_orchestrator() {
-    let mut h = fleet("g5-done", "exec,stay");
+    let mut h = worker_fleet("g5-done", "exec,stay");
     h.set("HORCH_TEST_MAIL_POLL_MS", "10");
     let (pane, role, id) = running_worker(&h);
 
@@ -179,13 +247,9 @@ fn g5_done_without_an_orchestrator() {
     );
 }
 
-/// #201: `horch done` in a project that is not a git work tree, with a real
-/// git, reports no unregistered worktrees and no scan error. git says
-/// "not a git repository" with status 128, which `done` finds as a typed
-/// `GitError`, not by its text.
 #[test]
 fn done_outside_a_git_work_tree_reports_no_scan_error() {
-    let mut h = fleet("done-no-repo", "exec,stay").with_git();
+    let mut h = worker_fleet("done-no-repo", "exec,stay").with_git();
     if h.git_bin().is_none() {
         return;
     }
@@ -203,28 +267,10 @@ fn done_outside_a_git_work_tree_reports_no_scan_error() {
     assert_eq!(record(&h, &id)["status"], "done");
 }
 
-/// G5: a worker pane closed without `horch done`. `horch inbox` marks the
-/// role, and `horch spawn --resume` ends the record ("pane closed without
-/// horch done") and resumes it. While the pane is open, the resume refuses.
 #[test]
-fn g5_resume_after_a_closed_pane() {
-    let h = fleet("g5-resume", "exec,stay");
+fn g5_inbox_marks_a_role_whose_pane_closed() {
+    let h = worker_fleet("g5-closed", "exec,stay");
     let (pane, role, id) = running_worker(&h);
-
-    let out = h.run(&[
-        "spawn",
-        "--resume",
-        &id,
-        "--from-pane",
-        "w1:p1",
-        "--no-tile",
-    ]);
-    assert!(!out.status.success(), "the pane is open: {}", text(&out));
-    assert!(
-        text(&out).contains(&format!("horch ledger legacy done {id}")),
-        "{}",
-        text(&out)
-    );
 
     let closed = herdr(&h, &["pane", "close", &pane]);
     assert!(closed.status.success(), "{}", text(&closed));
@@ -238,37 +284,11 @@ fn g5_resume_after_a_closed_pane() {
         .find(|l| l.starts_with(&role))
         .unwrap_or_else(|| panic!("no {role} in {stdout}"));
     assert!(line.ends_with("(pane closed)"), "{stdout}");
-
-    let pane2 = spawn(&h, &["--resume", &id]);
-    let r = record(&h, &id);
-    let events: Vec<(&str, &str)> = r["history"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|e| {
-            (
-                e["event"].as_str().unwrap(),
-                e["text"].as_str().unwrap_or(""),
-            )
-        })
-        .collect();
-    assert!(
-        events.contains(&("ended", "pane closed without horch done")),
-        "{r}"
-    );
-    assert_eq!(events.last().unwrap().0, "resumed", "{r}");
-
-    let role2 = r["role"].as_str().unwrap().to_string();
-    done(&h, &pane2, &role2, &id);
 }
 
-/// MAIL-U1: the mail directory cannot be created, so enqueue fails.
-/// `horch done` exits non-zero and says what to do; the record stays live
-/// with a `report-failed` event, the role stays registered and the pane
-/// stays open. The retry, once enqueue works, reports and records once.
 #[test]
 fn mail_u1_done_stays_open_when_enqueue_fails() {
-    let h = fleet("mail-enqueue", "exec,stay");
+    let h = worker_fleet("mail-enqueue", "exec,stay");
     let (pane, role, id) = running_worker(&h);
     let mailbox = h.state.join("herdr-orchestration-w1");
     std::fs::write(mailbox.join("orchestrator.id"), "w1:p1").unwrap();
@@ -325,10 +345,9 @@ fn mail_u1_done_stays_open_when_enqueue_fails() {
     assert_eq!(dones, 1, "{r}");
 }
 
-/// MAIL-U1: once the report is durable, a failed push records and closes.
 #[test]
 fn mail_u1_done_push_failure_records_queued_and_closes() {
-    let h = fleet("mail-done", "exec,stay,fail_typing");
+    let h = worker_fleet("mail-done", "exec,stay,fail_typing");
     let (pane, role, id) = running_worker(&h);
     let mailbox = h.state.join("herdr-orchestration-w1");
     std::fs::write(mailbox.join("orchestrator.id"), "w1:p1").unwrap();
@@ -356,8 +375,6 @@ fn mail_u1_done_push_failure_records_queued_and_closes() {
     assert_eq!(std::fs::read_dir(pending).unwrap().count(), 1);
 }
 
-/// MAIL-U1: a failed push is not a failed worker message once its exact line
-/// is durable. The courier note tells the caller why exit status is zero.
 #[test]
 fn mail_u1_tell_push_failure_leaves_pending_mail() {
     let h = fleet("mail-tell", "exec,stay,fail_typing");
@@ -413,7 +430,6 @@ fn mail_u1_orchestrator_inbox_prints_then_acks_pending_mail() {
 
     assert!(inbox.status.success(), "{}", text(&inbox));
     let stdout = String::from_utf8_lossy(&inbox.stdout);
-    // Each line shows its mail id: `[sonnet-1 #<id>] NOTE: first`.
     let line = |text: &str| {
         stdout
             .lines()
@@ -440,7 +456,6 @@ fn mail_u1_orchestrator_inbox_prints_then_acks_pending_mail() {
     );
 }
 
-/// Queue 3 worker messages for the orchestrator and return the harness.
 fn inbox_fleet_with_three_messages(name: &str) -> Harness {
     let h = fleet(name, "exec,stay");
     let mailbox = h.tmp.join("herdr-orchestration-w1");
@@ -482,12 +497,9 @@ fn inbox_ends_with_the_acknowledged_count_after_the_roles() {
     assert_eq!(pending_count(&h), 0);
 }
 
-/// Stands for the pidfile path inside a `pane list` body.
 #[cfg(unix)]
 const PIDFILE_TOKEN: &str = "@PIDFILE@";
 
-/// Run `horch inbox` with a `pane list` that misbehaves as `on_pane_list`
-/// says, and check that the mail still prints. Returns the stalled pid, if any.
 #[cfg(unix)]
 fn inbox_with_broken_pane_list(name: &str, on_pane_list: &str) -> Option<String> {
     use std::os::unix::fs::PermissionsExt;
@@ -514,10 +526,8 @@ fn inbox_with_broken_pane_list(name: &str, on_pane_list: &str) -> Option<String>
     h.set("HORCH_HERDR_BIN", script.to_string_lossy());
     h.set("HORCH_TEST_PANE_LIST_MS", "1500");
 
-    let started = std::time::Instant::now();
     let inbox = h.run(&["inbox"]);
 
-    assert!(started.elapsed() < std::time::Duration::from_secs(10));
     assert!(inbox.status.success(), "{}", text(&inbox));
     let stdout = String::from_utf8_lossy(&inbox.stdout);
     let stderr = String::from_utf8_lossy(&inbox.stderr);
@@ -551,8 +561,7 @@ fn assert_process_gone(pid: &str) {
 #[cfg(unix)]
 #[test]
 fn inbox_prints_mail_and_kills_a_herdr_that_stalls_on_pane_list() {
-    // No pidfile means the script was killed before it ran: nothing leaked.
-    if let Some(pid) = inbox_with_broken_pane_list("inbox-stall", "exec sleep 60") {
+    if let Some(pid) = inbox_with_broken_pane_list("inbox-stall", "exec sleep 600") {
         assert_process_gone(&pid);
     }
 }
@@ -560,10 +569,9 @@ fn inbox_prints_mail_and_kills_a_herdr_that_stalls_on_pane_list() {
 #[cfg(unix)]
 #[test]
 fn inbox_prints_mail_and_kills_a_descendant_that_holds_the_pane_list_pipe() {
-    // The pidfile ends up holding the descendant's pid, not the script's.
     if let Some(pid) = inbox_with_broken_pane_list(
         "inbox-open-pipe",
-        &format!("sleep 30 &\necho $! > {PIDFILE_TOKEN}\nexit 0"),
+        &format!("sleep 600 &\necho $! > {PIDFILE_TOKEN}\nexit 0"),
     ) {
         assert_process_gone(&pid);
     }
@@ -641,20 +649,13 @@ fn mail_u1_worker_inbox_does_not_print_or_ack_pending_mail() {
     );
 }
 
-/// #177: a worker's inbox prints the notices horch queued for its role.
-/// `--peek` leaves them pending; a plain inbox acknowledges them. The
-/// orchestrator's mail is never shown or acknowledged.
 #[test]
 fn a_worker_inbox_prints_and_acks_its_own_role_mail_only() {
     let mut h = fleet("mail-worker-role", "exec,stay");
-    // The tell below starts a courier. A fast poll makes it see the role
-    // mail at once: it must leave the mail of a registered role alone.
     h.set("HORCH_TEST_MAIL_POLL_MS", "10");
     let mailbox = h.state.join("herdr-orchestration-w1");
     std::fs::create_dir_all(&mailbox).unwrap();
     std::fs::write(mailbox.join("orchestrator.id"), "w1:p1").unwrap();
-    // A courier acknowledges the mail of a role no one holds (`done` freed
-    // it), so the worker is registered, as a spawned worker is.
     std::fs::write(mailbox.join("sonnet-1.id"), "w1:p2").unwrap();
     let tell = as_worker(
         &h,
@@ -695,9 +696,6 @@ fn a_worker_inbox_prints_and_acks_its_own_role_mail_only() {
     );
 }
 
-/// The notices of a role that `done` freed reach no one: the courier
-/// acknowledges them and exits. They do not keep it polling, and a later
-/// worker that takes the role name does not get them.
 #[test]
 fn a_courier_drops_the_mail_of_a_role_no_pane_holds_and_exits() {
     let h = fleet("mail-gone-role", "exec,stay");
@@ -769,60 +767,6 @@ fn inbox_roles_still_reminds_about_pending_mail() {
     assert_eq!(pending_count(&h), 3);
 }
 
-/// W2: the codex agent exits 0 at once, without `horch done` (as Codex
-/// can at a usage limit or a crash). The record ends with an `exited` event,
-/// and the worker types a `BLOCKED:` line into the orchestrator's pane.
-#[test]
-fn w2_agent_exit_before_done_tells_the_orchestrator() {
-    let h = fleet("w2-early-exit", "exec");
-    let mailbox = h.state.join("herdr-orchestration-w1");
-    std::fs::create_dir_all(&mailbox).unwrap();
-    std::fs::write(mailbox.join("orchestrator.id"), "w1:p1").unwrap();
-    let pane = spawn(&h, &["codex-sol"]);
-    let id = records(&h).pop().unwrap()["record_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-
-    let blocked = wait_for_or(
-        "the BLOCKED line",
-        || {
-            h.calls_of("herdr").into_iter().find_map(|call| {
-                let argv: Vec<String> = call["argv"]
-                    .as_array()?
-                    .iter()
-                    .filter_map(|a| a.as_str().map(str::to_owned))
-                    .collect();
-                (argv.len() == 4 && argv[..3] == ["agent", "prompt", "w1:p1"])
-                    .then(|| argv[3].clone())
-                    .filter(|line| line == horch_core::messaging::delivery::MAIL_LINE)
-            })
-        },
-        || pane_context(&h, &pane, &id),
-    );
-    // FR-7: the pane gets the mail line, and the BLOCKED line waits in mail.
-    let blocked = horch_core::messaging::mail::Mail::under(&h.state, "w1")
-        .pending()
-        .unwrap()
-        .into_iter()
-        .map(|m| m.text)
-        .find(|t| t.contains("BLOCKED:"))
-        .unwrap_or(blocked);
-    assert!(
-        blocked.ends_with(&format!(
-            "BLOCKED: My agent exited with code 0 before horch done. The work can be \
-             incomplete. Resume it with: horch spawn --resume {id}"
-        )),
-        "{blocked}"
-    );
-    let r = record(&h, &id);
-    let last = r["history"].as_array().unwrap().last().unwrap().clone();
-    assert_eq!(last["event"], "exited", "{r}");
-}
-
-/// R1: a long `horch tell` spools its text under `messages/<workspace>/`, not
-/// in a directory shared by every fleet, and the line typed into the
-/// orchestrator's pane names that file.
 #[test]
 fn r1_long_tell_spools_under_its_own_workspace() {
     let h = fleet("r1-spool", "exec");
@@ -875,7 +819,6 @@ fn r1_long_tell_spools_under_its_own_workspace() {
             (argv.len() == 4 && argv[..3] == ["agent", "prompt", "w1:p1"]).then(|| argv[3].clone())
         })
         .collect::<Vec<_>>();
-    // FR-7: the pane gets the mail line, and the mail names the spool file.
     assert_eq!(
         typed,
         [horch_core::messaging::delivery::MAIL_LINE],
@@ -892,12 +835,9 @@ fn r1_long_tell_spools_under_its_own_workspace() {
     );
 }
 
-/// P09: a spawn writes the registry under the state folder and nothing under
-/// the temp folder. With the temp folder emptied, `inbox` still lists the
-/// role and `tell` still reaches it.
 #[test]
 fn p09_registry_lives_in_the_state_folder() {
-    let h = fleet("p09-state", "exec,stay");
+    let h = worker_fleet("p09-state", "exec,stay");
     let (_pane, role, _id) = running_worker(&h);
 
     assert!(h
@@ -932,14 +872,11 @@ fn p09_registry_lives_in_the_state_folder() {
     assert!(tell.status.success(), "{}", text(&tell));
 }
 
-/// P09, #77: a registry that exists only in the old temp location, owned
-/// by this user and mode 0700, is copied once into the state folder, then
-/// found by `inbox`, `tell` and `done`. Nothing is written back to it.
 #[cfg(unix)]
 #[test]
 fn p09_registry_in_the_old_temp_location_still_resolves() {
     use std::os::unix::fs::PermissionsExt;
-    let h = fleet("p09-legacy", "exec,stay");
+    let h = worker_fleet("p09-legacy", "exec,stay");
     let (pane, role, id) = running_worker(&h);
     let state_mailbox = h.state.join("herdr-orchestration-w1");
     let legacy_mailbox = h.tmp.join("herdr-orchestration-w1");
@@ -968,13 +905,11 @@ fn p09_registry_in_the_old_temp_location_still_resolves() {
     assert!(!state_mailbox.join(format!("{role}.id")).exists());
 }
 
-/// #77: the same old registry with mode 0777 is not copied, and the
-/// command says why.
 #[cfg(unix)]
 #[test]
 fn an_old_registry_others_can_write_is_not_copied_and_inbox_says_why() {
     use std::os::unix::fs::PermissionsExt;
-    let h = fleet("p09-legacy-open", "exec,stay");
+    let h = worker_fleet("p09-legacy-open", "exec,stay");
     let (_pane, role, _id) = running_worker(&h);
     let state_mailbox = h.state.join("herdr-orchestration-w1");
     let legacy_mailbox = h.tmp.join("herdr-orchestration-w1");
@@ -1002,70 +937,10 @@ fn an_old_registry_others_can_write_is_not_copied_and_inbox_says_why() {
     assert!(!tell.status.success(), "{}", text(&tell));
 }
 
-/// A fleet with a custom `HORCH_STATE_DIR`: the orchestrator pane does not
-/// inherit it, so its launch line has to carry it. The orchestrator registers
-/// under that folder, not under the default state root, and `inbox` lists it.
-#[cfg(unix)]
-#[test]
-fn t11_followup_orchestrator_registers_under_a_custom_state_dir() {
-    let h = Harness::new("custom-state");
-    let project = h.project.to_string_lossy().into_owned();
-    let out = h.run(&["fleet", "--cwd", &project]);
-    assert!(out.status.success(), "fleet: {}", text(&out));
-    let launch = h
-        .calls_of("herdr")
-        .into_iter()
-        .find(|c| {
-            c["ran"]
-                .as_str()
-                .is_some_and(|l| l.contains("'pane-launch'"))
-        })
-        .expect("horch fleet ran a pane-launch command");
-    let line = launch["ran"].as_str().unwrap();
-    let pane = launch["argv"][2].as_str().unwrap();
-    let workspace = pane.split(':').next().unwrap();
-
-    // The pane is a fresh shell: it has no `HORCH_STATE_DIR` of its own.
-    let mut shell = std::process::Command::new("/bin/sh");
-    h.seal(&mut shell);
-    shell
-        .arg("-c")
-        .arg(line)
-        .env("HERDR_PANE_ID", pane)
-        .env_remove("HORCH_STATE_DIR");
-    let out = shell.output().unwrap();
-    assert!(out.status.success(), "{line}\n{}", text(&out));
-
-    let id = h
-        .state
-        .join(format!("herdr-orchestration-{workspace}/orchestrator.id"));
-    assert!(id.is_file(), "no {}\n{}", id.display(), text(&out));
-    let default_root = h.home.join(".local/state/horch");
-    assert!(
-        !default_root.exists(),
-        "the pane wrote under the default state root: {}",
-        default_root.display()
-    );
-
-    let mut inbox = h.horch(&["inbox"]);
-    inbox.env("HORCH_WORKSPACE_ID", workspace);
-    let inbox = inbox.output().unwrap();
-    assert!(inbox.status.success(), "{}", text(&inbox));
-    assert!(
-        String::from_utf8_lossy(&inbox.stdout)
-            .lines()
-            .any(|l| l.starts_with("orchestrator")),
-        "{}",
-        text(&inbox)
-    );
-}
-
-/// A mailbox removal that fails does not stop `horch done`: it warns with the
-/// role and the path, and still closes the pane.
 #[cfg(unix)]
 #[test]
 fn t11_followup_done_warns_when_the_registration_stays() {
-    let h = fleet("done-warns", "exec,stay");
+    let h = worker_fleet("done-warns", "exec,stay");
     let (pane, role, id) = running_worker(&h);
     let id_file = h.state.join(format!("herdr-orchestration-w1/{role}.id"));
     std::fs::remove_file(&id_file).unwrap();

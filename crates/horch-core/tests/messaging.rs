@@ -1,6 +1,3 @@
-//! ARC-20 (delivery is unchanged) and ARC-21 (`done` runs in a fixed order),
-//! over the in-memory workspace.
-
 use std::cell::RefCell;
 use std::time::Duration;
 
@@ -10,14 +7,12 @@ use horch_core::messaging::delivery::{self, Timing, TypedLine, MAIL_LINE};
 use horch_core::workspace::client::WorkspaceClient;
 use horch_core::workspace::testing::{FakeCall, FakeWorkspace};
 
-/// A workspace with one pane, `p1`.
 fn one_pane() -> (FakeWorkspace, String) {
     let ws = FakeWorkspace::new();
     let created = ws.workspace_create("fleet", None, false).unwrap();
     (ws, created.root_pane_id)
 }
 
-/// The calls after the setup call, as `method arg arg`.
 fn trace(ws: &FakeWorkspace) -> Vec<String> {
     ws.calls()
         .into_iter()
@@ -26,7 +21,6 @@ fn trace(ws: &FakeWorkspace) -> Vec<String> {
         .collect()
 }
 
-/// The real waits, cut to milliseconds.
 const FAST: Timing = Timing {
     tail_timeout: Duration::from_millis(50),
     poll_start: Duration::from_millis(1),
@@ -51,7 +45,6 @@ fn arc_20_send_line_prompt_first() {
 fn arc_20_fallback_waits_tail() {
     let message = MAIL_LINE;
 
-    // The tail shows, soft-wrapped inside a box: text, poll, Enter, retry Enter.
     let (ws, pane) = one_pane();
     ws.fail_next("agent_prompt", "no agent detected");
     ws.set_screen(
@@ -70,8 +63,6 @@ fn arc_20_fallback_waits_tail() {
         ]
     );
 
-    // The tail never shows: the poll times out, and one Enter goes after the
-    // settle. As today, the timeout is not an error.
     let (ws, pane) = one_pane();
     ws.fail_next("agent_prompt", "no agent detected");
     ws.set_screen(&pane, "something else entirely");
@@ -89,7 +80,6 @@ fn arc_20_fallback_waits_tail() {
         .iter()
         .all(|c| c == &format!("pane_read {pane} visible")));
 
-    // A failed send_text is the error, and nothing is pressed after it.
     let (ws, pane) = one_pane();
     ws.fail_next("agent_prompt", "no agent detected");
     ws.fail_next("pane_send_text", "herdr pane send-text failed");
@@ -113,8 +103,6 @@ fn arc_20_default_timing_is_unchanged() {
     );
 }
 
-/// Records every step, and the workspace calls made so far at each one, into
-/// one log.
 struct Recorder<'a> {
     ws: &'a FakeWorkspace,
     log: RefCell<Vec<String>>,
@@ -131,8 +119,6 @@ impl Recorder<'_> {
     }
 
     fn push(&self, step: String) {
-        // Every workspace call made since the last step goes in first, so the
-        // log is one ordered story.
         let seen = self
             .log
             .borrow()
@@ -204,7 +190,6 @@ fn arc_21_done_order() {
     assert_eq!(rec.finish(), full(&pane));
     assert!(ws.pane_ids().is_empty(), "the pane is closed");
 
-    // No report target: the report step is absent, the rest is unchanged.
     let (ws, pane) = one_pane();
     let rec = Recorder::new(&ws, false);
     lifecycle::done(&ws, &rec, &request(&pane, ReportTarget::None)).unwrap();
@@ -212,9 +197,6 @@ fn arc_21_done_order() {
     expected.remove(0);
     assert_eq!(rec.finish(), expected);
 
-    // W2: a failed report stops the shutdown. The ledger is not marked done,
-    // the role stays registered, the pane stays open, and the error tells
-    // the worker what to do next.
     let (ws, pane) = one_pane();
     let rec = Recorder::new(&ws, true);
     let error =
@@ -232,7 +214,6 @@ fn arc_21_done_order() {
         "{error}"
     );
 
-    // An explicit workspace wins over the pane's own.
     let (ws, pane) = one_pane();
     let rec = Recorder::new(&ws, false);
     let mut req = request(&pane, ReportTarget::None);
@@ -241,14 +222,11 @@ fn arc_21_done_order() {
     assert!(rec.finish().contains(&"settle w9".to_string()));
 }
 
-/// Readiness waits cut to milliseconds.
 const READY_FAST: delivery::Readiness = delivery::Readiness {
     timeout: Duration::from_millis(40),
     poll: Duration::from_millis(1),
 };
 
-/// LA-3: opencode drops text typed while it starts (status `unknown`), so a
-/// resumed prompt is typed only once herdr reports the agent idle.
 #[test]
 fn deliver_when_idle_waits_for_idle() {
     let (ws, pane) = one_pane();
@@ -272,9 +250,6 @@ fn deliver_when_idle_waits_for_idle() {
     );
 }
 
-/// herdr `done` is at the prompt too: a resumed agent whose last turn
-/// finished can read `done`, not `idle` (live check W3e, 2026-10-07).
-/// `working` and `blocked` are not at the prompt.
 #[test]
 fn deliver_when_idle_types_into_an_agent_that_reads_done() {
     let (ws, pane) = one_pane();
@@ -311,8 +286,6 @@ fn deliver_when_idle_times_out_without_typing() {
     );
 }
 
-/// `horch tell` and `horch assign`: a starting agent is waited out; a pane
-/// with no agent, or a busy agent, gets the line at once, as before.
 #[test]
 fn send_line_when_ready_waits_only_for_a_starting_agent() {
     let (ws, pane) = one_pane();
@@ -380,9 +353,6 @@ fn send_line_when_ready_waits_only_for_a_starting_agent() {
     assert!(trace(&ws).iter().all(|c| c.starts_with("pane_get ")));
 }
 
-/// A role that registered just now: herdr shows no agent at first, then one
-/// that is starting, then idle. The line waits for all of it (LA-3: a tell
-/// 3 s after spawn was lost while herdr showed no agent yet).
 #[test]
 fn send_line_when_ready_gives_a_fresh_role_time_to_show_its_agent() {
     let grace = Duration::from_millis(40);
@@ -406,8 +376,6 @@ fn send_line_when_ready_gives_a_fresh_role_time_to_show_its_agent() {
     assert_eq!(gets, 4, "{calls:?}");
     assert_eq!(calls.len(), 5, "only the gets, then the prompt: {calls:?}");
 
-    // A pane that never shows an agent gets the line after the grace, on
-    // the old path.
     let (ws, pane) = one_pane();
     ws.set_agent_states(&pane, &[(None, None)]);
     let started = std::time::Instant::now();
@@ -421,9 +389,6 @@ fn send_line_when_ready_gives_a_fresh_role_time_to_show_its_agent() {
     );
 }
 
-/// G5: `horch inbox` reads which registered panes herdr still has. A role
-/// whose pane closed without `horch done` is `Closed`; a herdr that does not
-/// answer leaves every pane `Unknown`.
 #[test]
 fn role_states_mark_a_closed_pane() {
     use horch_core::messaging::mailbox::{Mailbox, PaneState, RoleEntry};
@@ -463,9 +428,6 @@ fn role_states_mark_a_closed_pane() {
         .all(|r| r.state == PaneState::Unknown));
 }
 
-/// G5: `horch spawn --resume` of a `working` record whose pane is gone ends
-/// the record first, so it resumes. An open pane, or a herdr that does not
-/// answer, leaves the record `working`, and the resume refuses.
 #[test]
 fn end_if_pane_closed_ends_only_a_vanished_pane() {
     use horch_core::execution::legacy::LedgerRecordV1;
@@ -483,10 +445,8 @@ fn end_if_pane_closed_ends_only_a_vanished_pane() {
         ..LedgerRecordV1::default()
     };
 
-    // The pane is open: the record stays working.
     let (ws, pane) = one_pane();
     let tmp = tempfile::tempdir().unwrap();
-    // A test of the store writes with the writer of fleetd (T-884).
     let store = ExecutionStore::for_project(tmp.path(), "/work/alpha").with_writer(
         std::sync::Arc::new(horch_core::taskledger::store::LedgerWriter::fleetd()),
     );
@@ -494,13 +454,11 @@ fn end_if_pane_closed_ends_only_a_vanished_pane() {
     assert!(!store.end_if_pane_closed("r1", &ws).unwrap());
     assert_eq!(store.get("r1").unwrap().status, "working");
 
-    // herdr does not answer: the pane may be open, so nothing changes.
     ws.pane_close(&pane).unwrap();
     ws.set_reachable(false);
     assert!(!store.end_if_pane_closed("s1", &ws).unwrap());
     assert_eq!(store.get("r1").unwrap().status, "working");
 
-    // herdr answers without the pane: the record ends, with the reason.
     ws.set_reachable(true);
     assert!(store.end_if_pane_closed("s1", &ws).unwrap());
     let r = store.get("r1").unwrap();
@@ -516,6 +474,5 @@ fn end_if_pane_closed_ends_only_a_vanished_pane() {
         "pane_vanished"
     );
 
-    // A second call finds nothing to end.
     assert!(!store.end_if_pane_closed("r1", &ws).unwrap());
 }

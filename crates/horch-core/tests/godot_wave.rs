@@ -1,12 +1,3 @@
-//! The Godot wave (GDW-01 to GDW-12, `docs/specs/godot.md`): the Godot
-//! requirement, the 19 `godot-*` seats, the 80 `godot-*` skills and the
-//! gate's Godot checks.
-//!
-//! The seat tests read the teammates through the public roster API and
-//! never depend on the context fields (`compact_at`, `compact_window`). The
-//! gate tests run the Python checks in `scripts/godot/` with `python3`,
-//! against the test fixtures, so no test needs Godot or dotnet.
-
 #[path = "common/warm.rs"]
 mod warm;
 
@@ -20,20 +11,16 @@ use horch_core::roster::{offered_in, project_skills, ProjectFacts, Requirement, 
 use horch_core::runtime::bins::{host_tool_bin, GODOT_APP, GODOT_MONO_APP};
 use horch_core::skills::{SkillCatalog, BUNDLED_SKILL_FILES};
 
-/// The C# skills that `skills_when` adds in a project with a `*.csproj`.
 const CSHARP_SKILLS: [&str; 2] = ["godot-csharp-godot", "godot-csharp-signals"];
 
-/// The seats that plan or review: they get no `skills_when`.
 const NO_CSHARP_SEATS: [&str; 3] = [
     "godot-tech-lead",
     "godot-code-reviewer",
     "godot-qa-engineer",
 ];
 
-/// The seat that writes C# in every project: its `skills:` names both.
 const CSHARP_SEAT: &str = "godot-csharp-engineer";
 
-/// Upstream skills the wave excludes on purpose.
 const EXCLUDED: [&str; 6] = [
     "using-godot-prompter",
     "godot-mentor",
@@ -43,7 +30,6 @@ const EXCLUDED: [&str; 6] = [
     "godot-theme-easter",
 ];
 
-/// The bundled size budget (the same numbers as `tests/skills_catalog.rs`).
 const MAX_SKILL_MD_BYTES: usize = 12 * 1024;
 const MAX_SKILL_DIR_BYTES: usize = 160 * 1024;
 
@@ -56,7 +42,6 @@ fn roster() -> Roster {
     Roster::load_layered(None, None, Some(dir.to_str().unwrap())).unwrap()
 }
 
-/// Every `godot-*` seat of the repository roster, by name.
 fn seats(roster: &Roster) -> Vec<&Teammate> {
     roster
         .names()
@@ -66,7 +51,6 @@ fn seats(roster: &Roster) -> Vec<&Teammate> {
         .collect()
 }
 
-/// Every bundled `godot-*` skill id.
 fn godot_skills() -> BTreeSet<String> {
     SkillCatalog::bundled()
         .unwrap()
@@ -76,8 +60,6 @@ fn godot_skills() -> BTreeSet<String> {
         .collect()
 }
 
-/// Runs `python3 -c <code>` in the repository with `scripts/godot` on
-/// `sys.path`. Returns the exit code and stdout.
 fn python(code: &str) -> (i32, String) {
     let out = Command::new("python3")
         .current_dir(repo())
@@ -91,7 +73,7 @@ fn python(code: &str) -> (i32, String) {
     assert!(!stderr.contains("Traceback"), "{stderr}");
     (
         out.status.code().unwrap(),
-        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stdout).replace("\r\n", "\n"),
     )
 }
 
@@ -134,12 +116,10 @@ fn gdw_01_godot_lookup_is_the_variable_then_path_then_the_app() {
     let lookup = |var: Option<&OsStr>, path: &Path, app: Option<&Path>| {
         host_tool_bin(var, Some(path.as_os_str()), None, "godot", app)
     };
-    // GODOT_PATH wins, unchecked: doctor reports a broken one.
     assert_eq!(
         lookup(Some(var), &bin, Some(&app)),
         Some(PathBuf::from(var))
     );
-    // An empty GODOT_PATH counts as unset.
     assert_eq!(
         lookup(Some(OsStr::new("")), &bin, Some(&app)),
         Some(bin.join("godot"))
@@ -172,7 +152,6 @@ fn gdw_02_godot_seats_are_offered_only_in_a_godot_project() {
         assert_eq!(t.offer_when, ["project.godot"], "{}", t.name);
         assert!(offered_in(t, Some(&godot)), "{}", t.name);
         assert!(!offered_in(t, Some(&other)), "{}", t.name);
-        // No facts gathered: `horch teammates` lists every seat.
         assert!(offered_in(t, None), "{}", t.name);
     }
 
@@ -222,7 +201,6 @@ fn gdw_03_a_csharp_project_adds_the_csharp_skills_to_the_builder_seats() {
         let added: BTreeSet<String> = project_skills(t, &csharp).into_iter().collect();
         assert_eq!(added, csharp_set, "{}", t.name);
 
-        // At launch the added skills are expected skills, not available.
         let launched = roster
             .clone()
             .with_project_facts(csharp.clone())
@@ -312,7 +290,6 @@ fn gdw_05_the_gate_checks_names_against_the_pinned_4_7_2_data() {
     assert!(deprecated.as_object().is_some_and(|m| !m.is_empty()));
     assert!(dir.join("known_classes.txt").is_file());
 
-    // The auto mode picks the data file of the Godot version it finds.
     let (code, out) =
         python("import api_check\nprint(api_check.pinned_deprecations('4.7.2').name)");
     assert_eq!((code, out.trim()), (0, "deprecated-4.7.2.json"));
@@ -384,9 +361,9 @@ fn gdw_06_copied_failures_fail_only_above_the_baseline() {
 }
 
 #[test]
-fn gdw_07_the_catalog_has_80_godot_skills_and_no_excluded_one() {
+fn gdw_07_the_catalog_has_81_godot_skills_and_no_excluded_one() {
     let skills = godot_skills();
-    assert_eq!(skills.len(), 80, "{skills:?}");
+    assert_eq!(skills.len(), 81, "{skills:?}");
     for name in EXCLUDED {
         assert!(!skills.contains(name), "{name} is excluded");
     }
@@ -431,14 +408,14 @@ fn gdw_07_godot_skills_carry_no_licence_or_credit_line() {
 }
 
 #[test]
-fn gdw_08_every_godot_seat_expects_5_to_10_skills_from_the_catalog() {
+fn gdw_08_every_godot_seat_expects_5_to_11_skills_from_the_catalog() {
     let roster = roster();
     let seats = seats(&roster);
     assert_eq!(seats.len(), 19);
     let catalog = SkillCatalog::bundled().unwrap();
     for t in seats {
         let n = t.skills.len();
-        assert!((5..=10).contains(&n), "{} expects {n} skills", t.name);
+        assert!((5..=11).contains(&n), "{} expects {n} skills", t.name);
         for s in t.skills.iter().chain(&t.available_skills) {
             assert!(
                 catalog.lookup(s).is_some(),
@@ -494,6 +471,7 @@ fn gdw_10_every_godot_seat_falls_back_to_codex_sol() {
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn gdw_10_godot_build_verify_ships_an_executable_godot_run_script() {
     use std::os::unix::fs::PermissionsExt;
@@ -536,7 +514,6 @@ fn gdw_11_the_language_skill_is_on_every_godot_seat() {
         }
     }
 
-    // Own text: the gate's strict block checks fail on any problem in it.
     let catalog = SkillCatalog::bundled().unwrap();
     let entry = catalog.lookup(SKILL).expect("the skill is bundled");
     let copied = entry.copied.as_ref().expect("a copied.json entry");
@@ -546,9 +523,90 @@ fn gdw_11_the_language_skill_is_on_every_godot_seat() {
         .any(|(path, _)| *path == "godot-language-choice/references/evidence.md"));
 }
 
-/// Runs `godot-run.sh --version` in `project` with `GODOT_PATH` set to a
-/// standard engine and `GODOT_MONO_PATH` to a .NET engine (fakes). Returns
-/// the exit code and stdout plus stderr.
+fn library_shelves() -> BTreeSet<&'static str> {
+    BUNDLED_SKILL_FILES
+        .iter()
+        .filter_map(|(path, _)| path.strip_prefix("godot-library/references/"))
+        .filter_map(|file| file.strip_suffix(".md"))
+        .collect()
+}
+
+#[test]
+fn gdw_13_every_godot_seat_names_its_library_shelves_high_in_its_briefing() {
+    const SKILL: &str = "godot-library";
+    const EVERY_SEAT: [&str; 2] = ["version-ledger", "principles-and-performance"];
+    let shelves = library_shelves();
+    for shelf in EVERY_SEAT {
+        assert!(shelves.contains(shelf), "{shelves:?}");
+    }
+
+    let roster = roster();
+    let seats = seats(&roster);
+    assert_eq!(seats.len(), 19);
+    let mut named: BTreeSet<&str> = BTreeSet::new();
+    for t in seats {
+        assert!(
+            t.skills.iter().any(|s| s == SKILL),
+            "{}: {SKILL} not in skills:",
+            t.name
+        );
+        let body = t.persona.as_str();
+        let block = body
+            .find("Library: the `godot-library` skill")
+            .unwrap_or_else(|| panic!("{}: no library block", t.name));
+        let rules = body
+            .find("Standing rules for Godot work")
+            .unwrap_or_else(|| panic!("{}: no standing rules", t.name));
+        assert!(
+            block < rules,
+            "{}: the library block is below the rules",
+            t.name
+        );
+        assert_eq!(
+            body[..block].trim_end().matches("\n\n").count(),
+            0,
+            "{}: the library block is not the 2nd paragraph",
+            t.name
+        );
+        let end = block + body[block..].find("\n\n").expect("the block ends");
+        let text = &body[block..end];
+        for shelf in EVERY_SEAT {
+            assert!(
+                text.contains(&format!("`references/{shelf}.md`")),
+                "{}: the block does not name {shelf}",
+                t.name
+            );
+            named.insert(shelf);
+        }
+        let mut own = 0;
+        for line in text.lines().filter(|l| l.starts_with("- `")) {
+            let shelf = line[3..].split('`').next().unwrap();
+            let known = shelves.get(shelf);
+            assert!(known.is_some(), "{}: no shelf {shelf}", t.name);
+            named.insert(known.unwrap());
+            own += 1;
+        }
+        assert!(own >= 5, "{}: names only {own} shelves", t.name);
+    }
+    let orphans: Vec<&&str> = shelves.difference(&named).collect();
+    assert!(orphans.is_empty(), "no seat names the shelves {orphans:?}");
+
+    let index = BUNDLED_SKILL_FILES
+        .iter()
+        .find(|(path, _)| *path == "godot-library/SKILL.md")
+        .map(|(_, bytes)| String::from_utf8_lossy(bytes))
+        .expect("the library index is bundled");
+    for shelf in &shelves {
+        assert!(
+            index.contains(&format!("](references/{shelf}.md)")),
+            "the index does not link {shelf}"
+        );
+    }
+    let catalog = SkillCatalog::bundled().unwrap();
+    let copied = catalog.lookup(SKILL).unwrap().copied.as_ref().unwrap();
+    assert!(copied.copied_files.is_empty(), "{:?}", copied.copied_files);
+}
+
 #[cfg(unix)]
 fn godot_run_version(project: &Path, standard: &Path, mono: &Path) -> (i32, String) {
     let out = Command::new("bash")
@@ -569,7 +627,6 @@ fn godot_run_version(project: &Path, standard: &Path, mono: &Path) -> (i32, Stri
 #[test]
 fn gdw_12_a_csharp_project_runs_only_the_dotnet_engine() {
     let tmp = tempfile::tempdir().unwrap();
-    // A fake only prints its version, so the warm has no effect.
     let fake = |name: &str, version: &str| {
         let bin = tmp.path().join(name);
         let warm = warm::write_warmed(&bin, &format!("#!/bin/sh\necho {version}\n"), &["warm"]);
@@ -598,7 +655,6 @@ fn gdw_12_a_csharp_project_runs_only_the_dotnet_engine() {
     assert_eq!(code, 0, "{out}");
     assert!(out.contains(".mono.official.fake"), "{out}");
 
-    // No fallback to the standard engine in a C# project.
     let (code, out) = godot_run_version(&project, &standard, &tmp.path().join("missing"));
     assert_eq!(code, 2, "{out}");
     assert!(out.contains("GODOT_MONO_PATH"), "{out}");

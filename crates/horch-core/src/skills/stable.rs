@@ -1,5 +1,3 @@
-//! Persistent paths to catalog skills outside short-lived spawn bundles.
-
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
@@ -7,9 +5,6 @@ use anyhow::{bail, Context, Result};
 use super::catalog::{CatalogEntry, CatalogSource, SkillCatalog};
 use super::materialize::write_embedded;
 
-/// Return an absolute directory that holds `id` and remains valid after a
-/// spawn bundle is deleted. Bundled files are stored by content digest under
-/// `state_root`; marketplace skills keep their existing installed directory.
 pub fn skill_dir(catalog: &SkillCatalog, state_root: &Path, id: &str) -> Result<PathBuf> {
     let entry = catalog.lookup(id).with_context(|| {
         format!("no skill '{id}' in the catalog; list skills with horch skills")
@@ -78,8 +73,6 @@ fn verify_bundled(entry: &CatalogEntry, dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Refuse a file whose execute bit differs from the bundle. Where the OS has
-/// no modes, nothing to check.
 fn verify_executable(entry: &CatalogEntry, rel: &str, path: &Path) -> Result<()> {
     let Ok(mode) = horch_platform::fs::mode_of(&path.metadata()?) else {
         return Ok(());

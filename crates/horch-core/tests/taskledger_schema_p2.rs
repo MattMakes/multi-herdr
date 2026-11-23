@@ -1,9 +1,3 @@
-//! The schema step of Phase 2 (docs/specs/fleetd/design.md, "Ledger" and
-//! "Migration plan" item 4; docs/tickets/fleetd-p2/02-schema-phase2.md): the
-//! `leases` and `questions` tables, the new columns of `tasks`, `attempts`
-//! and `worker_waits`, the release backfill (MAP.md, Q21), and the 3 safety
-//! rules of OR-6 for this step.
-
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -13,24 +7,10 @@ use horch_core::taskledger::store::{self, migrate_refusal};
 use rusqlite::types::Value;
 use rusqlite::Connection;
 
-/// The fleet clock of the `fleetd` row in [`phase_1_file`].
 const CLOCK: i64 = 5000;
-/// The default `liveness.lease_s` of the design.
 const LEASE_S: i64 = 120;
-/// The default `liveness.max_wait_s` of the design.
 const MAX_WAIT_S: i64 = 3600;
 
-/// A Phase 1 ledger at `path`, built by the real steps, with the fleet clock
-/// at `clock` (no `fleetd` row for `None`):
-/// - `t1` runs with the live attempt `t1/A2` of `w1`.
-/// - `t2` runs with the attempt `t2/A1`, still `launching`.
-/// - `t3` is queued with no attempt.
-/// - `t4` runs, and its only attempt `t4/A1` ended.
-/// - `t5` runs with 2 live attempts: `t5/A2` of its current worker `w5`, and
-///   `t5/A1` of `w6`, which started later.
-/// - `t6` lands with the live attempt `t6/A1`.
-/// - `w8` is an orchestrator with the live attempt `o/1` and no task.
-/// - `w1` has a question wait and a background wait.
 fn phase_1_file(path: &Path, clock: Option<i64>) {
     let mut conn = Connection::open(path).unwrap();
     schema::migrate_to(&mut conn, schema::PHASE_1_VERSION).unwrap();
@@ -93,9 +73,6 @@ fn columns(conn: &Connection, table: &str) -> Vec<String> {
         .unwrap()
 }
 
-/// The migration of the file at `path` up to the Phase 2 step, with foreign
-/// keys on as `Store::open` sets them. A later step does not change what
-/// these tests see.
 fn migrate(path: &Path) -> Connection {
     let mut conn = Connection::open(path).unwrap();
     conn.pragma_update(None, "foreign_keys", true).unwrap();
@@ -103,8 +80,6 @@ fn migrate(path: &Path) -> Connection {
     conn
 }
 
-/// A Phase 1 ledger with the fleet clock at [`CLOCK`], migrated: its folder
-/// (kept alive) and a connection with foreign keys on.
 fn migrated() -> (tempfile::TempDir, Connection) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("ledger.sqlite3");
@@ -113,7 +88,6 @@ fn migrated() -> (tempfile::TempDir, Connection) {
     (dir, conn)
 }
 
-/// Each lease: `task_id -> (attempt_id, expires_at, renewed_at, renew_basis)`.
 fn leases(conn: &Connection) -> BTreeMap<String, (String, i64, String, String)> {
     conn.prepare("SELECT task_id, attempt_id, expires_at, renewed_at, renew_basis FROM leases")
         .unwrap()
@@ -125,7 +99,6 @@ fn leases(conn: &Connection) -> BTreeMap<String, (String, i64, String, String)> 
         .unwrap()
 }
 
-/// `active_at` of each attempt, by id.
 fn active_at(conn: &Connection) -> BTreeMap<String, Option<i64>> {
     conn.prepare("SELECT id, active_at FROM attempts")
         .unwrap()
@@ -135,7 +108,6 @@ fn active_at(conn: &Connection) -> BTreeMap<String, Option<i64>> {
         .unwrap()
 }
 
-/// `due_at` of each wait, by `(worker_id, kind)`.
 fn wait_due_at(conn: &Connection) -> BTreeMap<(String, String), Option<i64>> {
     conn.prepare("SELECT worker_id, kind, due_at FROM worker_waits")
         .unwrap()
@@ -192,8 +164,6 @@ fn phase2_migration_adds_leases_and_questions() {
         .unwrap();
     assert_eq!(replans, 0);
 
-    // The CHECK lists of `questions`. `feature_id` holds the run id, with no
-    // reference (MAP.md, Q13).
     let ask = |id: &str, state: &str, case: Option<&str>| {
         conn.execute(
             "INSERT INTO questions (id, task_id, feature_id, owner, state, answer_case, due_at, asked_at)
@@ -218,7 +188,6 @@ fn phase2_migration_adds_leases_and_questions() {
         .is_err(),
         "task_id must name a task"
     );
-    // The new step leaves no broken reference.
     let broken: i64 = conn
         .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| {
             r.get(0)
@@ -239,8 +208,6 @@ fn held_task_with_a_live_attempt_gets_1_lease_with_a_full_time() {
         "renewed_at is a ledger stamp: {renewed_at}"
     );
     assert_eq!(basis, "backfill");
-    // 2 live attempts: the lease goes to the attempt of the task's current
-    // worker, not to the one that started later.
     assert_eq!(leases["t5"].0, "t5/A2");
     assert_eq!(leases["t5"].1, CLOCK + LEASE_S);
 }
@@ -249,8 +216,6 @@ fn held_task_with_a_live_attempt_gets_1_lease_with_a_full_time() {
 fn task_with_no_live_attempt_gets_no_lease() {
     let (_dir, conn) = migrated();
     let held: Vec<String> = leases(&conn).into_keys().collect();
-    // t2 (launching), t3 (no attempt), t4 (ended) and t6 (landing: no
-    // lease, MAP.md Q20) get none.
     assert_eq!(held, ["t1", "t5"]);
 }
 
@@ -286,7 +251,6 @@ fn live_attempt_gets_active_at_on_the_fleet_clock() {
 
 #[test]
 fn backfill_with_no_fleetd_row_counts_from_fleet_clock_0() {
-    // fleetd starts the fleet clock at 0 when it writes its first row.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("ledger.sqlite3");
     phase_1_file(&path, None);
@@ -308,11 +272,9 @@ fn lease_is_unique_for_each_task() {
             [task, attempt],
         )
     };
-    // FM-14: a second lease for 1 task is refused.
     assert!(lease("t1", "t1/A2").is_err());
     assert!(lease("t5", "t5/A1").is_err());
     assert_eq!(leases(&conn).len(), 2);
-    // A lease names a task and an attempt that exist.
     assert!(lease("nope", "t1/A2").is_err());
     assert!(lease("t3", "nope").is_err());
     lease("t3", "t2/A1").unwrap();
@@ -325,7 +287,6 @@ fn newer_schema_is_refused_and_backup_precedes_migration() {
     phase_1_file(&path, Some(CLOCK));
     let before = dump(&Connection::open(&path).unwrap(), None);
 
-    // The backup holds the Phase 1 file as it was before the step.
     let conn = migrate(&path);
     assert_eq!(user_version(&conn), schema::PHASE_2_VERSION);
     let backups = schema::backups_in(dir.path());
@@ -345,7 +306,6 @@ fn newer_schema_is_refused_and_backup_precedes_migration() {
     assert_eq!(dump(&copy, None), before);
     drop(conn);
 
-    // A file of a newer horch is refused, unchanged and with no backup.
     let newer = tempfile::tempdir().unwrap();
     let path = newer.path().join("ledger.sqlite3");
     {
@@ -395,9 +355,6 @@ fn development_build_does_not_migrate_a_phase_1_shared_ledger() {
     assert!(schema::backups_in(path.parent().unwrap()).is_empty());
 }
 
-/// Each row of each table, as text, by table. With `only`, the columns of
-/// each table in `only`: a dump after the migration then reads the columns
-/// that the dump before had.
 type Dump = BTreeMap<String, (Vec<String>, Vec<Vec<String>>)>;
 
 fn dump(conn: &Connection, only: Option<&Dump>) -> Dump {
@@ -450,8 +407,6 @@ fn migration_from_the_phase1_version_keeps_each_row() {
         "the migration runs the Phase 2 step"
     );
     let after = dump(&conn, Some(&before));
-    // Each task word of today moves to its design state (MAP.md, Q4): the
-    // held `t3` is escalated, and the landing `t6` is verifying.
     let (cols, rows) = before.get_mut("tasks").unwrap();
     let status = cols.iter().position(|c| c == "status").unwrap();
     for row in rows {
@@ -464,7 +419,6 @@ fn migration_from_the_phase1_version_keeps_each_row() {
     assert_eq!(after, before);
 }
 
-/// The query plan of `sql`, 1 line for each step.
 fn plan(conn: &Connection, sql: &str) -> String {
     conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
         .unwrap()
@@ -475,24 +429,19 @@ fn plan(conn: &Connection, sql: &str) -> String {
         .join("\n")
 }
 
-/// The count queries of the whole-run watchdog duties (T-322) read the run's
-/// tasks and workers through an index on `(run_id, status)`, not by a scan.
 #[test]
 fn count_queries_of_the_watchdog_duties_use_the_run_status_indexes() {
     let (_dir, conn) = migrated();
-    // `wakes::settled_line`.
     let settled = plan(
         &conn,
         "SELECT count(*) FROM tasks WHERE run_id = 'r1' AND status NOT IN ('done', 'cancelled')",
     );
     assert!(settled.contains("tasks_by_run_status"), "{settled}");
-    // `watchdog::startable_rewake`.
     let startable = plan(
         &conn,
         "SELECT count(*) FROM tasks WHERE run_id = 'r1' AND status = 'queued' AND held_reason IS NULL",
     );
     assert!(startable.contains("tasks_by_run_status"), "{startable}");
-    // `wakes::stuck_line`.
     let stuck = plan(
         &conn,
         "SELECT EXISTS (SELECT 1 FROM tasks WHERE run_id = 'r1' AND status IN ('queued', 'running', 'landing'))
@@ -503,13 +452,9 @@ fn count_queries_of_the_watchdog_duties_use_the_run_status_indexes() {
     assert!(stuck.contains("workers_by_run_status"), "{stuck}");
 }
 
-/// The 2 per-row queries of the watchdog duties (T-443) read 1 worker's
-/// checks and 1 task's workers through an index, in index order, with no
-/// scan and no sort.
 #[test]
 fn per_row_queries_of_the_watchdog_duties_use_an_index_and_no_sort() {
     let (_dir, conn) = migrated();
-    // `watchdog::prev`.
     let prev = plan(
         &conn,
         "SELECT at, herdr_seq, transcript_bytes, transcript_mtime, screen_timer_s, verdict
@@ -517,7 +462,6 @@ fn per_row_queries_of_the_watchdog_duties_use_an_index_and_no_sort() {
     );
     assert!(prev.contains("checks_by_worker"), "{prev}");
     assert!(!prev.contains("TEMP B-TREE"), "{prev}");
-    // `workers::attempts_at`.
     let attempts = plan(
         &conn,
         "SELECT * FROM workers WHERE task_id = 't1' ORDER BY attempt, claimed_at, rowid",
@@ -526,9 +470,6 @@ fn per_row_queries_of_the_watchdog_duties_use_an_index_and_no_sort() {
     assert!(!attempts.contains("TEMP B-TREE"), "{attempts}");
 }
 
-/// A Phase 1 ledger at `path` with 1 task for each case of the map of the
-/// task words (MAP.md, Q4). Its key is its title. `blocked_by` names the
-/// tasks that a task waits for.
 fn words_file(path: &Path) {
     let mut conn = Connection::open(path).unwrap();
     schema::migrate_to(&mut conn, schema::PHASE_1_VERSION).unwrap();
@@ -570,7 +511,6 @@ fn words_file(path: &Path) {
     }
 }
 
-/// Each task: `title -> (status, held_reason)`.
 fn task_words(conn: &Connection) -> BTreeMap<String, (String, Option<String>)> {
     conn.prepare("SELECT title, status, held_reason FROM tasks")
         .unwrap()
@@ -608,7 +548,6 @@ fn migration_maps_each_task_word_of_today_to_its_design_state() {
     .collect();
     assert_eq!(status, want);
 
-    // The `CHECK` of `tasks.status` is the list of the 12 states.
     let sql: String = conn
         .query_row(
             "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'tasks'",
@@ -652,7 +591,6 @@ fn migration_keeps_held_reason_and_each_foreign_key() {
     drop(before);
 
     let conn = migrate(&path);
-    // Each held task keeps its reason, so a hold and a park stay apart.
     let words = task_words(&conn);
     assert_eq!(
         (&words["held"].1, &words["parked"].1, &words["free"].1),
@@ -662,8 +600,6 @@ fn migration_keeps_held_reason_and_each_foreign_key() {
             &None
         )
     );
-    // Each foreign key of each old table is there after the rebuild. The
-    // step adds `leases` and `questions`, with their keys.
     let kept: Vec<Vec<String>> = keys(&conn)
         .into_iter()
         .filter(|k| k[0] != "leases" && k[0] != "questions")
@@ -688,7 +624,6 @@ fn migration_keeps_held_reason_and_each_foreign_key() {
         [],
     )
     .unwrap();
-    // The index of the watchdog duties is on the rebuilt table.
     let indexes: Vec<String> = conn
         .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'tasks' AND sql IS NOT NULL")
         .unwrap()

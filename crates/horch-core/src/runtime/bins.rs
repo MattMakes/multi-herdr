@@ -1,10 +1,3 @@
-//! Locating the programs horch runs: the agent CLIs a worker pane launches,
-//! herdr, and the helpers the telemetry and quota readers call.
-//!
-//! The resolvers moved here from `agent.rs`. They are functions of the
-//! explicit `HORCH_*_BIN` overrides and a PATH value, so nothing here reads the
-//! process environment.
-
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
@@ -13,9 +6,6 @@ use serde::{Deserialize, Serialize};
 use super::context::EnvSource;
 use super::process;
 
-/// The explicit `HORCH_*_BIN` values, and nothing else. A pane is a fresh
-/// shell that does not inherit the spawner's environment, so these travel in
-/// the worker's brief.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BinOverrides {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -33,6 +23,10 @@ pub struct BinOverrides {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub herdr: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hc: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub herdr_app: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sqlite3: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ollama: Option<PathBuf>,
@@ -40,12 +34,10 @@ pub struct BinOverrides {
     pub git: Option<PathBuf>,
 }
 
-/// The accessor of one override field.
 type Slot = fn(&mut BinOverrides) -> &mut Option<PathBuf>;
 
 impl BinOverrides {
-    /// Each override variable with the field it fills, in a fixed order.
-    const SLOTS: [(&'static str, Slot); 10] = [
+    const SLOTS: [(&'static str, Slot); 12] = [
         ("HORCH_CLAUDE_BIN", |o| &mut o.claude),
         ("HORCH_CODEX_BIN", |o| &mut o.codex),
         ("HORCH_OPENCODE_BIN", |o| &mut o.opencode),
@@ -53,25 +45,24 @@ impl BinOverrides {
         ("HORCH_PRIME_BIN", |o| &mut o.prime),
         ("HORCH_ANTIGRAVITY_BIN", |o| &mut o.antigravity),
         ("HORCH_HERDR_BIN", |o| &mut o.herdr),
+        ("HORCH_HC_BIN", |o| &mut o.hc),
+        ("HORCH_HERDR_APP_BIN", |o| &mut o.herdr_app),
         ("HORCH_SQLITE3_BIN", |o| &mut o.sqlite3),
         ("HORCH_OLLAMA_BIN", |o| &mut o.ollama),
         ("HORCH_GIT_BIN", |o| &mut o.git),
     ];
 
-    /// Every override variable, in the order of `SLOTS`.
     #[cfg(test)]
-    pub(crate) const VARS: [&'static str; 10] = {
-        let mut names = [""; 10];
+    pub(crate) const VARS: [&'static str; 12] = {
+        let mut names = [""; 12];
         let mut i = 0;
-        while i < 10 {
+        while i < 12 {
             names[i] = Self::SLOTS[i].0;
             i += 1;
         }
         names
     };
 
-    /// The overrides an environment sets. An empty value is treated as unset,
-    /// not as an empty command.
     pub fn from_env(env: &dyn EnvSource) -> BinOverrides {
         let mut out = BinOverrides::default();
         for (key, slot) in Self::SLOTS {
@@ -82,8 +73,6 @@ impl BinOverrides {
         out
     }
 
-    /// `(variable, value)` for every override that is set, in `Self::VARS`
-    /// order.
     pub fn env_pairs(&self) -> Vec<(&'static str, PathBuf)> {
         let mut copy = self.clone();
         Self::SLOTS
@@ -92,7 +81,6 @@ impl BinOverrides {
             .collect()
     }
 
-    /// Take every override `other` sets; keep the rest.
     pub fn merge(&mut self, other: &BinOverrides) {
         let mut other = other.clone();
         for (_, slot) in Self::SLOTS {
@@ -107,7 +95,6 @@ impl BinOverrides {
     }
 }
 
-/// The resolved program for each tool: the override, else the default name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HarnessBins {
     pub claude: PathBuf,
@@ -117,13 +104,14 @@ pub struct HarnessBins {
     pub prime: PathBuf,
     pub antigravity: PathBuf,
     pub herdr: PathBuf,
+    pub hc: PathBuf,
+    pub herdr_app: PathBuf,
     pub sqlite3: PathBuf,
     pub ollama: PathBuf,
     pub git: PathBuf,
 }
 
 impl HarnessBins {
-    /// Resolve every tool. `path` and `pathext` are only searched for `cpx`.
     pub fn resolve(o: &BinOverrides, path: Option<&OsStr>, pathext: Option<&str>) -> HarnessBins {
         HarnessBins {
             claude: claude_bin(o, path, pathext),
@@ -132,7 +120,9 @@ impl HarnessBins {
             pi: pi_bin(o),
             prime: prime_bin(o),
             antigravity: antigravity_bin(o),
-            herdr: herdr_bin(o),
+            herdr: herdr_bin(o, path, pathext),
+            hc: hc_bin(o, path, pathext),
+            herdr_app: herdr_app_bin(o, path, pathext),
             sqlite3: sqlite3_bin(o),
             ollama: ollama_bin(o),
             git: git_bin(o),
@@ -144,14 +134,6 @@ fn or_default(value: &Option<PathBuf>, name: &str) -> PathBuf {
     value.clone().unwrap_or_else(|| PathBuf::from(name))
 }
 
-/// Which Claude CLI to launch.
-///
-/// The bash implementation hard-coded a sibling checkout
-/// (`../claude-code-proxy/bin/cpx`), which cannot exist on a fresh Windows
-/// machine. Resolution order now:
-///   1. `$HORCH_CLAUDE_BIN` - explicit override.
-///   2. `cpx` on PATH - preserves the proxy setup where it is already installed.
-///   3. `claude` - the plain Claude Code CLI.
 pub fn claude_bin(o: &BinOverrides, path: Option<&OsStr>, pathext: Option<&str>) -> PathBuf {
     o.claude.clone().unwrap_or_else(|| {
         if process::which(path, pathext, "cpx").is_some() {
@@ -162,72 +144,82 @@ pub fn claude_bin(o: &BinOverrides, path: Option<&OsStr>, pathext: Option<&str>)
     })
 }
 
-/// Which Codex CLI to launch. `$HORCH_CODEX_BIN` overrides.
 pub fn codex_bin(o: &BinOverrides) -> PathBuf {
     or_default(&o.codex, "codex")
 }
 
-/// Which OpenCode CLI to launch. `$HORCH_OPENCODE_BIN` overrides.
 pub(crate) fn opencode_bin(o: &BinOverrides) -> PathBuf {
     or_default(&o.opencode, "opencode")
 }
 
-/// Which pi CLI to launch. `$HORCH_PI_BIN` overrides.
 pub(crate) fn pi_bin(o: &BinOverrides) -> PathBuf {
     or_default(&o.pi, "pi")
 }
 
-/// Which Prime Agent CLI to launch. `$HORCH_PRIME_BIN` overrides.
 pub(crate) fn prime_bin(o: &BinOverrides) -> PathBuf {
     or_default(&o.prime, "prime-agent")
 }
 
-/// Which Antigravity CLI to launch. `$HORCH_ANTIGRAVITY_BIN` overrides.
 pub(crate) fn antigravity_bin(o: &BinOverrides) -> PathBuf {
     or_default(&o.antigravity, "agy")
 }
 
-/// Which herdr CLI to drive. `$HORCH_HERDR_BIN` overrides, which is how the
-/// end-to-end tests put a recording fake in its place.
-pub fn herdr_bin(o: &BinOverrides) -> PathBuf {
-    or_default(&o.herdr, "herdr")
+pub fn herdr_bin(o: &BinOverrides, path: Option<&OsStr>, pathext: Option<&str>) -> PathBuf {
+    sandbox_host_bin(&o.herdr, path, pathext, "herdr")
 }
 
-/// Which `sqlite3` CLI reads OpenCode's database. `$HORCH_SQLITE3_BIN`
-/// overrides. horch links no SQLite library; the CLI is the only reader.
+pub fn hc_bin(o: &BinOverrides, path: Option<&OsStr>, pathext: Option<&str>) -> PathBuf {
+    sandbox_host_bin(&o.hc, path, pathext, "hc")
+}
+
+pub fn herdr_app_bin(o: &BinOverrides, path: Option<&OsStr>, pathext: Option<&str>) -> PathBuf {
+    sandbox_host_bin(&o.herdr_app, path, pathext, "herdr-app")
+}
+
+fn sandbox_host_bin(
+    override_val: &Option<PathBuf>,
+    path: Option<&OsStr>,
+    pathext: Option<&str>,
+    name: &str,
+) -> PathBuf {
+    override_val.clone().unwrap_or_else(|| {
+        if process::which(path, pathext, name).is_some() {
+            PathBuf::from(name)
+        } else {
+            path.and_then(|p| hidden_on_path(p, name))
+                .unwrap_or_else(|| PathBuf::from(name))
+        }
+    })
+}
+
+fn hidden_on_path(path: &OsStr, name: &str) -> Option<PathBuf> {
+    std::env::split_paths(path)
+        .filter(|dir| dir.is_absolute())
+        .map(|dir| dir.join(name))
+        .find(|candidate| {
+            std::fs::metadata(candidate)
+                .is_err_and(|e| e.kind() == std::io::ErrorKind::PermissionDenied)
+        })
+}
+
 pub fn sqlite3_bin(o: &BinOverrides) -> PathBuf {
     or_default(&o.sqlite3, "sqlite3")
 }
 
-/// Which `ollama` CLI the local-pool health check asks for its model list.
-/// `$HORCH_OLLAMA_BIN` overrides.
 pub(crate) fn ollama_bin(o: &BinOverrides) -> PathBuf {
     or_default(&o.ollama, "ollama")
 }
 
-/// Which `git` to run. `$HORCH_GIT_BIN` overrides.
 pub fn git_bin(o: &BinOverrides) -> PathBuf {
     or_default(&o.git, "git")
 }
 
-/// Where the Blender app bundle keeps its executable: the last place a
-/// Blender lookup tries. Only macOS has one.
 pub const BLENDER_APP: Option<&str> = horch_platform::path::BLENDER_APP;
 
-/// Where the Godot app bundle keeps its executable: the last place a Godot
-/// lookup tries. Only macOS has one.
 pub const GODOT_APP: Option<&str> = horch_platform::path::GODOT_APP;
 
-/// Where the Godot .NET app bundle keeps its executable: the last place the
-/// .NET engine lookup of a C# project tries. Only macOS has one.
 pub const GODOT_MONO_APP: Option<&str> = horch_platform::path::GODOT_MONO_APP;
 
-/// A host tool's executable, as `horch doctor` checks it and a launch passes
-/// it on: `var` (the operator's `BLENDER_PATH` or `GODOT_PATH`) when it is
-/// set, else `name` on `path`, else `app` when it is a file. `var` wins
-/// unchecked: a broken one is for doctor to report, not to skip. The caller
-/// gives `app` ([`BLENDER_APP`], [`GODOT_APP`]), so a test never finds the
-/// real app.
 pub fn host_tool_bin(
     var: Option<&OsStr>,
     path: Option<&OsStr>,
@@ -257,7 +249,6 @@ mod tests {
         assert_eq!(codex_bin(&o), PathBuf::from("/custom/codex"));
     }
 
-    /// An empty override is treated as unset, not as an empty command.
     #[test]
     fn empty_override_is_ignored() {
         let o = BinOverrides::from_env(&MapEnv::new("/").with("HORCH_CODEX_BIN", ""));
@@ -271,6 +262,9 @@ mod tests {
         assert_eq!(b.claude, PathBuf::from("claude"));
         assert_eq!(b.prime, PathBuf::from("prime-agent"));
         assert_eq!(b.antigravity, PathBuf::from("agy"));
+        assert_eq!(b.herdr, PathBuf::from("herdr"));
+        assert_eq!(b.hc, PathBuf::from("hc"));
+        assert_eq!(b.herdr_app, PathBuf::from("herdr-app"));
         assert_eq!(b.git, PathBuf::from("git"));
     }
 
@@ -286,6 +280,64 @@ mod tests {
         assert_eq!(claude_bin(&o, Some(&path), None), PathBuf::from("cpx"));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_herdr_hidden_from_stat_resolves_to_its_absolute_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let hidden = tmp.path().join("hidden");
+        let readable = tmp.path().join("readable");
+        let empty = tmp.path().join("empty");
+        for dir in [&hidden, &readable, &empty] {
+            std::fs::create_dir(dir).unwrap();
+        }
+        let herdr = readable.join("herdr");
+        std::fs::write(&herdr, "#!/bin/sh\n").unwrap();
+        process::make_executable(&herdr).unwrap();
+        std::fs::set_permissions(&hidden, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let o = BinOverrides::default();
+        let on = |dirs: &[&std::path::Path]| {
+            herdr_bin(&o, Some(&std::env::join_paths(dirs).unwrap()), None)
+        };
+
+        let resolved = (
+            on(&[&empty, &hidden]),
+            on(&[&hidden, &readable]),
+            on(&[&empty]),
+            on(&[std::path::Path::new("relative"), &empty]),
+        );
+        std::fs::set_permissions(&hidden, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(
+            resolved.0,
+            hidden.join("herdr"),
+            "a hidden herdr runs by path"
+        );
+        assert_eq!(
+            resolved.1,
+            PathBuf::from("herdr"),
+            "a readable herdr keeps the name"
+        );
+        assert_eq!(
+            resolved.2,
+            PathBuf::from("herdr"),
+            "no herdr keeps the name"
+        );
+        assert_eq!(
+            resolved.3,
+            PathBuf::from("herdr"),
+            "a relative entry is skipped"
+        );
+        let overridden = BinOverrides {
+            herdr: Some("/fake/herdr".into()),
+            ..BinOverrides::default()
+        };
+        let path = std::env::join_paths([&hidden]).unwrap();
+        assert_eq!(
+            herdr_bin(&overridden, Some(&path), None),
+            PathBuf::from("/fake/herdr")
+        );
+    }
+
     #[test]
     fn env_pairs_and_merge_cover_every_override() {
         let mut env = MapEnv::new("/");
@@ -294,7 +346,7 @@ mod tests {
         }
         let all = BinOverrides::from_env(&env);
         let pairs = all.env_pairs();
-        assert_eq!(pairs.len(), 10);
+        assert_eq!(pairs.len(), 12);
         for (key, value) in &pairs {
             assert_eq!(value, &PathBuf::from(format!("/fake/{key}")));
         }
@@ -312,8 +364,6 @@ mod tests {
         assert_eq!(base.pi, Some("/old/pi".into()));
     }
 
-    /// `BLENDER_PATH` wins over PATH and the app, PATH wins over the app,
-    /// and the app counts only when it is a file. Nothing found is `None`.
     #[cfg(unix)]
     #[test]
     fn host_tool_bin_tries_the_variable_then_path_then_the_app() {

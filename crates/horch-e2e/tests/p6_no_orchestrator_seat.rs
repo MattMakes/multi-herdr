@@ -1,23 +1,3 @@
-//! Phase 6 removes the orchestrator seat (SR-8, FM-32; ticket 44 of
-//! fleetd-p6): no agent has operator rights. A fake agent in a live attempt
-//! of the old seat (a null task and the persona `orchestrator`) sends an
-//! `operator` request on the channel and as a request file. fleetd refuses
-//! both, and the `requests` row records the refusal and its reason.
-//!
-//! The `fleet.toml` of each test still names the old seat in
-//! `orchestrator_seats`: the key gives 1 warning line and no right (Q19 of
-//! `docs/tickets/fleetd-p6/MAP.md`).
-//!
-//! Each test starts 1 real `horch fleetd` on its own temporary
-//! `HORCH_DATA_DIR`, `HORCH_LEDGER_DB` and `FLEET_ROOT`, with 1 pass each
-//! second, and waits for an event (a row, a file), never for a time. The
-//! live attempt is a stand-in wrapper: a `sleep` that leads its own process
-//! group, recorded as the launcher records a wrapper. The fake agent is
-//! this test binary, started again in that group with its act in its
-//! environment ([`agent_child`]), as in `p5_operator_boundary.rs`.
-//!
-//! Unix only: the channel is a Unix socket.
-
 #![cfg(unix)]
 
 use std::io::{BufRead, BufReader, Write};
@@ -41,30 +21,14 @@ use horch_e2e::harness::{wait_for, wait_for_or, Harness};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde_json::{json, Value};
 
-// ─── the fake agent ─────────────────────────────────────────────────────
-
-/// The act of the fake agent: `connect` or `file`.
 const ACT_ENV: &str = "HORCH_P6_ACT";
-/// The path of the act: the channel, or the request file.
 const PATH_ENV: &str = "HORCH_P6_PATH";
-/// The request line of the act, with no `\n`.
 const LINE_ENV: &str = "HORCH_P6_LINE";
 
-/// The start of the line of the fake agent that says what it got. libtest
-/// prints its own text on the same stream.
 const RESULT: &str = "p6-agent: ";
 
-/// The name of the test that is the fake agent, for `--exact`.
 const AGENT_CHILD: &str = "agent_child";
 
-/// The fake agent: with no act in its environment it does nothing, so a
-/// normal run of this file passes it. A test starts this binary again with
-/// an act. It prints what it got and exits 0, or prints the error and exits
-/// 1.
-///
-/// - `connect`: connect to the channel, send the line, read the reply.
-/// - `file`: write the line as `<path>.tmp` with mode 0600, then rename it
-///   to `<path>`, as the client of the channel writes a request file.
 #[test]
 fn agent_child() {
     let Ok(act) = std::env::var(ACT_ENV) else {
@@ -119,7 +83,6 @@ fn write_request_file(path: &Path, line: &str) -> Result<String, String> {
     Ok(format!("wrote {}", path.display()))
 }
 
-/// What the fake agent printed: what it got, or the error.
 fn agent_text(out: &std::process::Output) -> String {
     let stream = if out.status.success() {
         &out.stdout
@@ -133,21 +96,14 @@ fn agent_text(out: &std::process::Output) -> String {
         .to_string()
 }
 
-// ─── the world of a test ────────────────────────────────────────────────
-
-/// The persona of the old orchestrator seat.
 const OLD_SEAT: &str = "orchestrator";
 
-/// The feature of each test.
 const FEATURE: &str = "F-0001";
 
-/// The `fleet.toml` of a test: 1 pass each second, the longest heartbeat
-/// age, and the retired key that named the old seat.
 fn fleet_toml() -> String {
     format!("pass_period_s = 1\nheartbeat_max_age_s = 300\norchestrator_seats = [\"{OLD_SEAT}\"]\n")
 }
 
-/// A row of the `requests` table.
 #[derive(Debug)]
 struct RequestRow {
     kind: String,
@@ -157,16 +113,12 @@ struct RequestRow {
     reason: Option<String>,
 }
 
-/// The live attempt of the old seat: its id and its stand-in wrapper.
 struct Attempt {
     id: String,
     wrapper: u32,
 }
 
-/// A harness with a git repository, a real fleetd and 1 feature run.
 struct World {
-    /// Dropped before `h`: the teardown of the harness fails a test whose
-    /// processes still run.
     fleetds: Fleetds,
     h: Harness,
     run: Run,
@@ -229,9 +181,6 @@ impl World {
         open(&self.h.root.join("ledger.sqlite3"))
     }
 
-    /// A live attempt of the old seat: a worker of kind `orchestrator` with
-    /// the persona [`OLD_SEAT`] and a null task. Its stand-in wrapper is a
-    /// `sleep` that leads a new process group.
     fn old_seat_attempt(&mut self) -> Attempt {
         let wrapper = Command::new("/bin/sleep")
             .arg("3600")
@@ -274,8 +223,6 @@ impl World {
         Attempt { id, wrapper: pid }
     }
 
-    /// Run the fake agent with `act` on `path` and `line` in the process
-    /// group of the attempt `a`. Gives what it printed; it must succeed.
     fn agent(&self, a: &Attempt, act: &str, path: &Path, line: &str) -> String {
         let out = Command::new(std::env::current_exe().unwrap())
             .args(["--exact", AGENT_CHILD, "--nocapture", "--test-threads", "1"])
@@ -293,7 +240,6 @@ impl World {
         text
     }
 
-    /// Wait until the request `id` is decided, and give its row.
     fn decided(&self, id: &RequestId) -> RequestRow {
         wait_for_or(
             &format!("fleetd to decide the request {}", id.as_str()),
@@ -321,7 +267,6 @@ impl World {
         )
     }
 
-    /// Each attempt with its state: the refused request stops no attempt.
     fn attempt_states(&self) -> Vec<String> {
         let conn = self.conn();
         let mut stmt = conn
@@ -331,7 +276,6 @@ impl World {
         rows.map(Result::unwrap).collect()
     }
 
-    /// SR-8 and Q19: fleetd printed 1 warning line for the retired key.
     fn assert_1_warning_line(&self) {
         let stderr = self.fleetds.output("fleetd", "stderr");
         let lines: Vec<&str> = stderr
@@ -343,7 +287,6 @@ impl World {
     }
 }
 
-/// The feature [`FEATURE`] of `project` and its internal run.
 fn new_feature_run(conn: &Connection, project: &Path) -> Run {
     let tx = rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate).unwrap();
     let feature = runs::create_feature_run(&tx, project, "main").unwrap();
@@ -370,7 +313,6 @@ fn open(db: &Path) -> Connection {
     conn
 }
 
-/// The request line of `ledger_gc` with `token` if any, with no `\n`.
 fn gc_line(id: &RequestId, token: Option<String>) -> String {
     let Value::Object(payload) = json!({ "deleted": [] }) else {
         unreachable!("a payload is an object");
@@ -386,7 +328,6 @@ fn gc_line(id: &RequestId, token: Option<String>) -> String {
     .to_string()
 }
 
-/// The row records a refused operator request, its reason and no `auth`.
 fn assert_refused(row: &RequestRow, reason_has: &str) {
     assert_eq!(row.kind, "ledger_gc", "{row:?}");
     assert_eq!(row.class, "operator", "{row:?}");
@@ -399,10 +340,6 @@ fn assert_refused(row: &RequestRow, reason_has: &str) {
     );
 }
 
-// ─── the tests ──────────────────────────────────────────────────────────
-
-/// The worst case on the channel: the agent of the old seat has a copy of
-/// the valid token. fleetd finds it in a live attempt and refuses it.
 #[test]
 fn old_seat_operator_request_on_the_channel_is_refused() {
     let mut w = World::new("p6-old-seat-channel");
@@ -424,7 +361,7 @@ fn old_seat_operator_request_on_the_channel_is_refused() {
     let row = w.decided(&id);
     assert_refused(
         &row,
-        &format!("the peer process is in live attempt {}", a.id),
+        &format!("the peer process is a fleet process of attempt {}", a.id),
     );
     assert!(
         row.reason.as_deref().unwrap_or_default().contains(OLD_SEAT),
@@ -434,8 +371,6 @@ fn old_seat_operator_request_on_the_channel_is_refused() {
     w.assert_1_warning_line();
 }
 
-/// The agent of the old seat has no token, so its request file has none.
-/// fleetd refuses it for the token.
 #[test]
 fn old_seat_operator_request_file_is_refused() {
     let mut w = World::new("p6-old-seat-file");

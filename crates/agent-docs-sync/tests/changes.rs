@@ -1,7 +1,3 @@
-//! CHANGES.md and the `also_git` source (step 2 of 1 sync). Each page comes
-//! from memory through the fetch port, and each repository is a local bare
-//! repository in a temporary folder; no test uses the network.
-
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::Command;
@@ -11,15 +7,12 @@ use agent_docs_sync::{parse_sources, sync, Fetch, Outcome, Report, Source};
 
 const INDEX: &str = "https://docs.test/llms.txt";
 
-/// The tests that start git hold this lock, because 1 test changes `PATH`
-/// and the forbidden names of this process.
 static GIT: Mutex<()> = Mutex::new(());
 
 fn git_lock() -> MutexGuard<'static, ()> {
     GIT.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// A fetch port over pages in memory, by file stem.
 struct Pages(BTreeMap<String, String>);
 
 impl Pages {
@@ -46,7 +39,6 @@ impl Fetch for Pages {
     }
 }
 
-/// A codex source with these includes and, when given, an `also_git`.
 fn codex(include: &[&str], also_git: Option<&Path>) -> Source {
     let include: Vec<String> = include.iter().map(|i| format!("{i:?}")).collect();
     let mut text = format!(
@@ -60,7 +52,6 @@ fn codex(include: &[&str], also_git: Option<&Path>) -> Source {
     parse_sources(&text).unwrap().remove(0)
 }
 
-/// Sync `pages` as `version` of codex, with the includes of `pages`.
 fn sync_pages(out: &Path, version: &str, pages: &[(&str, &str)]) -> Report {
     let include: Vec<&str> = pages.iter().map(|(stem, _)| *stem).collect();
     let report = sync(&codex(&include, None), version, &Pages::new(pages), out).unwrap();
@@ -72,7 +63,6 @@ fn changes(out: &Path) -> String {
     std::fs::read_to_string(out.join("codex/CHANGES.md")).expect("CHANGES.md is written")
 }
 
-/// The lines of the section `## <title>` of CHANGES.md.
 fn section(text: &str, title: &str) -> Vec<String> {
     let head = format!("## {title}\n");
     let start = text
@@ -178,7 +168,6 @@ fn first_sync_writes_first_sync() {
     assert_eq!(versions, ["1.0.0"]);
 }
 
-/// Run git in test code, which is not production code (SR-7).
 fn git(dir: &Path, args: &[&str]) {
     let status = Command::new("git")
         .args(["-c", "user.name=test", "-c", "user.email=test@test.invalid"])
@@ -195,7 +184,6 @@ fn git(dir: &Path, args: &[&str]) {
     assert!(status.success(), "git {args:?}");
 }
 
-/// A bare repository with `docs/guide.md` and `src/main.rs`.
 fn bare_repo(root: &Path) -> std::path::PathBuf {
     let work = root.join("work");
     std::fs::create_dir_all(work.join("docs")).unwrap();
@@ -239,8 +227,6 @@ fn also_git_copies_the_docs_folder_from_a_local_repository() {
     assert!(!copy.join("src/main.rs").exists(), "the clone is sparse");
 }
 
-/// A name that the fake git must see, so the test cannot pass because the
-/// fake git wrote no environment.
 const CONTROL: &str = "AGENT_DOCS_SYNC_TEST_CONTROL";
 
 #[cfg(unix)]
