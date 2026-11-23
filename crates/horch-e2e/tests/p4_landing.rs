@@ -340,17 +340,17 @@ impl World {
     }
 
     fn settled(&self) -> bool {
-        let open = self.count(&format!(
-            "SELECT count(*) FROM bundles WHERE state IN {OPEN_BUNDLE}"
+        let names = BRANCHES
+            .iter()
+            .map(|(b, _)| format!("'{b}'"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let unsettled = self.count(&format!(
+            "SELECT (SELECT count(*) FROM bundles WHERE state IN {OPEN_BUNDLE})
+                  + (SELECT count(*) FROM branches WHERE name IN ({names})
+                     AND landing_state IN ('ready', 'in_bundle', 'building', 'verifying'))"
         ));
-        let waiting = BRANCHES
-            .iter()
-            .filter(|(b, _)| matches!(self.landing(b).as_str(), "ready" | "in_bundle"))
-            .count();
-        let followed = BRANCHES
-            .iter()
-            .all(|(b, _)| !matches!(self.landing(b).as_str(), "building" | "verifying"));
-        open == 0 && waiting == 0 && followed
+        unsettled == 0
     }
 
     fn evidence(&self) -> String {
