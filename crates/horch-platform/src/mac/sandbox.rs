@@ -60,7 +60,8 @@ pub(crate) fn args(
         Network::Local => profile.push_str(
             "(deny network-outbound (remote ip))\
              (deny network-bind (local ip))\
-             (deny network-inbound (local ip))",
+             (deny network-inbound (local ip))\
+             (deny network-outbound (remote unix-socket (path-literal \"/private/var/run/mDNSResponder\")))",
         ),
     }
     args.extend([OsString::from("-p"), OsString::from(profile)]);

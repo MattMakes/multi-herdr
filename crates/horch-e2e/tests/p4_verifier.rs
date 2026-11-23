@@ -804,3 +804,40 @@ fn sr3_check_that_connects_to_a_host_lan_address_is_refused() {
     );
     assert_not_done(&w);
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+fn sr3_check_that_connects_to_the_dns_daemon_is_refused() {
+    const DNS_DAEMON: &str = "/var/run/mDNSResponder";
+    assert!(
+        std::os::unix::net::UnixStream::connect(DNS_DAEMON).is_ok(),
+        "{DNS_DAEMON} does not answer outside the sandbox, so a refusal proves nothing"
+    );
+    let check = format!(
+        "/usr/bin/perl -MIO::Socket::UNIX -e \
+         'IO::Socket::UNIX->new(Peer => \"{DNS_DAEMON}\") or die \"connect: $!\\n\"'"
+    );
+    let w = World::new(
+        "p4v-sr3-dns",
+        &Spec {
+            check: &check,
+            kind: WorkKind::Feature,
+            own: &[],
+            writes: None,
+        },
+    );
+    w.start_fleetd();
+    let verdict = w.verdict(1);
+    assert_eq!(
+        verdict["decision"], "failed",
+        "SR-3: the check reached {DNS_DAEMON}\n{verdict}"
+    );
+    let reason = verdict["reason"].as_str().unwrap();
+    assert!(
+        reason
+            .lines()
+            .any(|l| l == "check| connect: Operation not permitted"),
+        "the verdict holds no refusal of the sandbox\n{verdict}"
+    );
+    assert_not_done(&w);
+}
