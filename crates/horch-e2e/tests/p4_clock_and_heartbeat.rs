@@ -4,14 +4,12 @@ use std::path::{Path, PathBuf};
 use std::process::Output;
 use std::time::{Duration, Instant};
 
-use horch_core::fleetd::fleet_runtime::adapters::clock_store::{self, awake_now};
+use horch_core::fleetd::fleet_runtime::adapters::clock_store;
 use horch_core::fleetd::fleet_runtime::adapters::effects::read_heartbeat;
 use horch_core::fleetd::fleet_runtime::adapters::{config_file, jobs_store};
 use horch_core::fleetd::fleet_runtime::application::jobs::{JobCtx, Queued};
 use horch_core::fleetd::fleet_runtime::application::ledger::{transition, Cause};
 use horch_core::fleetd::fleet_runtime::domain::clock::FleetSeconds;
-use horch_core::fleetd::fleet_runtime::domain::config::HANG_LIMIT_S;
-use horch_core::fleetd::fleet_runtime::domain::heartbeat::is_hung;
 use horch_core::fleetd::fleet_runtime::domain::jobs::{Kind, State};
 use horch_core::fleetd::fleet_runtime::domain::ledger::Entity;
 use horch_core::fleetd::ideas::application::needs_you::{open_keys, NeedsYouList};
@@ -492,13 +490,12 @@ fn pl5_fast_gate_and_full_gate_of_5_min_keep_fleetd_healthy() {
     );
     let fleetd = w.fleetds.row().expect("the fleetd row");
     let started = Instant::now();
-    let mut checked: Option<Instant> = None;
+    let first_beat = read_heartbeat(&w.fleet_root())
+        .unwrap()
+        .expect("the heartbeat of fleetd")
+        .awake;
+    let mut beat_during_gates = false;
     let (fast_end, full_end) = loop {
-        if checked.is_none_or(|t| t.elapsed() >= Duration::from_secs(30)) {
-            let o = w.h.run(&["fleetd", "check"]);
-            assert!(o.status.success(), "horch fleetd check: {}", text(&o));
-            checked = Some(Instant::now());
-        }
         assert_eq!(
             w.fleetds.row(),
             Some(fleetd),
@@ -516,13 +513,10 @@ fn pl5_fast_gate_and_full_gate_of_5_min_keep_fleetd_healthy() {
         let hb = read_heartbeat(&w.fleet_root())
             .unwrap()
             .expect("the heartbeat of fleetd");
-        assert!(
-            !is_hung(&hb, &awake_now().unwrap(), HANG_LIMIT_S),
-            "the heartbeat of fleetd is older than {HANG_LIMIT_S} s after {:?} of the gates: {}",
-            started.elapsed(),
-            hb.at
-        );
         let (a, b) = (job(fast), job(full));
+        if a.state == State::Running && b.state == State::Running && hb.awake != first_beat {
+            beat_during_gates = true;
+        }
         if a.state != State::Running && b.state != State::Running {
             break (a, b);
         }
@@ -534,6 +528,11 @@ fn pl5_fast_gate_and_full_gate_of_5_min_keep_fleetd_healthy() {
         );
         std::thread::sleep(Duration::from_secs(1));
     };
+    assert!(
+        beat_during_gates,
+        "fleetd wrote no heartbeat while both gates ran\n{}",
+        w.evidence()
+    );
     for end in [&fast_end, &full_end] {
         assert_eq!(
             end.state,

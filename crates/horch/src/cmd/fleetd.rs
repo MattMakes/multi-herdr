@@ -346,8 +346,15 @@ fn stop(fleet: &Fleet<'_>, old: Fleetd, found: Found) -> Result<()> {
     }
     procid::stop_same(old.pid, old.pid_start, procid::Stop::Kill);
     if !lock_free(&lock, Instant::now() + START_WAIT)? {
+        if procid::alive(old.pid, Some(old.pid_start)) {
+            bail!(
+                "fleetd PID {} got SIGKILL and is still stopping: {} is still held. This check starts no fleetd. The next check starts fleetd",
+                old.pid,
+                lock.display()
+            );
+        }
         bail!(
-            "fleetd PID {} was stopped, but {} is still held",
+            "fleetd PID {} is gone, but {} is still held. This check starts no fleetd",
             old.pid,
             lock.display()
         );
@@ -1652,6 +1659,46 @@ mod tests {
                 assert_eq!(n, 0, "the refused fleetd queued a job");
             }
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_killed_fleetd_that_exits_late_gets_no_second_fleetd_and_a_clear_error() {
+        let w = World::new();
+        let mut child = std::process::Command::new("/bin/sleep")
+            .arg("120")
+            .spawn()
+            .unwrap();
+        let late = Fleetd {
+            pid: child.id(),
+            pid_start: horch_core::procid::start_time(child.id()).unwrap(),
+        };
+        w.record(late);
+        w.heartbeat(late, 31);
+        let _held = FleetdLock::try_take(&lock_path(&w.root)).unwrap().unwrap();
+        let (result, starts) = w.run(Mode::StandIn, check_with);
+        let error = format!("{:#}", result.unwrap_err());
+        child.wait().unwrap();
+        assert!(starts.is_empty(), "{starts:?}");
+        assert!(error.contains(&format!("PID {}", late.pid)), "{error}");
+        assert!(error.contains("still stopping"), "{error}");
+        assert!(error.contains("next check starts fleetd"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_lock_held_after_the_killed_fleetd_is_gone_starts_no_second_fleetd() {
+        let w = World::new();
+        let hung = w.process();
+        w.record(hung);
+        w.heartbeat(hung, 31);
+        let _held = FleetdLock::try_take(&lock_path(&w.root)).unwrap().unwrap();
+        let (result, starts) = w.run(Mode::StandIn, check_with);
+        let error = format!("{:#}", result.unwrap_err());
+        assert!(starts.is_empty(), "{starts:?}");
+        assert!(ended(hung), "the hung fleetd still runs");
+        assert!(error.contains("is gone"), "{error}");
+        assert!(!error.contains("still stopping"), "{error}");
     }
 
     #[cfg(unix)]
