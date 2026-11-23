@@ -1126,7 +1126,19 @@ fn process_list_or_sandbox<T>(
 fn build_once() {
     static BUILT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
     BUILT.get_or_init(|| {
-        let mut cmd = build_command(&bin_dir(), env!("HORCH_E2E_TARGET"));
+        let built = bin_dir();
+        let binaries: Vec<PathBuf> = std::iter::once("horch")
+            .chain(FAKES.iter().map(|(_, fake)| *fake))
+            .map(|name| built.join(exe(name)))
+            .collect();
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let sources = ["crates", "Cargo.toml", "Cargo.lock"].map(|p| workspace.join(p));
+        let stamp = built.join(".horch-e2e-built");
+        if built_is_current(&stamp, &binaries, &sources) {
+            return;
+        }
+        let began = std::time::SystemTime::now();
+        let mut cmd = build_command(&built, env!("HORCH_E2E_TARGET"));
         let out = cmd
             .output()
             .unwrap_or_else(|e| panic!("cannot start {cmd:?}: {e}"));
@@ -1135,7 +1147,27 @@ fn build_once() {
             "the build of horch and the fakes failed: {cmd:?}\n{}",
             String::from_utf8_lossy(&out.stderr)
         );
+        let _ = std::fs::File::create(&stamp).and_then(|f| f.set_modified(began));
     });
+}
+
+fn built_is_current(stamp: &Path, binaries: &[PathBuf], sources: &[PathBuf]) -> bool {
+    let built = std::fs::metadata(stamp).and_then(|m| m.modified()).ok();
+    let newest = sources.iter().filter_map(|s| newest_source(s)).max();
+    binaries.iter().all(|b| b.is_file()) && matches!((built, newest), (Some(b), Some(n)) if n <= b)
+}
+
+fn newest_source(path: &Path) -> Option<std::time::SystemTime> {
+    let meta = std::fs::metadata(path).ok()?;
+    if !meta.is_dir() {
+        return meta.modified().ok();
+    }
+    std::fs::read_dir(path)
+        .ok()?
+        .flatten()
+        .filter(|e| e.file_name() != "tests")
+        .filter_map(|e| newest_source(&e.path()))
+        .max()
 }
 
 const CARGO_RUN_VARS: &[&str] = &[
@@ -1454,9 +1486,37 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        build_command, built_dir_of, cargo_profile, choose_harness_root, listed,
+        build_command, built_dir_of, built_is_current, cargo_profile, choose_harness_root, listed,
         process_list_or_sandbox, reap, reap_grace, stop_stale_harnesses, OWNER_FILE,
     };
+
+    #[test]
+    fn built_binaries_are_current_only_when_no_source_is_newer() {
+        let root = tempfile::tempdir().unwrap();
+        let at = |path: &Path, secs: u64| {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let file = std::fs::File::create(path).unwrap();
+            file.set_modified(std::time::UNIX_EPOCH + Duration::from_secs(secs))
+                .unwrap();
+        };
+        let stamp = root.path().join("bin/stamp");
+        let bin = root.path().join("bin/horch");
+        let crates = root.path().join("crates");
+        let source = crates.join("a/src/lib.rs");
+        at(&stamp, 2_000);
+        at(&bin, 500);
+        at(&source, 1_000);
+        at(&crates.join("a/tests/case.rs"), 3_000);
+        let sources = [crates];
+        let one = std::slice::from_ref(&bin);
+        assert!(built_is_current(&stamp, one, &sources));
+        assert!(!built_is_current(&root.path().join("none"), one, &sources));
+        at(&source, 3_000);
+        assert!(!built_is_current(&stamp, one, &sources));
+        at(&source, 1_000);
+        let missing = [bin.clone(), root.path().join("bin/missing")];
+        assert!(!built_is_current(&stamp, &missing, &sources));
+    }
 
     #[test]
     fn reused_group_after_teardown_check_gets_no_signal() {
