@@ -3,6 +3,13 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 const START_WAIT: Duration = Duration::from_secs(120);
+const HEALTHY_MACHINE: &str = r#"{"os":"linux","arch":"x86_64","cpus":8,"load_average_1m":1.0,"mem_total_bytes":17179869184,"mem_available_bytes":8589934592,"disk_free_bytes":214748364800,"disk_total_bytes":536870912000,"gpu":"none","max_open_files":1048576,"max_processes":100000}"#;
+
+pub fn healthy_machine_file(dir: &Path) -> PathBuf {
+    let file = dir.join("healthy-machine.json");
+    std::fs::write(&file, HEALTHY_MACHINE).unwrap();
+    file
+}
 
 pub struct TestFleetd {
     child: Child,
@@ -11,6 +18,9 @@ pub struct TestFleetd {
 impl TestFleetd {
     pub fn start(mut cmd: Command, fleet_root: &Path) -> TestFleetd {
         std::fs::create_dir_all(fleet_root).unwrap();
+        if !cmd.get_envs().any(|(k, _)| k == "HORCH_MACHINE_FILE") {
+            cmd.env("HORCH_MACHINE_FILE", healthy_machine_file(fleet_root));
+        }
         if !cmd.get_envs().any(|(k, _)| k == "HORCH_GIT_BIN") {
             if let Some(git) = git_on_real_path() {
                 cmd.env("HORCH_GIT_BIN", git);
