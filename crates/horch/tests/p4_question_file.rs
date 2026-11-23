@@ -339,6 +339,11 @@ fn a_long_question_file_stays_under_64_kib() {
 #[test]
 fn question_of_a_claim_attempt_writes_no_file() {
     let w = World::with_agent(true);
+    let claimed = w
+        .ledger()
+        .execute("UPDATE attempts SET via = 'claim'", [])
+        .unwrap();
+    assert_eq!(claimed, 1);
     w.ask(false, "QUESTION: which port?");
     assert_eq!(
         w.question_rows().len(),
