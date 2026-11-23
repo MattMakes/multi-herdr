@@ -59,7 +59,8 @@ pub(crate) fn args(
         Network::Denied => profile.push_str("(deny network*)"),
         Network::Local => profile.push_str(
             "(deny network-outbound (remote ip))\
-             (allow network-outbound (remote ip \"localhost:*\"))",
+             (deny network-bind (local ip))\
+             (deny network-inbound (local ip))",
         ),
     }
     args.extend([OsString::from("-p"), OsString::from(profile)]);
