@@ -98,6 +98,9 @@ fn is_not_supported(e: &std::io::Error) -> bool {
 }
 
 fn create_new_file(path: &Path, mode: u32) -> std::io::Result<std::fs::File> {
+    if mode & 0o077 == 0 {
+        return horch_platform::fs::create_new_owner_only(path);
+    }
     let mut o = std::fs::OpenOptions::new();
     o.write(true).create_new(true);
     let _ = horch_platform::fs::create_mode(&mut o, mode);
@@ -239,6 +242,7 @@ fn compare_existing(path: &Path, bytes: &[u8]) -> Result<Created> {
 
 pub fn ensure_private_dir(path: &Path) -> Result<()> {
     io(path, std::fs::create_dir_all(path))?;
+    io(path, horch_platform::fs::create_dir_owner_only(path))?;
     set_mode(path, PRIVATE_DIR)
 }
 
@@ -640,6 +644,29 @@ mod tests {
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
         assert_eq!(names, vec!["state.json"], "no temp file is left behind");
+    }
+
+    #[test]
+    fn private_files_and_folders_pass_the_owner_only_check() {
+        use horch_platform::channel::User;
+        use horch_platform::fs as platform;
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("a").join("private");
+        ensure_private_dir(&dir).unwrap();
+        let replaced = dir.join("r.json");
+        write_atomic(&replaced, b"x", PRIVATE_FILE).unwrap();
+        let created = dir.join("c.json");
+        create_immutable(&created, b"x", PRIVATE_FILE).unwrap();
+        let me = User::current().unwrap();
+        for (path, rule) in [
+            (&dir, PRIVATE_DIR),
+            (&replaced, PRIVATE_FILE),
+            (&created, PRIVATE_FILE),
+        ] {
+            let file = platform::open_no_follow(path).unwrap();
+            assert_eq!(platform::owner_of(&file).unwrap(), me, "{}", path.display());
+            platform::check_owner_only(&file, &file.metadata().unwrap(), rule).unwrap();
+        }
     }
 
     #[cfg(unix)]
