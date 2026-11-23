@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::Output;
 use std::time::Duration;
 
-use horch_e2e::harness::{fixtures, wait_for_or, Harness};
+use horch_e2e::harness::{fixtures, output_within, wait_for_or, Harness};
 use rusqlite::types::Value as SqlValue;
 use rusqlite::{Connection, OpenFlags};
 
@@ -658,6 +658,72 @@ fn fresh_attempt_after_a_refused_resume_that_fails_burns_the_attempt_and_does_no
         "the fresh attempt {} launched: {refused:?}",
         r.a3
     );
+}
+
+fn tell_question_as(w: &World, worker: &str, role: &str, question: &str) -> Output {
+    let line = format!("QUESTION: {question}");
+    let mut cmd = w.h.horch(&["tell", "orchestrator", &line]);
+    cmd.env("HORCH_WORKER_ID", worker).env("HORCH_ROLE", role);
+    output_within(&mut cmd, Duration::from_secs(120))
+}
+
+fn any_file_holds(dir: &Path, needle: &str) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        let path = entry.path();
+        if path.is_dir() {
+            any_file_holds(&path, needle)
+        } else {
+            std::fs::read(&path).is_ok_and(|bytes| String::from_utf8_lossy(&bytes).contains(needle))
+        }
+    })
+}
+
+#[test]
+fn question_tell_of_a_push_worker_with_no_live_attempt_fails_and_queues_no_mail() {
+    let w = World::new("p6-wq-no-live", "stay", &horch_ask(QUESTION));
+    let task = w.task();
+    w.blocked(&task);
+    let attempt = w.attempts(&task)[0].0.clone();
+    let worker = w
+        .one(&format!(
+            "SELECT worker_id FROM attempts WHERE id = {}",
+            quoted(&attempt)
+        ))
+        .expect("the attempt has a worker");
+    let role = worker_of(&w, &attempt, "role");
+    let lost = "Which question is lost?";
+    let o = tell_question_as(&w, &worker, &role, lost);
+    assert!(!o.status.success(), "horch tell: {}", text(&o));
+    assert!(
+        String::from_utf8_lossy(&o.stderr).contains("no live attempt of this process"),
+        "horch tell names the cause: {}",
+        text(&o)
+    );
+    assert!(
+        !any_file_holds(&w.h.state, lost),
+        "a refused question leaves no mail\n{}",
+        w.context()
+    );
+    assert_eq!(w.questions(&task).len(), 1, "{}", w.context());
+}
+
+#[test]
+fn question_tell_of_a_worker_with_no_push_attempt_still_queues_its_mail() {
+    let w = World::new("p6-wq-pull", "stay", &horch_ask(QUESTION));
+    let task = w.task();
+    w.blocked(&task);
+    let kept = "Which question stays in the mail?";
+    let o = tell_question_as(&w, "w-not-a-push-worker", "pull-worker", kept);
+    assert!(o.status.success(), "horch tell: {}", text(&o));
+    assert!(
+        any_file_holds(&w.h.state, kept),
+        "the mail holds the question\n{}",
+        w.context()
+    );
+    assert_eq!(w.questions(&task).len(), 1, "{}", w.context());
 }
 
 #[test]

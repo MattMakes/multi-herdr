@@ -139,14 +139,24 @@ fn wait_own_attempt(
 ) -> Result<AttemptRef> {
     let until = Instant::now() + wait;
     loop {
+        let was_starting = starting(ledger)?;
         let live = live_attempts(ledger)?;
         match own_attempt(std::process::id(), &live, facts) {
-            Err(e) if e.detail.is_none() && Instant::now() < until && starting(ledger)? => {
+            Err(e) if e.detail.is_none() && was_starting && Instant::now() < until => {
                 std::thread::sleep(ATTEMPT_POLL);
             }
             found => return Ok(found?),
         }
     }
+}
+
+pub fn has_push_attempt(conn: &Connection, worker_id: &str) -> Result<bool> {
+    let found: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM attempts WHERE worker_id = ?1 AND via = 'push')",
+        [worker_id],
+        |r| r.get(0),
+    )?;
+    Ok(found)
 }
 
 pub fn starting(conn: &Connection) -> Result<bool> {
@@ -357,5 +367,68 @@ fn ok_if_not_supported(r: io::Result<()>) -> io::Result<()> {
             Ok(())
         }
         r => r,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+
+    use rusqlite::{params, OpenFlags};
+
+    use super::*;
+    use crate::taskledger::schema;
+
+    const START: u64 = 77;
+
+    struct LiveDuringTheWalk {
+        ledger: PathBuf,
+        moved: Cell<bool>,
+    }
+
+    impl ProcessFacts for LiveDuringTheWalk {
+        fn parent(&self, _pid: u32) -> Option<u32> {
+            if !self.moved.replace(true) {
+                Connection::open(&self.ledger)
+                    .unwrap()
+                    .execute(
+                        "UPDATE attempts SET state = 'live', pid = ?1, pid_start = ?2",
+                        params![i64::from(std::process::id()), START as i64],
+                    )
+                    .unwrap();
+            }
+            Some(0)
+        }
+
+        fn start_time(&self, _pid: u32) -> Option<u64> {
+            Some(START)
+        }
+
+        fn in_group(&self, _pid: u32, _leader: u32, _leader_start: u64) -> Option<bool> {
+            None
+        }
+    }
+
+    #[test]
+    fn attempt_that_goes_live_between_the_2_reads_of_the_wait_is_found() {
+        let temp = tempfile::tempdir().unwrap();
+        let ledger = temp.path().join("ledger.sqlite3");
+        let mut conn = Connection::open(&ledger).unwrap();
+        schema::migrate_to(&mut conn, schema::VERSION).unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = OFF").unwrap();
+        conn.execute(
+            "INSERT INTO attempts (id, task_id, worker_id, state, started_at)
+             VALUES ('T-1/A1', 'T-1', 'w-1', 'launching', '2026-11-23T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        let read = Connection::open_with_flags(&ledger, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        let facts = LiveDuringTheWalk {
+            ledger: ledger.clone(),
+            moved: Cell::new(false),
+        };
+        let own = wait_own_attempt(&read, &facts, Duration::from_secs(5)).unwrap();
+        assert_eq!(own.attempt_id, "T-1/A1");
     }
 }

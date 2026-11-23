@@ -8,7 +8,9 @@ use horch_core::execution::lifecycle::{
 };
 use horch_core::execution::records::{SessionLedger, EVENT_REPORT_FAILED, EVENT_REPORT_QUEUED};
 use horch_core::fleetd::fleet_runtime::domain::requests::Kind;
-use horch_core::fleetd::task_execution::adapters::outbox_writer::OutboxWriter;
+use horch_core::fleetd::task_execution::adapters::outbox_writer::{
+    has_push_attempt, NoLiveAttempt, OutboxWriter,
+};
 use horch_core::fleetd::task_execution::domain::outbox::{warned_text, LineKind, PROGRESS_JSONL};
 use horch_core::harness::launch;
 use horch_core::messaging::channel;
@@ -169,6 +171,11 @@ fn queue_as<'a>(
     let mut queued = None;
     if durable {
         let from = sender.as_deref().expect("durable mail has a sender");
+        let writer = if role == "orchestrator" && from != HORCH && asks_a_question(text) {
+            question_writer(ctx)?
+        } else {
+            None
+        };
         let enqueued = enqueue_durable(
             ctx,
             mailbox.workspace_id(),
@@ -184,12 +191,8 @@ fn queue_as<'a>(
         }
         let id = enqueued.id;
         line = message::with_mail_id(&line, from, &id.short());
-        if role == "orchestrator" && from != HORCH && asks_a_question(text) {
-            if let Err(error) = write_question_file(ctx, text, id.as_str()) {
-                eprintln!(
-                    "horch tell: the question file of the attempt is not written ({error:#}); mail remains durable"
-                );
-            }
+        if let Some(out) = &writer {
+            record_question(ctx, mailbox.workspace_id(), role, out, text, &id)?;
         }
         queued = Some(id);
     }
@@ -1146,10 +1149,59 @@ fn asks_a_question(text: &str) -> bool {
     })
 }
 
-fn write_question_file(ctx: &RuntimeContext, text: &str, mail_id: &str) -> Result<()> {
-    let Ok(out) = super::askcmd::own_writer(ctx)? else {
+fn question_writer(ctx: &RuntimeContext) -> Result<Option<OutboxWriter>> {
+    let why = match super::askcmd::own_writer(ctx) {
+        Ok(Ok(out)) => return Ok(Some(out)),
+        Ok(Err(no)) => anyhow::Error::new(no),
+        Err(error) => error,
+    };
+    if is_push_worker(ctx) {
+        return Err(why.context("the question is not recorded and not sent; run the command again"));
+    }
+    if why.downcast_ref::<NoLiveAttempt>().is_none() {
+        eprintln!(
+            "horch tell: the question file of the attempt is not written ({why:#}); mail remains durable"
+        );
+    }
+    Ok(None)
+}
+
+fn is_push_worker(ctx: &RuntimeContext) -> bool {
+    let Some(worker) = worker_var(ctx, |w| &w.worker_id) else {
+        return false;
+    };
+    horch_core::taskledger::open_existing_read_only(ctx)
+        .and_then(|store| match store {
+            Some(store) => has_push_attempt(store.conn(), &worker),
+            None => Ok(false),
+        })
+        .unwrap_or(false)
+}
+
+fn record_question(
+    ctx: &RuntimeContext,
+    workspace: &str,
+    role: &str,
+    out: &OutboxWriter,
+    text: &str,
+    id: &Id,
+) -> Result<()> {
+    let Err(error) = write_question_file(ctx, out, text, id.as_str()) else {
         return Ok(());
     };
+    let mail = Mail::for_role(&ctx.paths.state_root, workspace, role);
+    if let Err(ack_error) = mail.ack(id) {
+        eprintln!("horch tell: could not take back the queued line ({ack_error:#})");
+    }
+    Err(error.context("the question file of the attempt is not written; run the command again"))
+}
+
+fn write_question_file(
+    ctx: &RuntimeContext,
+    out: &OutboxWriter,
+    text: &str,
+    mail_id: &str,
+) -> Result<()> {
     let max_bytes =
         horch_core::fleetd::fleet_runtime::adapters::config_file::load(&ctx.paths.fleet_root)?
             .question_max_bytes;
