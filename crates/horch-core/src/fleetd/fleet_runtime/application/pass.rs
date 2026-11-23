@@ -743,7 +743,8 @@ impl<'a> Pass<'a> {
         let rows = attempts_store::rows(conn, &util::host_name())?;
         let records = launch_records(&root, &rows)?;
         let processes = process_items(&rows, &records, jobs::processes(conn)?);
-        let outboxes = outbox_items(&root, &rows);
+        let asked = attempts_store::asked_attempts(conn)?;
+        let outboxes = outbox_items(&root, &rows, &asked);
         let rows_folders = self.ports.outside.worktree_folders(conn)?;
         let work_dirs = self.ports.outside.work_dirs(conn)?;
         let trees = tree_items(&rows_folders, &work_dirs);
@@ -786,8 +787,9 @@ impl<'a> Pass<'a> {
         let (attempts, mut failed) = scanned_attempts(&root, &rows, &scanned);
         let limits = outbox_ingest::Limits::of(config);
         let outbox_reads = outbox_ingest::read(conn, &root, &attempts, &owner, &limits)?;
+        let running = not_asked(&attempts, &asked);
         let wrappers =
-            attempt_files::read(conn, &root, &attempts, &owner, config.heartbeat_max_bytes)?;
+            attempt_files::read(conn, &root, &running, &owner, config.heartbeat_max_bytes)?;
         let job_files = jobs::read_results(conn, &root, &owner, config.job_result_max_bytes)?;
         let repos = git_repositories(self.ports.outside.repositories(conn)?);
         let worktrees = worktree_facts(
@@ -2527,10 +2529,18 @@ fn process_items(
     }
 }
 
-fn outbox_items(root: &std::path::Path, rows: &Rows) -> Vec<FolderItem> {
+fn not_asked(attempts: &[AttemptRef], asked: &BTreeSet<String>) -> Vec<AttemptRef> {
+    attempts
+        .iter()
+        .filter(|a| !asked.contains(&a.attempt_id))
+        .cloned()
+        .collect()
+}
+
+fn outbox_items(root: &std::path::Path, rows: &Rows, asked: &BTreeSet<String>) -> Vec<FolderItem> {
     rows.attempts
         .iter()
-        .filter(|a| a.state != AttemptState::Ended)
+        .filter(|a| a.state != AttemptState::Ended || asked.contains(&a.id))
         .filter_map(|a| {
             Some(FolderItem {
                 key: a.id.clone(),

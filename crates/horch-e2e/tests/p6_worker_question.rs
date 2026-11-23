@@ -677,6 +677,38 @@ fn second_question_of_the_same_attempt_gives_a_second_row() {
     );
 }
 
+fn write_next_question(dir: &Path, text: &str) {
+    let first = dir.join("1.json");
+    let mut question: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&first).unwrap()).unwrap();
+    question["text"] = text.into();
+    let tmp = dir.join("2.json.tmp");
+    std::fs::write(&tmp, question.to_string()).unwrap();
+    let mode = std::fs::metadata(&first).unwrap().permissions();
+    std::fs::set_permissions(&tmp, mode).unwrap();
+    std::fs::rename(&tmp, dir.join("2.json")).unwrap();
+}
+
+#[test]
+fn question_written_after_a_pass_ended_the_attempt_gives_a_second_row() {
+    let w = World::new("p6-wq-late", "stay", &horch_ask(QUESTION));
+    let task = w.task();
+    w.blocked(&task);
+    let attempt = w.attempts(&task)[0].0.clone();
+    let questions = w.attempt_dir(&attempt).join("outbox/questions");
+    write_next_question(&questions, "Which host does the guide name?");
+    w.wait("the row of the second question", || {
+        (w.questions(&task).len() == 2).then_some(())
+    });
+    let ids: Vec<String> = w.questions(&task).into_iter().map(|q| q.0).collect();
+    assert_eq!(
+        ids,
+        [format!("{attempt}/Q1"), format!("{attempt}/Q2")],
+        "{}",
+        w.context()
+    );
+}
+
 #[test]
 fn question_file_of_a_bad_form_gives_no_row_and_1_needs_you_item() {
     let first = "q=\"$(/usr/bin/dirname \"$HORCH_TASK_YAML\")/outbox/questions\"; \

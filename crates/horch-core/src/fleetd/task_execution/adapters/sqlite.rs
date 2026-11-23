@@ -1,8 +1,9 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{anyhow, Result};
 use rusqlite::{params, Connection, OptionalExtension, Row};
 
+use crate::fleetd::task_execution::domain::retry::Outcome;
 use crate::fleetd::task_execution::domain::task::{
     AttemptRow, AttemptState, Recorded, Rows, TaskRow, WorkerRow,
 };
@@ -320,6 +321,23 @@ pub fn rows(conn: &Connection, host: &str) -> Result<Rows> {
             tasks,
         })
     })
+}
+
+pub fn asked_attempts(conn: &Connection) -> Result<BTreeSet<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT a.id FROM attempts a JOIN tasks t ON t.task_id = a.task_id
+         WHERE a.state = ?1 AND a.outcome = ?2 AND t.status = ?3
+           AND a.rowid = (SELECT max(rowid) FROM attempts WHERE task_id = a.task_id)",
+    )?;
+    let ids = stmt.query_map(
+        params![
+            AttemptState::Ended.as_str(),
+            Outcome::Asked.as_str(),
+            TaskStatus::BlockedOnUser.as_str()
+        ],
+        |r| r.get(0),
+    )?;
+    Ok(ids.collect::<rusqlite::Result<_>>()?)
 }
 
 pub fn insert_attempt(conn: &Connection, a: &AttemptRow, now: &str) -> Result<()> {
