@@ -1577,7 +1577,10 @@ mod tests {
         let found = fixture.landing.unregistered(&fixture.repo).unwrap();
         assert_eq!(found.entries.len(), 1);
         assert!(found.skipped.is_empty());
-        assert_eq!(found.entries[0].path, path.canonicalize().unwrap());
+        assert_eq!(
+            found.entries[0].path,
+            horch_platform::path::canonicalize(&path).unwrap()
+        );
         assert_eq!(found.entries[0].branch.as_deref(), Some("raw"));
         assert_eq!(found.entries[0].ahead, 1);
     }
@@ -1597,7 +1600,7 @@ mod tests {
                 "main",
             ],
         );
-        let gone_path = gone.canonicalize().unwrap();
+        let gone_path = horch_platform::path::canonicalize(&gone).unwrap();
         let kept = fixture.repo.join(".worktrees/kept");
         fixture.git(
             &fixture.repo,
@@ -1619,7 +1622,10 @@ mod tests {
             1,
             "the readable worktree is still read"
         );
-        assert_eq!(found.entries[0].path, kept.canonicalize().unwrap());
+        assert_eq!(
+            found.entries[0].path,
+            horch_platform::path::canonicalize(&kept).unwrap()
+        );
         assert_eq!(found.skipped.len(), 1, "the deleted one is named");
         assert_eq!(found.skipped[0].path, gone_path);
         assert!(
@@ -1668,7 +1674,7 @@ mod tests {
         );
         fixture.commit_file(&path, "ledger.txt", "ledger\n", "ledger");
         let landing = configured_landing(&fixture.state, &fixture.config)
-            .with_recorded_worktrees(vec![path.canonicalize().unwrap()]);
+            .with_recorded_worktrees(vec![horch_platform::path::canonicalize(&path).unwrap()]);
         assert!(landing.unregistered(&fixture.repo).unwrap().is_empty());
         assert_eq!(
             fixture
@@ -1803,11 +1809,12 @@ mod tests {
             .landing
             .create(&fixture.repo, "worker", None, "one")
             .unwrap_err();
-        let path = fixture
-            .repo
-            .canonicalize()
-            .unwrap()
-            .join(".worktrees/worker-one");
+        let top = fixture.landing.repo(&fixture.repo).unwrap().top;
+        assert_eq!(
+            top,
+            horch_platform::path::canonicalize(&fixture.repo).unwrap()
+        );
+        let path = top.join(".worktrees").join("worker-one");
         assert_eq!(
             error.to_string(),
             format!(

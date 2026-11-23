@@ -171,14 +171,14 @@ fn durable_roster(git: &horch_core::taskledger::git::Git, teammates: &Path) -> P
         return kept;
     };
     let top = PathBuf::from(top);
-    let top = top.canonicalize().unwrap_or(top);
+    let top = horch_platform::path::canonicalize(&top).unwrap_or(top);
     let Some(main) = git.main_root(teammates) else {
         return kept;
     };
     if top == main {
         return kept;
     }
-    let dir = teammates.canonicalize().unwrap_or(kept.clone());
+    let dir = horch_platform::path::canonicalize(teammates).unwrap_or(kept.clone());
     let Ok(rel) = dir.strip_prefix(&top) else {
         return kept;
     };
@@ -617,7 +617,9 @@ mod tests {
             &["worktree", "add", "-q", "--detach", gate.to_str().unwrap()],
         );
         let g = horch_core::taskledger::git::Git::new("git");
-        let main_roster = main.canonicalize().unwrap().join("teammates");
+        let main_roster = horch_platform::path::canonicalize(&main)
+            .unwrap()
+            .join("teammates");
 
         assert_eq!(durable_roster(&g, &gate.join("teammates")), main_roster);
         assert_eq!(

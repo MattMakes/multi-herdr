@@ -612,7 +612,11 @@ fn check_workdir(workdir: &Path, home: &Path) -> Result<(), String> {
 
 fn with_canonical(path: &Path) -> Vec<PathBuf> {
     let mut all = vec![path.to_path_buf()];
-    all.extend(path.canonicalize().ok().filter(|c| c != path));
+    all.extend(
+        horch_platform::path::canonicalize(path)
+            .ok()
+            .filter(|c| c != path),
+    );
     all
 }
 
@@ -1178,6 +1182,13 @@ fn toml_projects_line(line: &str) -> bool {
 mod tests {
     use super::*;
 
+    fn toml_key(path: &Path) -> String {
+        path.display()
+            .to_string()
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+    }
+
     struct Fake {
         _tmp: tempfile::TempDir,
         home: PathBuf,
@@ -1187,7 +1198,7 @@ mod tests {
     impl Fake {
         fn new() -> Fake {
             let tmp = tempfile::tempdir().unwrap();
-            let root = tmp.path().canonicalize().unwrap();
+            let root = horch_platform::path::canonicalize(tmp.path()).unwrap();
             let home = root.join("home");
             let project = home.join("projects/alpha");
             std::fs::create_dir_all(&project).unwrap();
@@ -1375,7 +1386,7 @@ mod tests {
             &after[text.len()..],
             format!(
                 "\n\n[projects.\"{}\"]\ntrust_level = \"trusted\"\n",
-                f.project.display()
+                toml_key(&f.project)
             )
         );
         assert_eq!(f.state(HarnessKind::Codex), TrustState::Trusted);
@@ -1394,7 +1405,7 @@ mod tests {
             std::fs::read_to_string(f.codex_file()).unwrap(),
             format!(
                 "[projects.\"{}\"]\ntrust_level = \"trusted\"\n",
-                f.project.display()
+                toml_key(&f.project)
             )
         );
     }
@@ -1405,7 +1416,7 @@ mod tests {
         std::fs::create_dir_all(f.codex_file().parent().unwrap()).unwrap();
         let text = format!(
             "[projects.\"{}\"]\ntrust_level = \"untrusted\"\n",
-            f.project.display()
+            toml_key(&f.project)
         );
         std::fs::write(f.codex_file(), &text).unwrap();
         let TrustWrite::Skipped(why) = f.ensure(HarnessKind::Codex, &f.project) else {
@@ -1567,7 +1578,7 @@ mod tests {
         std::fs::create_dir_all(f.codex_file().parent().unwrap()).unwrap();
         let before = format!(
             "[projects.\"{}\"] # operator note\ntrust_level = \"untrusted\"\n",
-            f.project.display()
+            toml_key(&f.project)
         );
         std::fs::write(f.codex_file(), &before).unwrap();
 
@@ -1581,7 +1592,7 @@ mod tests {
     #[test]
     fn arc_29_non_utf8_workdir_does_not_trust_its_lossy_sibling() {
         let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().canonicalize().unwrap();
+        let root = horch_platform::path::canonicalize(tmp.path()).unwrap();
         #[cfg(unix)]
         let raw = {
             use std::os::unix::ffi::OsStringExt as _;
@@ -1617,7 +1628,7 @@ mod tests {
     fn arc_29_codex_unrecognised_project_headers_are_skipped() {
         let f = Fake::new();
         std::fs::create_dir_all(f.codex_file().parent().unwrap()).unwrap();
-        let p = f.project.display().to_string();
+        let p = toml_key(&f.project);
         let escaped: String = p
             .chars()
             .map(|c| {
@@ -2286,7 +2297,7 @@ mod tests {
             std::fs::read_to_string(f.codex_file()).unwrap(),
             format!(
                 "[projects.\"{}\"]\ntrust_level = \"trusted\"\n",
-                f.project.display()
+                toml_key(&f.project)
             )
         );
         assert_eq!(
