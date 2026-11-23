@@ -384,6 +384,30 @@ fn wait_up_to<T>(what: &str, limit: std::time::Duration, mut f: impl FnMut() -> 
     panic!("timed out waiting for {what}");
 }
 
+fn compaction_job(h: &Harness) -> (u32, Option<u64>) {
+    use horch_core::compaction::jobfile;
+    let dir = jobfile::job_dir(&h.state, "w1", "sonnet-1");
+    let bytes = std::fs::read(dir.join(jobfile::SPAWNED_FILE)).unwrap();
+    let spawned: jobfile::Spawned = serde_json::from_slice(&bytes).unwrap();
+    (spawned.pid, horch_core::procid::start_time(spawned.pid))
+}
+
+fn wait_while_job_lives<T>(
+    what: &str,
+    (pid, started): (u32, Option<u64>),
+    mut f: impl FnMut() -> Option<T>,
+) -> T {
+    wait_up_to(what, DEADLINE, || {
+        let alive = horch_core::procid::alive(pid, started);
+        let found = f();
+        assert!(
+            found.is_some() || alive,
+            "the compaction job {pid} exited with no {what}"
+        );
+        found
+    })
+}
+
 #[test]
 fn ledger_stop_stops_a_spawned_worker_by_the_ingested_pid() {
     horch_e2e::expected::check(
@@ -853,6 +877,7 @@ fn g53_ledger_handoff_compacts_resumes_and_records_progress_once() {
                 &["note", "handoff: ai_docs/handoffs/sonnet-1-whats-next.md"],
             );
             assert!(scheduled.contains("scheduled"), "{scheduled}");
+            let job = compaction_job(&h);
             let again = ok(&h, &["compact", "sonnet-1"]);
             assert!(again.contains("already running"), "{again}");
             herdr(
@@ -868,7 +893,7 @@ fn g53_ledger_handoff_compacts_resumes_and_records_progress_once() {
                 ],
             );
             let ledger = SessionLedger::for_project(&h.state, &h.project.to_string_lossy());
-            wait("completed compaction", || {
+            wait_while_job_lives("completed compaction", job, || {
                 ledger
                     .get("r-compact")
                     .ok()?
@@ -932,9 +957,13 @@ fn g53_ledger_handoff_compacts_resumes_and_records_progress_once() {
                 1,
                 "{orchestrator_mail:?}"
             );
-            let (source, text): (String, String) = wait("task-ledger compaction progress", || {
-                db.conn().query_row("SELECT w.last_progress_source,e.text FROM workers w JOIN events e ON e.worker_id=w.worker_id WHERE w.worker_id=?1 AND e.text LIKE 'compaction completed:%'",[&worker],|r|Ok((r.get(0)?,r.get(1)?))).ok()
-            });
+            let (source, text): (String, String) = wait_while_job_lives(
+                "task-ledger compaction progress",
+                job,
+                || {
+                    db.conn().query_row("SELECT w.last_progress_source,e.text FROM workers w JOIN events e ON e.worker_id=w.worker_id WHERE w.worker_id=?1 AND e.text LIKE 'compaction completed:%'",[&worker],|r|Ok((r.get(0)?,r.get(1)?))).ok()
+                },
+            );
             assert_eq!(source, "transcript");
             assert!(text.contains("1201"));
         },
