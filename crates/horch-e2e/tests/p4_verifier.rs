@@ -518,6 +518,99 @@ fn sr4_check_that_writes_outside_its_paths_is_refused() {
 const OFF_HOST_URL: &str = "http://192.0.2.1:9/";
 const SANDBOX_HAS_ITS_OWN_LOOPBACK: bool = cfg!(target_os = "linux");
 
+fn host_lan_address() -> Option<std::net::Ipv4Addr> {
+    const LISTS: [(&str, &[&str]); 4] = [
+        ("/sbin/ifconfig", &[]),
+        ("/usr/sbin/ip", &["-4", "-o", "addr"]),
+        ("/sbin/ip", &["-4", "-o", "addr"]),
+        ("/usr/bin/ip", &["-4", "-o", "addr"]),
+    ];
+    let (program, args) = LISTS.into_iter().find(|(p, _)| Path::new(p).is_file())?;
+    let output = std::process::Command::new(program)
+        .args(args)
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&output.stdout).into_owned();
+    let words: Vec<&str> = text.split_whitespace().collect();
+    words
+        .windows(2)
+        .filter(|pair| pair[0] == "inet")
+        .filter_map(|pair| pair[1].split('/').next()?.parse().ok())
+        .find(|ip: &std::net::Ipv4Addr| !ip.is_loopback())
+}
+
+const LAN_LISTENER: &str = "$| = 1; alarm 600; \
+    my $l = IO::Socket::INET->new(Listen => 8, LocalAddr => $ARGV[0], LocalPort => 0) \
+      or die \"listen: $!\"; \
+    print $l->sockport, \"\\n\"; \
+    while (my $c = $l->accept) { \
+      my $r = \"\"; while ($r !~ /hello|control/ && sysread($c, my $b, 1024)) { $r .= $b } \
+      print \"$&\\n\" if $r =~ /hello|control/; \
+      print $c \"HTTP/1.1 200 OK\\r\\nContent-Length: 0\\r\\nConnection: close\\r\\n\\r\\n\"; \
+      close $c }";
+
+struct LanListener {
+    child: std::process::Child,
+    host: std::net::Ipv4Addr,
+    port: u16,
+    seen: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl LanListener {
+    fn start(perl: &str, host: std::net::Ipv4Addr) -> LanListener {
+        use std::io::BufRead as _;
+        let mut child = std::process::Command::new(perl)
+            .args(["-MIO::Socket::INET", "-e", LAN_LISTENER, &host.to_string()])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut lines = std::io::BufReader::new(child.stdout.take().unwrap()).lines();
+        let port = lines.next().unwrap().unwrap().parse().unwrap();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = std::sync::Arc::clone(&seen);
+        std::thread::spawn(move || {
+            for line in lines.map_while(Result::ok) {
+                log.lock().unwrap().push(line);
+            }
+        });
+        LanListener {
+            child,
+            host,
+            port,
+            seen,
+        }
+    }
+
+    fn answers_outside_the_sandbox(&self) -> bool {
+        use std::io::{Read as _, Write as _};
+        let limit = std::time::Duration::from_secs(5);
+        let address = std::net::SocketAddr::from((self.host, self.port));
+        let Ok(mut stream) = std::net::TcpStream::connect_timeout(&address, limit) else {
+            return false;
+        };
+        let _ = stream.set_read_timeout(Some(limit));
+        if stream.write_all(b"control").is_err() {
+            return false;
+        }
+        let mut reply = String::new();
+        let _ = stream.read_to_string(&mut reply);
+        reply.starts_with("HTTP/1.1 200")
+    }
+
+    fn check_requests(&self) -> usize {
+        let seen = self.seen.lock().unwrap();
+        seen.iter().filter(|line| *line == "hello").count()
+    }
+}
+
+impl Drop for LanListener {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
 fn loopback_server(
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> (u16, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
@@ -644,6 +737,70 @@ fn sr3_check_that_connects_off_host_is_refused() {
     assert!(
         refused("192.0.2.1"),
         "SR-3: the connect to {OFF_HOST_URL} was not refused\n{verdict}"
+    );
+    assert_not_done(&w);
+}
+
+#[test]
+fn sr3_check_that_connects_to_a_host_lan_address_is_refused() {
+    let Some(lan) = host_lan_address() else {
+        eprintln!("skip: this host has no non-loopback IPv4 address");
+        return;
+    };
+    let curl = ["/usr/bin/curl", "/bin/curl"]
+        .into_iter()
+        .find(|p| Path::new(p).is_file())
+        .expect("curl on this host");
+    let perl = ["/usr/bin/perl", "/bin/perl"]
+        .into_iter()
+        .find(|p| Path::new(p).is_file())
+        .expect("perl on this host");
+    let listener = LanListener::start(perl, lan);
+    assert!(
+        listener.answers_outside_the_sandbox(),
+        "the listener on {lan} does not answer outside the sandbox, so a refusal proves nothing"
+    );
+    let url = format!("http://{lan}:{}/", listener.port);
+    let check = format!("{curl} --silent --show-error --max-time 5 --data hello {url}");
+    let w = World::new(
+        "p4v-sr3-lan",
+        &Spec {
+            check: &check,
+            kind: WorkKind::Feature,
+            own: &[],
+            writes: None,
+        },
+    );
+    w.start_fleetd();
+    if let Some(gap) = horch_platform::sandbox::host_problem(Some(w.h.bin.as_os_str())) {
+        wait_for_or(
+            "the task_check job to end with no sandbox",
+            || w.check_job_ended().then_some(()),
+            || w.evidence(),
+        );
+        assert_eq!(
+            listener.check_requests(),
+            0,
+            "SR-3 on a host with NotSupported ({gap:?}): the check ran with no sandbox\n{}",
+            w.evidence()
+        );
+        assert_not_done(&w);
+        return;
+    }
+    let verdict = w.verdict(1);
+    assert_eq!(
+        listener.check_requests(),
+        0,
+        "SR-3: the check reached the listener on the host LAN address {url}\n{verdict}\n{}",
+        w.evidence()
+    );
+    assert_eq!(verdict["decision"], "failed", "{verdict}");
+    let reason = verdict["reason"].as_str().unwrap();
+    assert!(
+        reason
+            .lines()
+            .any(|l| l.starts_with("check| curl: (7)") && l.contains(&lan.to_string())),
+        "SR-3: the connect to {url} was not refused\n{verdict}"
     );
     assert_not_done(&w);
 }
