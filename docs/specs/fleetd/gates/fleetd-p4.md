@@ -10,8 +10,10 @@ A rule is green when each of its tests passes and is off the list of expected fa
 ## Result
 
 - macOS: each Phase 4 gate row is green at `3de43412`.
-- The ticket Check is red at `3de43412`. 2 tests of `p3_refusals`, outside the Phase 4 rows, failed
-  in the whole-workspace run (see "The whole workspace on macOS").
+- The 16 gate targets are green at `3de43412`.
+- The ticket Check has no valid green run yet. 2 tests of `p3_refusals`, outside the Phase 4 rows,
+  failed in a whole-workspace run at a load average of 144 and passed alone. Ticket 276 owns them
+  (see "The whole workspace on macOS").
 - Linux: no green CI run exists. No row is green on Linux.
 - Windows: no green CI run exists. No row is green on Windows.
 
@@ -66,9 +68,10 @@ The 2 failures are in `crates/horch-e2e/tests/p3_refusals.rs`:
 
 Each failed with "timed out after 120 s waiting for the landing of the branch and of its tree". The
 branch was `landed`, and its tree stayed in `landing`. The load average was 144 near the failure.
-Alone, both tests passed 3 of 3 runs, in 49 s to 73 s, at a load average of 12 to 17. The link to
-load is a measured correlation. The cause is not proved. The ticket rule counts this as a bug, and
-the fix is outside this ticket, so it is reported to the orchestrator as `BLOCKED:`.
+Alone, the 2 tests passed together in 3 of 3 runs, in 49.52 s, 72.22 s and 72.93 s, at a load
+average of 12 to 17. The cause is not proved. The orchestrator states that the load of 144 came from
+its scheduling, so this whole-workspace run is not valid evidence for or against these 2 tests.
+Ticket 276 owns them. The Check needs 1 whole-workspace run with no other such run at the same time.
 
 ## The list of expected failures
 
@@ -169,6 +172,7 @@ Each test passed on macOS in the whole-workspace run at `3de43412`.
 
 - `cleanup_after_land_removes_a_landed_tree_through_the_remove_job` and
   `cleanup_of_a_landed_tree_with_an_untracked_file_is_refused_and_marked_cleanup_failed`: 1 failure
-  each in the whole-workspace run and 3 passes alone. The cause is open.
+  each in the whole-workspace run at a load average of 144 and 3 passes alone. The cause is open in
+  ticket 276.
 - Each test of the Phase 4 gate passed in its 1 run at `3de43412` on macOS. This ticket did not run
   them 3 times.
