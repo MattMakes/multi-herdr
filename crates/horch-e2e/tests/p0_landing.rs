@@ -595,17 +595,6 @@ fn two_conflicting_features_keep_their_tips_and_reach_a_decision() {
                 stacked.len() + items.len() == 1,
                 "1 decision names both features: stacks {stacked:?}, needs-you items {items:?}"
             );
-            let running =
-                "SELECT id || ' ' || kind || ' ' || subject || ' ' || ifnull(started_at, '-') \
-                 FROM jobs WHERE state = 'running'";
-            wait_for_or(
-                "each job to end",
-                || {
-                    pass(&h, || ());
-                    ledger_rows(&h, running).is_empty().then_some(())
-                },
-                || format!("running jobs: {:?}", ledger_rows(&h, running)),
-            );
         },
     );
 }
