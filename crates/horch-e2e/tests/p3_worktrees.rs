@@ -319,19 +319,34 @@ fn step(h: &Harness) -> Output {
 }
 
 fn until(h: &Harness, what: &str, limit_s: i64, done: impl Fn(&Harness) -> bool) -> i64 {
-    let start = fleet_clock(h);
+    let mut took = 0;
     let mut last = String::new();
     loop {
-        let took = fleet_clock(h) - start;
         if done(h) {
             return took;
         }
         assert!(
             took < limit_s,
-            "{what}: not within {limit_s} fleet seconds\n{}\nlast pass:\n{last}",
+            "{what}: not within {limit_s} fleet seconds of test steps\n{}\nlast pass:\n{last}",
             board(h)
         );
         last = text(&step(h));
+        took += PASS_S;
+    }
+}
+
+fn until_branch_landed(h: &Harness, tree: &Path) {
+    let branch = column(h, tree, "branch").expect("the worktree row");
+    let sql =
+        format!("SELECT name FROM branches WHERE name = '{branch}' AND landing_state = 'landed'");
+    let end = Instant::now() + Duration::from_secs(300);
+    while query(h, &sql).is_empty() {
+        assert!(
+            Instant::now() < end,
+            "{branch} is not landed after 300 s\n{}",
+            board(h)
+        );
+        step(h);
     }
 }
 
@@ -691,6 +706,7 @@ fn fm27_only_landed_or_rescued_trees_are_removed() {
     let hand = hand_tree(&h, "hand", "hand-branch");
 
     pass(&h);
+    until_branch_landed(&h, &landed);
     until(
         &h,
         "the removal of the landed tree",
