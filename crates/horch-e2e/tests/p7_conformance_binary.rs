@@ -530,6 +530,7 @@ fn run_gate(h: &Harness, bin: &Path, args: &[&str]) -> (Output, String) {
         .env("HOME", &h.home)
         .env("TMPDIR", &h.tmp)
         .env("HORCH_BIN", Harness::horch_bin())
+        .env("HORCH_MACHINE_FILE", &h.env["HORCH_MACHINE_FILE"])
         .env("HORCH_TEST_DOCS_FIXTURE", h.root.join("docs-fixture"))
         .env("P7_CONFORMANCE_TIMEOUT_S", "300");
     for key in [

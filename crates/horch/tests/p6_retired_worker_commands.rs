@@ -1,5 +1,7 @@
 #![cfg(unix)]
 
+mod support;
+
 use std::fs::{self, OpenOptions, Permissions};
 use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -192,6 +194,10 @@ impl World {
             .env("FLEET_ROOT", self.fleet())
             .env("HORCH_WORKSPACE_ID", "w1")
             .env("HORCH_NO_WATCHDOG", "1")
+            .env(
+                "HORCH_MACHINE_FILE",
+                support::fleetd::healthy_machine_file(&root),
+            )
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .output()
             .unwrap();
