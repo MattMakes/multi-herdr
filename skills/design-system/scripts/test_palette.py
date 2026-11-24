@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 
+sys.dont_write_bytecode = True
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
