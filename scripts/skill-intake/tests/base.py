@@ -21,7 +21,7 @@ SKILL = REPO / "skills" / "skill-intake"
 SCRIPTS = SKILL / "scripts"
 INTAKE = SCRIPTS / "intake.py"
 TESTS = Path(__file__).resolve().parent
-FLEET_ENV = ("HORCH_ROLE", "HORCH_RECORD_ID", "HERDR_PANE_ID", "HORCH_RUN_ID")
+FLEET_ENV = ("HORCH_ROLE", "HORCH_RECORD_ID", "HERDR_PANE_ID", "HC_TERMINAL_ID", "HORCH_RUN_ID")
 
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))

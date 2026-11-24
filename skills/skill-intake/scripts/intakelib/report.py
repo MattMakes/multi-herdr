@@ -134,7 +134,7 @@ def mode_lines(t: task.Task) -> list[str]:
     if ran:
         mode = ran[0] if len(ran) == 1 else "/".join(ran)
     how = (f"forced by {task.MODE_ENV}" if forced else
-           "HORCH_ROLE, HORCH_RECORD_ID and HERDR_PANE_ID are set and horch --version exits 0"
+           "HORCH_ROLE, HORCH_RECORD_ID and HERDR_PANE_ID or HC_TERMINAL_ID are set and horch --version exits 0"
            if mode == "fleet" else "a fleet variable is not set or horch --version failed (spec 6.2)")
     lines = [f"- mode: {_cell(mode)}", f"- how detected: {_cell(how)} (checked when the report was written)"]
     if mode == "fleet":

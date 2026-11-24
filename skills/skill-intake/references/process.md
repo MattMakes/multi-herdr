@@ -64,7 +64,7 @@ different things in different commands (for example 14).
 | `verify` | GATE 2 pass | 2 GATE 1 is not pass, or bad input; 5 GATE 2 abort |
 | `install` | installed | 2 bad input, or GATE 2 is not pass; 7 a name collision no rule resolves; 15 the repo is on its default branch, nothing written |
 | `report` | ok | - |
-| `mode` | prints `fleet` or `plain` | - |
+| `mode` | prints `fleet` or `plain`; `fleet` needs `HORCH_ROLE`, `HORCH_RECORD_ID`, `HERDR_PANE_ID` or `HC_TERMINAL_ID`, and `horch --version` exit 0 | - |
 | `brief` | prints `{"brief", "status_file"}` | 2 bad input, or `--fix` for a role that is not the writer, or with a missing, invalid or empty `K/fixes.json`; 9 a clean brief failed the leakage scan |
 | `spawn` | role worker started | 2 bad input (the `--fix` rules of `brief` apply); 8 the role stage aborted (a brief was lost twice); 9 brief leak; 10 not in fleet mode; 11 `horch spawn` failed; 14 another role of the task is active |
 | `roles` | lists role workers | 2 bad input; with `--lost`: 8 the brief is lost a second time, abort; 10 not in fleet mode; 11 `horch spawn` failed |

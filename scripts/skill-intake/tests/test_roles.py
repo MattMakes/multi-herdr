@@ -45,6 +45,7 @@ if sys.argv[1:2] == ["spawn"]:
     sys.exit(code)
 """
 FLEET = {"HORCH_ROLE": "skill-importer-1", "HORCH_RECORD_ID": "rec-1", "HERDR_PANE_ID": "p0"}
+FLEET_HC = {"HORCH_ROLE": "skill-importer-1", "HORCH_RECORD_ID": "rec-1", "HC_TERMINAL_ID": "t0"}
 
 
 def expected_argv(teammate: str, brief: str) -> list[str]:
@@ -121,6 +122,16 @@ class ModeTest(RolesCase):
             missing = {k: v for k, v in FLEET.items() if k != var}
             self.assertEqual(self.mode(**missing), "plain", var)
             self.assertEqual(self.mode(**{**FLEET, var: ""}), "plain", var)
+
+    def test_the_hc_pane_variable_is_fleet(self):
+        self.assertEqual(self.mode(**FLEET_HC), "fleet")
+        self.assertEqual(self.calls(), [["--version"]])
+
+    def test_a_missing_or_empty_hc_var_is_plain(self):
+        for var in FLEET_HC:
+            missing = {k: v for k, v in FLEET_HC.items() if k != var}
+            self.assertEqual(self.mode(**missing), "plain", var)
+            self.assertEqual(self.mode(**{**FLEET_HC, var: ""}), "plain", var)
 
     def test_a_failing_or_absent_horch_is_plain(self):
         self.assertEqual(self.mode(**FLEET, STUB_VERSION_EXIT="1"), "plain")
