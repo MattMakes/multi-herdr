@@ -2,10 +2,10 @@
 
 | | |
 |---|---|
-| Status | Proposed (not started). Planned requirements GRS-01 to GRS-18; Requirement Table (section 5) adopts the active `scripts/check-req-coverage.sh` column header (`Requirement`) alongside the tests that implement each requirement. |
+| Status | Proposed (not started). Planned requirements GRS-01 to GRS-44; Requirement Table (section 5) adopts the active `scripts/check-req-coverage.sh` column header (`Requirement`) alongside the tests that implement each requirement. |
 | Date | 2026-11-24 |
 | Author | spec-writer-1 |
-| Inputs | Brief (`ai_docs/plans/godot-rust-support/brief.md`), operator decisions (`ai_docs/plans/godot-rust-support/decisions.md`), static-analysis report (`ai_docs/reports/godot-rust-static-analysis.md`, section 9 items 1, 2, 3, 5, 6), capability-audit report (`ai_docs/reports/godot-rust-capability-audit.md`, gaps G1 to G14). |
+| Inputs | Brief (`ai_docs/plans/godot-rust-support/brief.md`), operator decisions (`ai_docs/plans/godot-rust-support/decisions.md`), static-analysis report (`ai_docs/reports/godot-rust-static-analysis.md`, section 9 items 1, 2, 3, 5, 6), capability-audit report (`ai_docs/reports/godot-rust-capability-audit.md`, gaps G1 to G14), spec amendment brief (`ai_docs/plans/godot-rust-support/spec-amend-brief-2.md`), high frame rate (HFR) research reports (`ai_docs/reports/godot-hfr/1-script-cpu.md`, `2-render-gpu.md`, `3-physics-servers-threads.md`, `4-measure-harness.md`, `5-native-memory-hitches.md`). |
 | Companion | [`docs/specs/godot.md`](godot.md) (GDW-01 to GDW-13) and [ADR 0086](../adr/0086-complexity-sweep-sends-each-language-to-a-tool-that-parses-it.md). |
 
 ---
@@ -35,6 +35,9 @@ When a fleet runs on a Rust crate, a Godot project (GDScript or C#), or a hybrid
    - Godot seats do not trigger a `git-lfs` doctor check when a Godot project uses Git LFS in `.gitattributes` (G11).
    - A `codex-sol` fallback pane running `cargo build` on a `gdext` crate may fail if Cargo attempts to write outside the workspace sandbox to `~/.cargo` (G12).
    - The live check of `godot-run.sh` inside a real Codex pane noted as pending in `docs/specs/godot.md` has not been recorded as closed (G13).
+6. **No high frame rate (HFR) hunt for Godot**:
+   - The operator wants a teammate to target 200 to 300 fps (5.00 ms, 4.17 ms and 3.33 ms frame budgets) to find code that needs optimization. No bundled skill gives that workflow, a benchmark harness with a pass/fail rule, or a detection pass.
+   - The 5 HFR reports (`ai_docs/reports/godot-hfr/`) find 21 incorrect or incomplete claims in `skills/godot-perf-measure`, `skills/godot-optimization` and `skills/godot-multithreading`.
 
 ---
 
@@ -45,7 +48,7 @@ Extend the fleet's static analysis, roster, skills, finish steps, doctor checks,
 1. **Static Analysis (`complexity-sweep`)**:
    - Discover nested Cargo crates by walking up from each changed `.rs` file to the nearest ancestor `Cargo.toml` within the work directory, grouping changed `.rs` files by crate root, running `cargo clippy` per crate root, and prefixing reported paths back to work-dir-relative paths.
    - Expand the clippy complexity pass to enforce `-W clippy::cognitive_complexity -W clippy::too_many_lines -W clippy::too_many_arguments --cap-lints warn`, mapping them to `cognitiveComplexity`, `functionLength`, and `parameterCount`, extracting the function identifier after `fn` from signature spans, and deduplicating by `(file_path, line, metric)`.
-   - Add a GDScript complexity route for changed `.gd` files using a bundled Python script (`scripts/godot/gdcomplexity.py` / embedded asset) powered by `gdtoolkit.parser` (`gdtoolkit==4.5.0`) that computes per-function `cyclomaticComplexity` (branch nodes + 1, including lambdas inside their enclosing function) and `parameterCount` with exact AST start and end lines, reading optional threshold overrides from the nearest `static-analysis` config and emitting the standard analyser JSON schema consumed by `in_changed_functions()`.
+   - Add a GDScript complexity route for changed `.gd` files using a Python script (source `scripts/godot/gdcomplexity.py`, embedded in `horch-core` and written to `<evidence_root>/bin/gdcomplexity.py` at run time) powered by `gdtoolkit.parser` (`gdtoolkit==4.5.0`) that computes per-function `cyclomaticComplexity` (branch nodes + 1, including lambdas inside their enclosing function) and `parameterCount` with exact AST start and end lines, reading optional threshold overrides from the nearest `static-analysis` config and emitting the standard analyser JSON schema consumed by `in_changed_functions()`.
    - Update the `complexity-sweep` not-applicable message to name every routed language and tool: TypeScript, JavaScript, and Python (the analyser), Rust (clippy), and GDScript (gdcomplexity).
    - Record the finish-step design in an updated ADR 0086 (and a companion ADR for code-sweep and comment-sweep language awareness).
 2. **Rust Team, Skills, and Host Doctor Checks (G1, G2, G8, Report A item 5)**:
@@ -57,7 +60,7 @@ Extend the fleet's static analysis, roster, skills, finish steps, doctor checks,
    - Expand `teammates/godot-native-engineer.md` to own both C++ (`godot-cpp`) and Rust (`godot-rust` / `gdext`), add `skills_when: {"Cargo.toml": [rust-cargo-workspace, rust-unsafe-review, rust-testing]}`, and expand `skills/godot-gdextension/references/rust-gdext.md` to cover `.gdextension` library paths per platform, `cargo build --target`, hot-reload configuration, and headless engine test verification.
    - Update `teammates/godot-code-reviewer.md`, `teammates/godot-qa-engineer.md`, and `docs/specs/godot.md` (GDW-03) so that `skills_when: {"*.csproj": [godot-csharp-godot, godot-csharp-signals]}` applies to `godot-code-reviewer` and `godot-qa-engineer` as well as the 15 builder seats.
 4. **Language-Aware Sweeps and Default Stack Checks (G3, G6, G7)**:
-   - Update `code-sweep` (`crates/horch-core/src/taskledger/finish/codesweep.rs`) to include the domain reviewer (`godot-code-reviewer`, `rust-reviewer`, `swift-reviewer`) when the task's changed files or project facts match that stack and the author runs on the opposite vendor (or as the first domain specialist slot alongside the cross-vendor reviewer), and expand triage signals: `contracts` (`class_name `, `signal `, `@export`, `public class`, `public interface`, `public struct`, `#[godot_api]`), `touches_dependencies` (`.csproj`, `Directory.Packages.props`, `project.godot`, `.gdextension`, `plugin.cfg`), and `touches_ui` (`tscn`, `tres`).
+   - Update `code-sweep` (`crates/horch-core/src/taskledger/finish/codesweep.rs`) to assign the first round-1 review slot to the domain reviewer (`godot-code-reviewer`, `rust-reviewer`, `swift-reviewer`) when the task's changed files match that stack, keep the remaining slots on the cross-vendor reviewer (Open Question 2, Option 1), and expand triage signals: `contracts` (`class_name `, `signal `, `@export`, `public class`, `public interface`, `public struct`, `#[godot_api]`), `touches_dependencies` (`.csproj`, `Directory.Packages.props`, `project.godot`, `.gdextension`, `plugin.cfg`), and `touches_ui` (`tscn`, `tres`).
    - Update `comment-sweep` (`crates/horch-core/src/taskledger/finish/comments.rs`) to exclude Godot non-code data files (`.tscn`, `.tres`, `.import`, `.uid`, `.gdextension`, `project.godot`) in `NOT_CODE`, and update `skills/comment-pruning/references/pruning-pass.md` to keep Rust `// SAFETY:` comments on `unsafe` blocks/impls and GDScript `##` / Rust `///` and `//!` public doc comments.
    - Add stack-based default check suggestion/inference (`crates/horch/src/cmd/taskledger.rs` and `skills/orchestrate/SKILL.md`): when `horch ledger run new <slug>` is called without `--check`, print or apply the recommended check command from project facts (Rust: `cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings`; Godot: `bash skills/godot-build-verify/scripts/godot-check.sh` or project equivalent; hybrid Godot+Rust: both), while preserving `--check` override and `**Check:** none`.
 5. **Low-Severity Hardening and Live Checks (G9, G11, G12, G13)**:
@@ -65,6 +68,10 @@ Extend the fleet's static analysis, roster, skills, finish steps, doctor checks,
    - Check Git LFS in `horch doctor` for Godot projects whenever `.gitattributes` contains `filter=lfs` (G11).
    - Ensure Codex launches set a writable `CARGO_HOME` under the workspace or state root when `~/.cargo` is not writable in `workspace-write` mode, verified by a live check (G12).
    - Run and record `godot-run.sh` inside a real Codex pane in `docs/live-checks/godot-codex.md` and update `docs/specs/godot.md` status (G13).
+6. **High Frame Rate Hunt Skill (`GRS-19` to `GRS-44`)**:
+   - Add the own-text skill `skills/godot-hfr-hunt/`: a `SKILL.md` workflow, 1 reference file per research angle, a detection pass, and the benchmark harness `scripts/hfr_bench.py` from report 4.
+   - Correct each claim that the reports find wrong in the existing Godot performance skills, 1 requirement row per correction.
+   - Add `godot-hfr-hunt` to `teammates/godot-performance-engineer.md` within the 11-skill cap of `GDW-08`.
 
 ---
 
@@ -99,15 +106,17 @@ Extend the fleet's static analysis, roster, skills, finish steps, doctor checks,
 27. As an operator running `horch doctor` in a Godot project whose `.gitattributes` uses `filter=lfs` (G11), I want doctor to verify `git-lfs` is installed and initialized even though `godot-*` seats do not unconditionally require `git-lfs` on non-LFS projects.
 28. As a worker on a `codex-sol` fallback pane building a Rust or `gdext` crate (G12), I want `CARGO_HOME` to remain writable (or fall back to a workspace/state-root cargo directory when `~/.cargo` is read-only under the Codex sandbox), so that `cargo build` and `cargo clippy` succeed inside a Codex pane.
 29. As an operator maintaining `docs/specs/godot.md` (G13), I want the pending real Codex pane check for `godot-run.sh` (`scripts/live/godot-codex.sh`) executed or verified and recorded in `docs/live-checks/godot-codex.md` and `docs/specs/godot.md`, closing the last open item from the Godot wave.
+30. As a `godot-performance-engineer` with a 200 to 300 fps target, I want a skill that uncaps the frame rate, runs a fixed benchmark scenario, reads frame-time percentiles and sends me to the technique for the thread that owns the cost, so that I optimize the measured hot spot and not a guess.
+31. As an orchestrator setting a performance check, I want `hfr_bench.py compare` to print 1 exact verdict and exit non-zero on a frame-time regression or a budget failure, so that a slower candidate cannot land without notice.
 
 ---
 
 ## Test Seams
 
-Following `docs/specs/godot.md` and `docs/testing-and-gates.md`, every requirement ID (`GRS-01` to `GRS-18`) is pinned by at least one Rust test whose function name starts with `grs_<nn>_` so that `scripts/check-req-coverage.sh` enforces 100% requirement coverage in `just gate`. We use four existing seams and one new integration test file (`crates/horch-core/tests/godot_rust_support.rs`):
+Following `docs/specs/godot.md` and `docs/testing-and-gates.md`, every requirement ID (`GRS-01` to `GRS-44`) is pinned by at least one Rust test whose function name starts with `grs_<nn>_` so that `scripts/check-req-coverage.sh` enforces 100% requirement coverage in `just gate`. We use four existing seams and one new integration test file (`crates/horch-core/tests/godot_rust_support.rs`):
 
 1. **Primary Seam — Roster, Skills, and Finish Unit/Integration Suite (`crates/horch-core/tests/godot_rust_support.rs`)**:
-   - **Test prefix**: `grs_01_` through `grs_18_`.
+   - **Test prefix**: `grs_01_` through `grs_44_`.
    - **What it tests**:
      - Complexity routing, nested Cargo crate discovery, multi-lint clippy JSON parsing (`cognitive_complexity`, `too_many_lines`, `too_many_arguments`), signature-span function name extraction, `(file, line, metric)` deduplication, GDScript `gdcomplexity.py` invocation and JSON output integration with `in_changed_functions()`, and the updated not-applicable message (`GRS-01` to `GRS-04`).
      - Rust team roster presence (`rust-developer`, `rust-reviewer`, `rust-qa-engineer`), `offer_when: ["Cargo.toml"]`, `Requirement::Rust` (`requires: [rust]`), tool denials on `rust-reviewer`, and the 7 `rust-*` skills in the bundled skill catalog (`GRS-06`, `GRS-07`, `GRS-08`).
@@ -118,6 +127,7 @@ Following `docs/specs/godot.md` and `docs/testing-and-gates.md`, every requireme
      - `comments::is_code` rejecting `.tscn`, `.tres`, `.import`, `.uid`, `.gdextension`, and `project.godot`, and `pruning-pass.md` keeping `// SAFETY:` and `##` doc comments (`GRS-13`).
      - Stack default check suggestion from `ProjectFacts` (`GRS-14`).
      - Worktree `.godot/imported` seeding / timing report verification, Git LFS doctor check on `.gitattributes`, Codex `CARGO_HOME` environment preparation, and live-check doc closure (`GRS-15` to `GRS-18`).
+     - `godot-hfr-hunt` layout, workflow steps, reference sections and detection content (`GRS-19`, `GRS-21`), `hfr_bench.py` through its Python suite (`GRS-20`), the old and new claim text in each corrected skill file (`GRS-22` to `GRS-42`), the `godot-performance-engineer` skill lists (`GRS-43`), and catalog registration (`GRS-44`).
 2. **Existing Seam — Doctor Unit Tests (`crates/horch/src/cmd/doctor.rs`)**:
    - **Test prefix**: `grs_05_`, `grs_08_`, `grs_16_`.
    - **What it tests**: `Requirement::Rust` (`cargo`, `rustc`, `cargo clippy` checks) and project-fact finish-step tool warnings (`Cargo.toml` without `cargo`/`clippy`; `project.godot` without `uv`/`gdtoolkit`; `project.godot` + `.gitattributes` `filter=lfs` without `git-lfs`) using hermetic temp directories and warmed fake binaries.
@@ -125,7 +135,7 @@ Following `docs/specs/godot.md` and `docs/testing-and-gates.md`, every requireme
    - **Test prefix**: `grs_01_`, `grs_03_`.
    - **What it tests**: Full `horch ledger finish` runs on a worktree with a nested `rust/Cargo.toml` crate and a `.gd` script change.
 4. **Existing Seam — Godot Python Gate (`scripts/godot/tests/`)**:
-   - **Test prefix**: `test_gdcomplexity_*` and `test_godot_check_*` in `scripts/godot/tests/`, invoked both by `just gate` (`godot_skills` step) and from `grs_03_` / `grs_09_` in `crates/horch-core/tests/godot_rust_support.rs`.
+   - **Test prefix**: `test_gdcomplexity_*`, `test_godot_check_*` and `test_hfr_bench_*` in `scripts/godot/tests/`, invoked both by `just gate` (`godot_skills` step) and from `grs_03_` / `grs_09_` / `grs_20_` in `crates/horch-core/tests/godot_rust_support.rs`.
 
 ---
 
@@ -148,7 +158,7 @@ Following `docs/specs/godot.md` and `docs/testing-and-gates.md`, every requireme
   - Update `name(span: &Span)` so that when the sliced span text contains whitespace or `fn` (as in signature spans emitted by `too_many_lines` and `too_many_arguments`), it finds the `fn` keyword token and takes the identifier after `fn` up to the first `<` or `(`, falling back to the raw span slice for single-identifier spans.
   - Deduplicate findings in `clippy_violations` by `(v.file_path, v.line, v.metric)` instead of `(v.file_path, v.line)`, so two different lints on the same function are both kept while duplicate target compilations (`--all-targets` compiling `lib` and `test`) are deduplicated.
 - **GDScript complexity route via `gdtoolkit.parser` (Report A item 3 -> `GRS-03`)**:
-  - Ship an own-text Python script `scripts/godot/gdcomplexity.py` (and resolve it via `HORCH_GDCOMPLEXITY_CLI` or `<repo>/scripts/godot/gdcomplexity.py` or a materialized copy under state/data root on `finish::Tools.gdcomplexity_cli`).
+  - Ship an own-text Python script `scripts/godot/gdcomplexity.py`, embed it in `horch-core` with `include_str!`, and resolve it on `finish::Tools.gdcomplexity_cli` from `HORCH_GDCOMPLEXITY_CLI` when set, else from the embedded copy written to `<evidence_root>/bin/gdcomplexity.py` (Open Question 3, Option 1). Do not look up `<repo>/scripts/godot/gdcomplexity.py` at run time.
   - Run it on changed `.gd` files via `uv run --with gdtoolkit==4.5.0 python3 -I <gdcomplexity.py> --format json [--config <cfg>] <files>` when `uv` is available on `PATH`, or `python3 -I <gdcomplexity.py> ...` when `gdtoolkit` is importable directly in `python3` (e.g., via `pipx` or system site-packages; if `-I` hides user site-packages when not using `uv`, fall back to `python3 -B` without `-I` when `uv` is absent).
   - `gdcomplexity.py` parses each `.gd` file with `gdtoolkit.parser.parser.parse(source, gather_metadata=True)`. For every `func_def` node (top-level and inner-class methods):
     - `line` is `func_def.meta.line` and `end_line` is `func_def.meta.end_line`.
@@ -257,6 +267,54 @@ Following `docs/specs/godot.md` and `docs/testing-and-gates.md`, every requireme
 - **Close pending `godot-run.sh` real Codex pane live check (G13 -> `GRS-18`)**:
   - Run `scripts/live/godot-codex.sh` inside a real Codex pane (or verify the recorded `B-fixed` run in `docs/live-checks/godot-codex.md` against the wrapper script), record the `godot-run.sh` pane run in `docs/live-checks/godot-codex.md`, and update line 5 of `docs/specs/godot.md` to mark the live check complete.
 
+### 7. High Frame Rate Hunt Skill (`GRS-19` to `GRS-44`)
+
+- **Skill layout and workflow (`GRS-19`)**:
+  - Create the own-text skill `skills/godot-hfr-hunt/` (`SKILL.md` <= 12 KB, directory <= 160 KB). The skill is written from the 5 reports in `ai_docs/reports/godot-hfr/` and keeps their source links. It does not copy the reports' "Corrections" sections. `GRS-22` to `GRS-42` put those in the skills they correct.
+  - `SKILL.md` holds this workflow, in this order:
+    1. **Uncap.** Run a release export in a foreground window with `--disable-vsync --max-fps 0`. Assert `Engine.max_fps == 0`, `OS.low_processor_usage_mode == false` (its default 6,900 microsecond sleep caps a run near 145 fps), `application/run/frame_delay_msec == 0` and no `--fixed-fps`. Reject a run whose frame times cluster at the display period or at 6.9 ms. Do not time an editor-hosted or `--headless` run for rendering (`--headless` uses the dummy renderer).
+    2. **Run the harness.** Use `scripts/hfr_bench.py` (`GRS-20`) on 1 fixed scenario: settle, warm up for 5 s, record for 30 s.
+    3. **Read the percentiles.** Read p50, p95, p99, worst frame and 1% low against the 5.00 ms (200 fps), 4.17 ms (240 fps) and 3.33 ms (300 fps) budgets. A p99 much larger than p50 is a spike problem. A high p50 and p99 is a steady-cost problem.
+    4. **Classify the hot spot** into 1 of 5 classes by its signature, then open that reference file:
+       - script CPU: the `TIME_PROCESS` or `TIME_PHYSICS_PROCESS` 1-second peak rises with the slow interval, and the Profiler ranks script functions by `Self` and `Calls` -> `references/script-cpu.md`;
+       - render thread: `RenderingServer.get_frame_setup_time_cpu()` plus summed viewport render CPU is high, with high draw calls, objects or primitives -> `references/render-gpu.md`;
+       - GPU: summed viewport GPU time is near the budget, and halving `scaling_3d_scale` gives a large drop -> `references/render-gpu.md`;
+       - physics: `TIME_PHYSICS_PROCESS`, `PHYSICS_*_COLLISION_PAIRS`, `PHYSICS_*_ACTIVE_OBJECTS` or `TIME_NAVIGATION_PROCESS` own the time -> `references/physics-servers-threads.md`;
+       - spikes: a slow frame lines up with a pipeline `SURFACE` or `DRAW` counter delta, a load, `instantiate()` or `add_child()` event, or a managed GC event -> `references/native-memory-hitches.md`.
+       When wall time is high but every built-in category is low, follow the escalation ladder in `references/measure-harness.md` (native sampling profiler, then Tracy, then a GPU frame capture).
+    5. **Apply the matching technique** and prove it with `hfr_bench.py compare`. Accept a change only when the verdict is `PASS` and the game state is the same.
+  - `references/` holds 1 file per research angle: `script-cpu.md` (report 1), `render-gpu.md` (report 2), `physics-servers-threads.md` (report 3), `measure-harness.md` (report 4) and `native-memory-hitches.md` (report 5), plus `detection.md` (`GRS-21`).
+  - Each technique in a reference file keeps the 6 fields of its report: **What**, **Why/thread**, **Measure**, **Version**, **Evidence** (the report's label: verified, not verified, or design recommendation) and **Trap**. A technique without its measurement, evidence label and trap is incomplete.
+- **Benchmark harness `hfr_bench.py` (`GRS-20`)**:
+  - `skills/godot-hfr-hunt/scripts/hfr_bench.py` is a Python 3 standard-library script, mode `0755`, with zero comments.
+  - The game side is a GDScript recorder in `references/measure-harness.md` (Open Question 6). It reads the user arguments `--hfr-bench=<scenario> --warmup-seconds=5 --sample-seconds=30 --hfr-out=<absolute path>`, asserts the caps from workflow step 1, and records `frame_ms` as the callback-to-callback `Time.get_ticks_usec()` delta. It sums render CPU and GPU time over every drawn viewport (`viewport_set_measure_render_time`), and records `null`, not `0`, for an unavailable timer. It writes the take file atomically, quits with `0`, and quits non-zero on an invalid configuration or missing samples.
+  - Commands:
+    - `python3 skills/godot-hfr-hunt/scripts/hfr_bench.py summarize <take.json>` recomputes the summary from the raw frames and prints it as JSON.
+    - `python3 skills/godot-hfr-hunt/scripts/hfr_bench.py compare --baseline <export> --candidate <export> --scenario <name> --out <dir> [--pairs 5] [--target-fps 300]` runs 1 untimed warm-up take, then 5 interleaved baseline/candidate pairs. Each take runs `<export> --windowed --resolution 1920x1080 --disable-vsync --max-fps 0 -- --hfr-bench=<name> --warmup-seconds=5 --sample-seconds=30 --hfr-out=<dir>/<name>-<baseline|candidate>-<nn>.json`. It writes `<dir>/compare.json`, prints the pair table, and prints 1 verdict line.
+  - Take file (1 JSON document per take, from report 4): `schema_version: 1`; `provenance` (`git_sha`, `godot_version`, `build`, `scenario`, `renderer`, `rendering_driver`, `resolution`, `arguments`, `thermal_start`, `thermal_end`); `validity` (`foreground`, `vsync_period_detected`, `gpu_timer_available`, `warmup_seconds`, `sample_seconds`); `summary` (`frames`, `frame_ms_p50`, `frame_ms_p95`, `frame_ms_p99`, `worst_frame_ms`, `one_percent_low_fps`, `over_3_333_ms`, `over_4_167_ms`); and raw `frames` rows (`i`, `frame_ms`, `render_cpu_ms`, `render_gpu_ms`, `draw_calls`, `primitives`). All frame times are in milliseconds.
+  - Percentiles use nearest rank: sort `frame_ms` ascending and take index `ceil(p * n) - 1`. The 1% low frame time is `frame_ms_p99`, and `one_percent_low_fps = 1000 / frame_ms_p99`. The script never averages or sorts FPS values.
+  - `compare.json` holds 1 row per pair: baseline and candidate p50, p95 and p99, the p99 delta, `valid`, and the invalid reason.
+  - A pair is invalid when either take: lost foreground status, ended with a thermal state above nominal, detected a V-Sync period, differs from its partner in renderer, driver, resolution or arguments, has fewer than 20 s of valid samples, or has no take file.
+  - Regression rule (report 4): the verdict is `FRAME_TIME_REGRESSION` only when at least 3 pairs are valid, at least 4 of 5 valid p99 deltas are positive (or all deltas are positive when only 3 or 4 pairs are valid), and the median paired p99 delta is greater than `max(0.10 ms, baseline_p99 * 0.05)`.
+  - Budget rule: `300_FPS_BUDGET_FAILURE` when the median candidate take p99 is greater than 3.333 ms, and `240_FPS_BUDGET_FAILURE` when it is greater than 4.167 ms. A budget failure does not need a baseline regression.
+  - Verdict lines are exact: `PASS`, `FRAME_TIME_REGRESSION`, `300_FPS_BUDGET_FAILURE`, `240_FPS_BUDGET_FAILURE`, `INFRASTRUCTURE_INVALID`. Exit `0` on `PASS`. Exit `1` on `FRAME_TIME_REGRESSION` or on the budget failure for `--target-fps` (`240` or `300`, default `300`); the script prints a budget line above the target as information only (Open Question 5). Exit `2` on `INFRASTRUCTURE_INVALID` (fewer than 3 valid pairs), which is never a pass.
+- **Detection pass (`GRS-21`)**:
+  - `references/detection.md` collects the "Detection" sections of the 5 reports, grouped by the 5 classes of workflow step 4, and keeps every `rg` command, profiler signature and monitor threshold. It includes:
+    - the cap search: `application/run/max_fps`, `application/run/low_processor_mode`, `application/run/frame_delay_msec`, `Engine.max_fps`, `low_processor_usage_mode`, `window_set_vsync_mode`, `--fixed-fps`;
+    - the triage threshold: a subsystem that takes 5% of the budget (0.20 ms at 240 fps, 0.17 ms at 300 fps);
+    - the evidence triggers: any repeated frame over 4.17 ms or 3.33 ms, any gameplay-time `Draw` or `Surface` pipeline compilation, any managed allocation or GC event that lines up with a slow frame, a boundary loop with thousands of native calls per frame, `PHYSICS_*_COLLISION_PAIRS` that grow while the entity count stays flat, and physics above 60 TPS without a measured need;
+    - the shadow, geometry, occlusion, 2D, shader and pipeline signatures from report 2, the physics, navigation and worker greps from report 3, and the loading, native-call, C# GC and scene-churn table from report 5.
+- **Corrections to existing skills (`GRS-22` to `GRS-42`)**:
+  - Each row names the file, the line range at the base commit of this spec, the incorrect claim and the corrected claim. The test for a row checks the text, not the line numbers.
+  - Corrections change only the named claim. They do not restructure the file.
+- **Wiring (`GRS-43`)**:
+  - Add `godot-hfr-hunt` to `skills:` in `teammates/godot-performance-engineer.md`, and move `godot-assets-pipeline` from `skills:` to `available_skills:`. The seat then expects 9 skills, and 11 in a C# project (`skills_when` adds `godot-csharp-godot` and `godot-csharp-signals`). Without the move, a C# project gives 12, above the `GDW-08` cap. `godot-assets-pipeline` stays expected on `godot-release-engineer` and `godot-technical-artist`.
+- **Skill gate (`GRS-44`)**:
+  - Register `godot-hfr-hunt` in `skills/copied.json` (`"copied_files": []`, `"verbatim": false`), in `REPO_ORIGINAL` in `crates/horch-core/tests/skills_catalog.rs`, and in `skills/README.md`.
+  - Add `godot-hfr-hunt/scripts/hfr_bench.py` to `EXEMPT_FILES` in `crates/horch-core/tests/skills_catalog.rs`, and assert its mode is `0755`.
+  - The skill passes the existing `godot_skills` gate step in `scripts/phase-gate.sh`: `scripts/godot/tests`, `xref_check.py`, `api_check.py --strict-own`, `gdscript_blocks_check.py --strict-own` (which checks the recorder block) and `csharp_blocks_check.py --strict-own`. `scripts/comments/comment_lint.py check` passes on `hfr_bench.py`.
+  - `scripts/godot/tests/test_hfr_bench.py` tests `hfr_bench.py` without the Godot binary. A fake export script writes take files from fixed frame lists, as `test_godot_run.py` does for `godot-run.sh`.
+
 ---
 
 ## Requirement Table
@@ -283,6 +341,32 @@ Following `docs/specs/godot.md` and `docs/testing-and-gates.md`, every requireme
 | GRS-16 | In a Godot project whose `.gitattributes` contains `filter=lfs`, `horch doctor` checks that `git-lfs` is installed and working even when no seat explicitly lists `requires: [git-lfs]`. | - | grs_16_doctor_checks_git_lfs_on_godot_project_with_lfs_rules |
 | GRS-17 | Codex worker launches ensure Cargo commands can run under `workspace-write` when `~/.cargo` is read-only by providing a writable `CARGO_HOME` fallback (or verified sandbox rules), documented with a live check. | - | grs_17_codex_launch_provides_writable_cargo_home_or_rule |
 | GRS-18 | `docs/live-checks/godot-codex.md` records a direct `godot-run.sh` verification inside a Codex sandbox environment and `docs/specs/godot.md` marks the pending Codex `godot-run.sh` live check complete. | - | grs_18_godot_codex_live_check_is_recorded_and_spec_status_closed |
+| GRS-19 | `skills/godot-hfr-hunt/` is an own-text bundled skill. `SKILL.md` (<= 12 KB) gives the 5-step workflow in order: uncap the frame rate, run `scripts/hfr_bench.py`, read p50/p95/p99/worst/1% low against the 5.00, 4.17 and 3.33 ms budgets, classify the hot spot as script CPU, render thread, GPU, physics or spikes by its signature, and apply the matching technique. `references/` holds 1 file per angle (`script-cpu.md`, `render-gpu.md`, `physics-servers-threads.md`, `measure-harness.md`, `native-memory-hitches.md`) taken from the 5 HFR reports, and each technique keeps its What, Why/thread, Measure, Version, Evidence label and Trap. | - | grs_19_hfr_hunt_skill_md_orders_the_five_workflow_steps, grs_19_hfr_hunt_references_have_one_file_per_angle_with_measure_evidence_and_trap |
+| GRS-20 | `skills/godot-hfr-hunt/scripts/hfr_bench.py` (Python 3 standard library, mode `0755`) has `summarize <take.json>` and `compare --baseline --candidate --scenario --out [--pairs 5] [--target-fps 300]`. Each take runs `<export> --windowed --resolution 1920x1080 --disable-vsync --max-fps 0 -- --hfr-bench=<name> --warmup-seconds=5 --sample-seconds=30 --hfr-out=<path>`. The take JSON (`schema_version: 1`) holds `frame_ms_p50`, `frame_ms_p95`, `frame_ms_p99`, `worst_frame_ms`, `one_percent_low_fps` (`1000 / frame_ms_p99`), `over_3_333_ms`, `over_4_167_ms` and raw frames, with nearest-rank percentiles (`ceil(p * n) - 1`) in ms. `compare` prints exactly 1 of `PASS`, `FRAME_TIME_REGRESSION`, `300_FPS_BUDGET_FAILURE`, `240_FPS_BUDGET_FAILURE`, `INFRASTRUCTURE_INVALID`. It reports a regression only with >= 3 valid pairs, >= 4 of 5 positive p99 deltas (all positive when 3 or 4 are valid) and a median p99 delta > `max(0.10 ms, baseline_p99 * 0.05)`. It exits `0` on `PASS`, `1` on a regression or the `--target-fps` budget failure, and `2` on `INFRASTRUCTURE_INVALID`. | - | grs_20_hfr_bench_python_suite_passes; Python: test_hfr_bench_summarize_uses_nearest_rank_percentiles, test_hfr_bench_compare_flags_regression_on_four_of_five_pairs, test_hfr_bench_compare_ignores_delta_below_noise_floor, test_hfr_bench_compare_reports_budget_failure_without_regression, test_hfr_bench_compare_is_infrastructure_invalid_below_three_pairs, test_hfr_bench_runs_fake_export_without_godot |
+| GRS-21 | `skills/godot-hfr-hunt/references/detection.md` groups the "Detection" sections of the 5 HFR reports by the 5 hot-spot classes and keeps every `rg` command, profiler signature and monitor threshold, including the frame-cap search, the 5%-of-budget triage threshold (0.20 ms at 240 fps, 0.17 ms at 300 fps), the 4.17 ms and 3.33 ms frame triggers, gameplay-time `Draw`/`Surface` pipeline compilations, `PHYSICS_*_COLLISION_PAIRS` growth at a flat entity count, and GC events that line up with slow frames. | - | grs_21_hfr_detection_reference_keeps_greps_signatures_and_thresholds |
+| GRS-22 | `skills/godot-perf-measure/SKILL.md` (lines 54-56) no longer says saved settings can force V-Sync back on after `--disable-vsync`. It says the flag forces V-Sync off even when the project enables it, only driver-level enforcement can defeat it, and the scratch settings file stays for reproducibility. | - | grs_22_perf_measure_says_disable_vsync_overrides_project_setting |
+| GRS-23 | `skills/godot-perf-measure/SKILL.md` (lines 48-50 and 122-123) says `Performance.TIME_PROCESS` and `TIME_PHYSICS_PROCESS` are 1-second peak values, not per-frame samples, and that per-frame rows use callback-to-callback `Time.get_ticks_usec()` wall time. | - | grs_23_perf_measure_labels_time_process_as_one_second_peak |
+| GRS-24 | `skills/godot-perf-measure/SKILL.md` (lines 57-60) no longer names Metal as a driver that returns 0 GPU timers or prescribes MoltenVK for it. It says to detect and report 0 or unavailable GPU timers at run time on any driver. | - | grs_24_perf_measure_does_not_name_metal_as_zero_gpu_timer_driver |
+| GRS-25 | `skills/godot-perf-measure/references/shader-warm-up.md` (lines 6-24) says Forward+ and Mobile have automatic ubershader and pipeline precompilation since Godot 4.4, the pipeline compilation monitors find the missing path, and only Compatibility needs a first-draw warm-up of every variant. | - | grs_25_shader_warm_up_scopes_first_draw_warm_up_to_compatibility |
+| GRS-26 | `skills/godot-optimization/references/measuring-performance.md` (lines 105-110) uses nearest-rank percentiles (`ceil(p * n) - 1`), names that convention, and reports 1% low FPS as `1000 / p99_frame_ms` without averaging FPS. | - | grs_26_measuring_performance_uses_named_nearest_rank_and_one_percent_low |
+| GRS-27 | `skills/godot-optimization/references/cpu-bottlenecks.md` (lines 13 and 82-97) and `skills/godot-optimization/SKILL.md` (line 145) no longer say a temporary `Vector2`/`Vector3` constructor allocates or causes a garbage-collector pause. They say small vectors are stored inline in `Variant`, GDScript has no .NET garbage collector, and `Array`, `Dictionary`, `String` and managed C# objects allocate in different ways. | - | grs_27_cpu_bottlenecks_says_vectors_are_inline_values_not_gc_allocations |
+| GRS-28 | `skills/godot-optimization/references/cpu-bottlenecks.md` (lines 176-185) no longer says typed arrays skip per-element type checks. It says a typed `Array` write calls the type validator, typing gives safety and lets the compiler specialize nearby expressions, and packed arrays give contiguous value storage. | - | grs_28_cpu_bottlenecks_says_typed_array_writes_are_validated |
+| GRS-29 | `skills/godot-optimization/references/cpu-bottlenecks.md` (line 119) no longer says `String` comparison allocates temporaries. It says the comparison scans without a new string, and `StringName == StringName` is cheaper because it compares interned pointers. | - | grs_29_cpu_bottlenecks_says_string_comparison_does_not_allocate |
+| GRS-30 | `skills/godot-optimization/SKILL.md` (line 133) no longer tells the reader to move heavy `_process()` work to `_physics_process()` because it runs less often. It says to keep simulation in physics and give delay-tolerant work an explicit cadence or budget, scheduled on accumulated `delta` or a timer, not on a frame count. | - | grs_30_optimization_uses_explicit_update_tiers_not_physics_throttling |
+| GRS-31 | `skills/godot-optimization/SKILL.md` (lines 98, 132 and 164) and `skills/godot-optimization/references/draw-calls.md` (lines 11-20) no longer prescribe `CanvasGroup` as the 2D batcher. They say Godot 4.7 batches compatible 2D work automatically in every renderer, and `CanvasGroup` is a backbuffer-compositing node that can add cost. | - | grs_31_optimization_does_not_prescribe_canvas_group_for_batching |
+| GRS-32 | `skills/godot-optimization/references/draw-calls.md` (lines 33-40 and 54-61) no longer labels a `duplicate()`d `ShaderMaterial` as shared. It uses `instance uniform` with `set_instance_shader_parameter()` and duplicates only when an instance uniform cannot hold the difference. | - | grs_32_draw_calls_uses_instance_uniforms_not_duplicated_materials |
+| GRS-33 | `skills/godot-optimization/references/draw-calls.md` (line 65) no longer says `GeometryInstance3D.gi_mode = BAKE_STATIC` lets the engine merge static geometry. It says that property opts geometry into GI, and static merging is done in the asset pipeline or with an HLOD mesh. | - | grs_33_draw_calls_says_gi_mode_does_not_merge_meshes |
+| GRS-34 | `skills/godot-optimization/references/draw-calls.md` (lines 168-198) no longer uses `VisibleOnScreenNotifier3D` and a per-frame script for distance LOD. It uses imported mesh LOD and `GeometryInstance3D` visibility ranges with HLOD dependencies and hysteresis. | - | grs_34_draw_calls_uses_mesh_lod_and_visibility_ranges |
+| GRS-35 | `skills/godot-optimization/references/physics-tuning.md` (lines 89-92) says `max_physics_steps_per_frame` trades catch-up for slow motion: at 60 TPS and the default cap of 8, game time slows below 7.5 rendered fps, and a higher TPS without a higher cap raises that threshold. | - | grs_35_physics_tuning_explains_max_physics_steps_slow_motion |
+| GRS-36 | `skills/godot-optimization/SKILL.md` (line 106) and `skills/godot-optimization/references/physics-tuning.md` (line 108) no longer always prefer `Area2D/3D` to raycasts. They say an Area fits continuous enter/exit tracking, a bounded direct query is often cheaper for sparse or on-demand checks, and both are measured at the real entity count. | - | grs_36_physics_tuning_compares_areas_and_direct_queries |
+| GRS-37 | `skills/godot-optimization/references/physics-tuning.md` (lines 63-77) says a convex decomposition into many hulls can be slower than 1 static concave shape, primitives suit dynamic bodies, and large static geometry uses a simplified concave mesh or `HeightMapShape3D`. | - | grs_37_physics_tuning_states_concave_versus_convex_crossover |
+| GRS-38 | `skills/godot-optimization/references/physics-tuning.md` (line 81) says that at 240 rendered fps and 60 TPS most frames have no physics tick, that 240 TPS makes physics and `_physics_process` work about 4 times as frequent, and that physics interpolation exists to avoid that cost. | - | grs_38_physics_tuning_explains_tick_rate_at_high_frame_rate |
+| GRS-39 | `skills/godot-optimization/references/memory-management.md` (line 136) no longer says each instantiate/free cycle re-runs `_ready()` for a pooled node. It says `_ready()` runs on the first tree entry, re-adding a node needs `Node.request_ready()` for another call, and a pool can cost more than it saves, so the full acquire/reset/release path is measured. | - | grs_39_memory_management_corrects_ready_on_pooled_nodes |
+| GRS-40 | `skills/godot-multithreading/SKILL.md` (line 18) says separate physics and rendering threads are not automatically faster: physics API access is restricted to physics processing, Jolt separate-thread support is experimental in 4.7, and the rendering `Separate` thread model has known bugs. | - | grs_40_multithreading_says_separate_server_threads_are_not_automatically_faster |
+| GRS-41 | `skills/godot-multithreading/SKILL.md` (line 22) separates CPU preparation from GPU synchronization: workers can fill plain `Image` and packed-array data, while texture creation, GPU-backed image reads and uploads from workers can synchronize with `RenderingServer` and stall. | - | grs_41_multithreading_separates_cpu_preparation_from_gpu_sync |
+| GRS-42 | `skills/godot-multithreading/SKILL.md` (lines 192-210) says `instantiate()`, `_enter_tree`, `_ready`, server registration and pipeline surface preparation still run on the main thread after `load_threaded_get()`, and the example stages or time-slices scene integration across frames. | - | grs_42_multithreading_stages_scene_integration_after_threaded_load |
+| GRS-43 | `teammates/godot-performance-engineer.md` lists `godot-hfr-hunt` in `skills:` and moves `godot-assets-pipeline` to `available_skills:`, so the seat expects 9 skills, or 11 in a `*.csproj` project, within the `GDW-08` cap. | - | grs_43_performance_engineer_expects_hfr_hunt_within_eleven_skill_cap |
+| GRS-44 | `godot-hfr-hunt` is registered in `skills/copied.json` (`"copied_files": []`), `REPO_ORIGINAL` and `skills/README.md`, `godot-hfr-hunt/scripts/hfr_bench.py` is in `EXEMPT_FILES` with mode `0755`, the skill passes the `godot_skills` gate step (`scripts/godot/tests`, `xref_check.py`, `api_check.py`, `gdscript_blocks_check.py`, `csharp_blocks_check.py`) and `comment_lint.py`, and `scripts/godot/tests/test_hfr_bench.py` runs without the Godot binary. | - | grs_44_hfr_hunt_is_registered_exempt_and_executable; Python: test_hfr_bench_runs_fake_export_without_godot |
 
 ---
 
@@ -301,6 +385,7 @@ Following `docs/specs/godot.md` and `docs/testing-and-gates.md`, every requireme
   - `crates/horch/src/cmd/doctor.rs`
   - `crates/horch/src/cmd/taskledger.rs`
   - `skills/godot-build-verify/scripts/godot-check.sh`
+  - `skills/godot-hfr-hunt/scripts/hfr_bench.py`, `skills/godot-hfr-hunt/` content, the corrected files in `skills/godot-perf-measure`, `skills/godot-optimization` and `skills/godot-multithreading`, and `teammates/godot-performance-engineer.md`
 - **Prior art in the codebase**:
   - `crates/horch-core/tests/godot_wave.rs` (`gdw_01_*` to `gdw_13_*`) for roster, `skills_when`, `Requirement`, skill size budgets, and `godot-run.sh` fake-engine testing.
   - `crates/horch-core/src/taskledger/finish/complexity.rs` (`#[cfg(test)] mod tests`) and `crates/horch-e2e/tests/taskledger.rs` (`trf_07_*`) for clippy JSON parsing and finish-step complexity e2e testing.
@@ -327,6 +412,7 @@ Following `docs/specs/godot.md` and `docs/testing-and-gates.md`, every requireme
      - **Option 1 (Recommended)**: Use prefix `GRS-01`..`GRS-18` (`grs_01_`..`grs_18_`) centered in `crates/horch-core/tests/godot_rust_support.rs` (mirroring `crates/horch-core/tests/godot_wave.rs` for `GDW-01`..`GDW-13`), with doctor unit tests in `crates/horch/src/cmd/doctor.rs` and finish e2e tests in `crates/horch-e2e/tests/taskledger.rs`.
      - **Option 2**: Split tests across one test file per requirement (`crates/horch-core/tests/grs_<nn>_<slug>.rs`).
    - **Recommendation**: **Option 1**. Consolidating the integration tests into `crates/horch-core/tests/godot_rust_support.rs` avoids adding 18 separate test binaries to Cargo's sequential test runner (which `docs/specs/test-suite-audit.md` showed adds link and first-exec overhead per binary on macOS).
+   - Decision: Option 1 (orchestrator).
 
 2. **How `code-sweep` integrates the domain reviewer (`godot-code-reviewer`, `rust-reviewer`, `swift-reviewer`)**:
    - **Question**: When a task's diff touches Godot (`.gd`, `.tscn`), Rust (`.rs`), or Swift (`.swift`) files in round 1 of `code-sweep`, how should the domain reviewer seat be scheduled alongside the cross-vendor generic reviewers (`codex-reviewer` / `architect-reviewer`)?
@@ -334,6 +420,7 @@ Following `docs/specs/godot.md` and `docs/testing-and-gates.md`, every requireme
      - **Option 1 (Recommended)**: Assign the first selected review slot (the `"b"` bug-hunter / correctness lens) to the matching domain reviewer (`godot-code-reviewer`, `rust-reviewer`, or `swift-reviewer`) when that persona is available, and keep the remaining 1 to 2 slots on the cross-vendor generic reviewer (`codex-reviewer` or `architect-reviewer`). In rounds 2 and 3, continue using the cheaper generic reviewer (`codex-reviewer-light` / `architect-reviewer-light`) as today.
      - **Option 2**: Replace all round-1 reviewers with the domain reviewer.
    - **Recommendation**: **Option 1**. It respects the `max_reviewers` cap (2 for `light`, 3 for `full`), brings domain-specific review skills (`godot-code-review`, `rust-unsafe-review`, `swift-code-audit`) into round 1, and preserves the cross-vendor review rule from `skills/orchestrate/SKILL.md` §3 item 8 so a Claude-authored change is still reviewed by a Codex reviewer on the remaining lenses.
+   - Decision: Option 1 (orchestrator).
 
 3. **Where `gdcomplexity.py` lives and how `horch` locates it at runtime**:
    - **Question**: Should `gdcomplexity.py` live only in `scripts/godot/gdcomplexity.py`, or should `horch` also embed/materialize it so an installed `horch` binary can run GDScript `complexity-sweep` outside the `multi-herdr` repository?
@@ -341,6 +428,7 @@ Following `docs/specs/godot.md` and `docs/testing-and-gates.md`, every requireme
      - **Option 1 (Recommended)**: Keep the source script at `scripts/godot/gdcomplexity.py` (tested by `scripts/godot/tests/`) AND embed it into `horch-core` via `include_str!` (writing it to `<evidence_root>/bin/gdcomplexity.py` when `HORCH_GDCOMPLEXITY_CLI` is unset), the same way `horch` materializes bundled skill files.
      - **Option 2**: Look up `scripts/godot/gdcomplexity.py` only inside the current repo or via `HORCH_GDCOMPLEXITY_CLI`.
    - **Recommendation**: **Option 1**. Target Godot projects run the installed `horch` binary in their own repository where `multi-herdr/scripts/godot/` does not exist on disk. Embedding the single short Python script and materializing it under `<evidence_root>` on demand makes GDScript `complexity-sweep` work in every target Godot repository with zero manual path setup while still letting `HORCH_GDCOMPLEXITY_CLI` override it in tests.
+   - Decision: Option 1 (orchestrator).
 
 4. **Adjusting `godot-qa-engineer` base skills for `GDW-08` (5 to 11 expected skills) when adding C# `skills_when` (G14)**:
    - **Question**: `godot-qa-engineer` currently has 11 expected `skills:` (the maximum allowed by `GDW-08`). Adding `skills_when: {"*.csproj": [godot-csharp-godot, godot-csharp-signals]}` would give it 13 expected skills in a C# project unless 2 base skills move to `available_skills:` or the `GDW-08` cap is raised. Which option should we take?
@@ -348,6 +436,22 @@ Following `docs/specs/godot.md` and `docs/testing-and-gates.md`, every requireme
      - **Option 1 (Recommended)**: Move `godot-bot-balance-loop` and `godot-visual-verification` from `skills:` to `available_skills:` on `godot-qa-engineer` (leaving 9 base expected skills, and 11 in a C# project).
      - **Option 2**: Keep all 11 base skills on `godot-qa-engineer` and raise the `GDW-08` cap from 11 to 13 when `skills_when` matches.
    - **Recommendation**: **Option 1**. `godot-bot-balance-loop` and `godot-visual-verification` are specialized workflows compared to `godot-testing`, `godot-debugging`, `godot-build-verify`, `godot-test-loop`, and `godot-headless-runs`, and keeping the 11-skill cap avoids bloating the launch prompt of every `godot-qa-engineer` session.
+   - Decision: Option 1 (orchestrator).
+
+5. **Which frame budget makes `hfr_bench.py compare` fail**:
+   - **Question**: Report 4 names both a 300 fps budget failure (median candidate p99 > 3.333 ms) and a 240 fps budget failure (> 4.167 ms). A game that targets 240 fps always fails the 300 fps budget. Which budget makes `compare` exit non-zero?
+   - **Options**:
+     - **Option 1 (Recommended)**: Add `--target-fps` (`240` or `300`, default `300`). Only the budget failure for the target exits `1`. The script prints a failed budget above the target as information.
+     - **Option 2**: Exit `1` on either budget failure, as report 4 states.
+     - **Option 3**: Add a 200 fps budget (5.00 ms) as a third target value.
+   - **Recommendation**: **Option 1**. The operator target is a range (200 to 300 fps). Option 2 fails every 240 fps game. Option 3 adds a target that no report defines a verdict for. It can follow when a project needs it.
+
+6. **Where the in-game recorder lives**:
+   - **Question**: The harness needs a GDScript recorder inside the game that writes the take file. Is it a `.gd` file under `skills/godot-hfr-hunt/scripts/`, or a code block in `references/measure-harness.md` that the teammate copies into the project?
+   - **Options**:
+     - **Option 1 (Recommended)**: A ```` ```gdscript ```` block in `references/measure-harness.md`.
+     - **Option 2**: A file `skills/godot-hfr-hunt/scripts/hfr_recorder.gd`, added to `EXEMPT_FILES`.
+   - **Recommendation**: **Option 1**. `gdscript_blocks_check.py --strict-own` already checks GDScript blocks in skill Markdown. A `.gd` file needs a second `EXEMPT_FILES` entry, and no gate step parses a bundled `.gd` file.
 
 ---
 
@@ -357,4 +461,4 @@ Following `docs/specs/godot.md` and `docs/testing-and-gates.md`, every requireme
   - Update [`docs/adr/0086-complexity-sweep-sends-each-language-to-a-tool-that-parses-it.md`](../adr/0086-complexity-sweep-sends-each-language-to-a-tool-that-parses-it.md) for the nested Cargo crate grouping, the 3 clippy lints (`cognitive_complexity`, `too_many_lines`, `too_many_arguments`), and the `gdcomplexity.py` (`gdtoolkit.parser`) GDScript complexity route.
   - Add a new ADR (`docs/adr/0195-code-and-comment-sweeps-adapt-to-project-languages.md`, or next available number) recording why `code-sweep` pairs a domain reviewer with the cross-vendor reviewer and why `comment-sweep` excludes Godot structured data files (`.tscn`, `.tres`, `.import`, `.uid`, `.gdextension`, `project.godot`).
 - **Requirement coverage gate (`scripts/check-req-coverage.sh`)**:
-  - `scripts/check-req-coverage.sh` checks every `| <ID> |` row in any table whose second header cell is `Requirement` or `Check`. The `## Requirement Table` section uses the `Requirement` header so that the gate step (`scripts/check-req-coverage.sh`) verifies `grs_01_*` through `grs_18_*` as each unit lands. Every implementation ticket that introduces or owns a `GRS-NN` row must commit its `grs_<nn>_*` test in the same commit (`docs/testing-and-gates.md:95-96`).
+  - `scripts/check-req-coverage.sh` checks every `| <ID> |` row in any table whose second header cell is `Requirement` or `Check`. The `## Requirement Table` section uses the `Requirement` header so that the gate step (`scripts/check-req-coverage.sh`) verifies `grs_01_*` through `grs_44_*` as each unit lands. Every implementation ticket that introduces or owns a `GRS-NN` row must commit its `grs_<nn>_*` test in the same commit (`docs/testing-and-gates.md:95-96`).
