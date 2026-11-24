@@ -1515,8 +1515,14 @@ mod tests {
         let writes = &settings["sandbox"]["filesystem"]["allowWrite"];
         let worktrees = json!(repo.join(".worktrees").to_string_lossy());
 
-        assert!(listed(writes, &repo.join(".git").to_string_lossy()), "{settings}");
-        assert!(writes.as_array().unwrap().contains(&worktrees), "{settings}");
+        assert!(
+            listed(writes, &repo.join(".git").to_string_lossy()),
+            "{settings}"
+        );
+        assert!(
+            writes.as_array().unwrap().contains(&worktrees),
+            "{settings}"
+        );
         assert!(settings["permissions"]["additionalDirectories"]
             .as_array()
             .unwrap()
@@ -1558,8 +1564,14 @@ mod tests {
 
         let perms = &full["permissions"];
         assert!(listed(&perms["additionalDirectories"], &dir), "{full}");
-        assert!(listed(&perms["deny"], &format!("Edit(/{dir}/**)")), "{full}");
-        assert!(listed(&perms["deny"], &format!("Write(/{dir}/**)")), "{full}");
+        assert!(
+            listed(&perms["deny"], &format!("Edit(/{dir}/**)")),
+            "{full}"
+        );
+        assert!(
+            listed(&perms["deny"], &format!("Write(/{dir}/**)")),
+            "{full}"
+        );
         assert!(
             !listed(&full["sandbox"]["filesystem"]["denyWrite"], &dir),
             "{full}"
