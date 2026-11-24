@@ -407,10 +407,7 @@ fn create_worktree(
     }
     let base_commit = git.rev(&root, &base)?;
     let path_text = path.to_string_lossy().into_owned();
-    git.run(
-        &root,
-        &["worktree", "add", "-b", &branch, &path_text, &base_commit],
-    )?;
+    super::worktree_ops::add_worktree(git, &root, &branch, &path_text, &base_commit)?;
     let row = WorktreeRow {
         worktree_id: util::new_id(),
         task_id: Some(task.task_id.clone()),
@@ -1124,5 +1121,76 @@ mod tests {
         assert!(codex.runs(&worker(&mut store, "custom", Some("codex"))));
         assert!(!codex.runs(&worker(&mut store, "opus", Some("claude"))));
         assert!(!codex.runs(&worker(&mut store, "opus", None)));
+    }
+
+    #[test]
+    fn a_failed_create_worktree_leaves_no_branch_for_the_next_attempt() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let top = dir.path().canonicalize().unwrap();
+        let root = top.join("repo");
+        let git = Git::new("git");
+        std::fs::create_dir(&root).unwrap();
+        git.run(&root, &["init", "-q", "-b", "main"]).unwrap();
+        git.run(
+            &root,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@example.com",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "base",
+            ],
+        )
+        .unwrap();
+        git.run(&root, &["branch", "fleet/r1"]).unwrap();
+        let mut store = Store::open(&top.join("ledger.sqlite3")).unwrap();
+        let (worker, task) = store
+            .immediate(|tx| {
+                let run = runs::create(
+                    tx,
+                    &root,
+                    &NewRun {
+                        slug: "r1".into(),
+                        base_branch: Some("main".into()),
+                        run_branch: Some("fleet/r1".into()),
+                        ..Default::default()
+                    },
+                )?;
+                let task = tasks::add(
+                    tx,
+                    &run,
+                    &tasks::NewTask::work("feature", "t.md", "opus"),
+                    Actor::Orchestrator,
+                )?;
+                let id = workers::insert(
+                    tx,
+                    &NewWorker {
+                        run_id: run.run_id,
+                        persona: "opus".into(),
+                        ..Default::default()
+                    },
+                )?;
+                Ok((workers::get(tx, &id)?, task))
+            })
+            .unwrap();
+        let admin = root.join(".git").join("worktrees");
+        std::fs::create_dir(&admin).unwrap();
+        std::fs::set_permissions(&admin, std::fs::Permissions::from_mode(0o555)).unwrap();
+        if std::fs::create_dir(admin.join("probe")).is_ok() {
+            return;
+        }
+
+        let failed = create_worktree(&mut store, &git, &worker, &task, "feat");
+        std::fs::set_permissions(&admin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(failed.is_err());
+        assert!(!git.branch_exists(&root, "fleet/r1-T1-feat"));
+
+        let wt = create_worktree(&mut store, &git, &worker, &task, "feat").unwrap();
+        assert_eq!(wt.branch, "fleet/r1-T1-feat");
     }
 }

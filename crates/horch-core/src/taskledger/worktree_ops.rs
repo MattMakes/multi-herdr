@@ -22,6 +22,23 @@ fn valid_name(name: &str) -> Result<()> {
     }
     Ok(())
 }
+
+pub(crate) fn add_worktree(
+    git: &Git,
+    root: &Path,
+    branch: &str,
+    path: &str,
+    commit: &str,
+) -> Result<()> {
+    let existed = git.branch_exists(root, branch);
+    let added = git.run(root, &["worktree", "add", "-b", branch, path, commit]);
+    if added.is_err() && !existed && git.branch_exists(root, branch) {
+        let reference = format!("refs/heads/{branch}");
+        let _ = git.try_run(root, &["update-ref", "-d", &reference, commit]);
+    }
+    added.map(|_| ())
+}
+
 pub fn create(
     store: &mut Store,
     git: &Git,
@@ -99,7 +116,7 @@ pub fn create(
     let id = util::new_id();
     let path_text = path.to_string_lossy().into_owned();
     store.immediate(|tx| {
-        git.run(root,&["worktree","add","-b",&branch,&path_text,&commit])?;
+        add_worktree(git, root, &branch, &path_text, &commit)?;
         let persisted=(|| -> Result<()> {
             tx.execute(&format!("INSERT INTO worktrees (worktree_id,task_id,worker_id,repo_root,path,branch,base,base_commit,status,origin,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,{open},'native',?9)",open=word(WorktreeStatus::Open)),params![id,if scratch {None}else{task.as_ref().map(|t|t.task_id.as_str())},worker_id,run.project_root,path_text,branch,base,commit,util::now()])?;
             tx.execute("INSERT INTO worktree_modes(worktree_id,run_id,name,scratch) VALUES (?1,?2,?3,?4)",params![id,run.run_id,name,scratch])?;
@@ -230,4 +247,77 @@ pub fn is_scratch(store: &Store, id: &str) -> Result<bool> {
         |r| r.get::<_, bool>(0),
     ))?
     .unwrap_or(false))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn repo() -> (tempfile::TempDir, PathBuf, Git, String) {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap().join("repo");
+        let git = Git::new("git");
+        std::fs::create_dir(&root).unwrap();
+        git.run(&root, &["init", "-q"]).unwrap();
+        git.run(
+            &root,
+            &[
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "init",
+            ],
+        )
+        .unwrap();
+        let commit = git.rev(&root, "HEAD").unwrap();
+        (tmp, root, git, commit)
+    }
+
+    #[test]
+    fn a_failed_worktree_add_removes_the_branch_it_made() {
+        let (_tmp, root, git, commit) = repo();
+        let admin = root.join(".git").join("worktrees");
+        std::fs::create_dir(&admin).unwrap();
+        std::fs::set_permissions(&admin, std::fs::Permissions::from_mode(0o555)).unwrap();
+        if std::fs::create_dir(admin.join("probe")).is_ok() {
+            return;
+        }
+        let path = root.join(".worktrees").join("T1-x");
+
+        let added = add_worktree(&git, &root, "fleet-T1-x", &path.to_string_lossy(), &commit);
+        std::fs::set_permissions(&admin, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert!(added.is_err());
+        assert!(!git.branch_exists(&root, "fleet-T1-x"));
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn a_failed_worktree_add_keeps_a_branch_that_was_there_before() {
+        let (_tmp, root, git, commit) = repo();
+        git.run(&root, &["branch", "fleet-T1-x", &commit]).unwrap();
+        let path = root.join(".worktrees").join("T1-x");
+
+        let added = add_worktree(&git, &root, "fleet-T1-x", &path.to_string_lossy(), &commit);
+
+        assert!(added.is_err());
+        assert!(git.branch_exists(&root, "fleet-T1-x"));
+    }
+
+    #[test]
+    fn a_worktree_add_makes_the_branch_and_the_folder() {
+        let (_tmp, root, git, commit) = repo();
+        let path = root.join(".worktrees").join("T1-x");
+
+        add_worktree(&git, &root, "fleet-T1-x", &path.to_string_lossy(), &commit).unwrap();
+
+        assert!(git.branch_exists(&root, "fleet-T1-x"));
+        assert!(path.join(".git").exists());
+    }
 }
