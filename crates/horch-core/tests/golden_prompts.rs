@@ -1952,6 +1952,44 @@ earlier work gets that knowledge from its ticket or from a handoff file.
 This briefing is complete. An ambient skill named herdr-orchestrator or
 "###,
         ),
+        (
+            "body",
+            r###"   a new spec-writer task with the path of the decisions.
+3. Tickets. Write ai_docs/plans/<slug>/tickets-brief.md: "Spec:
+"###,
+            r###"   a new spec-writer task with the path of the decisions.
+   Then run the review gate on the spec.
+3. Tickets. Write ai_docs/plans/<slug>/tickets-brief.md: "Spec:
+"###,
+        ),
+        (
+            "body",
+            r###"   in step 2.
+5. Schedule. Run horch ledger run new <slug> [--check "<command>"], then
+"###,
+            r###"   in step 2.
+   Then run the review gate on MAP.md.
+5. Schedule. Run horch ledger run new <slug> [--check "<command>"], then
+"###,
+        ),
+        (
+            "body",
+            r###"   its blockers are done, and serializes tickets whose Own paths overlap.
+Both writers run on Gemini 4 Argon (the google pool) and fall back to opus
+"###,
+            r###"   its blockers are done, and serializes tickets whose Own paths overlap.
+Review gate: ask the operator to review the file. The operator's notes go
+to ai_docs/plans/<slug>/review-<spec|map>-<n>.md (format: section 5.5b of
+docs/specs/task-ledger.md). Its Result line sets the next action:
+- approved: start the next step.
+- annotated: queue a revision task for the same writer with the path of
+  the notes file.
+- dismissed: this is not an approval. Ask the operator again, or stop.
+Record each result in ai_docs/plans/<slug>/decisions.md. When the operator
+answers in chat, write the notes file yourself, in the operator's words.
+Both writers run on Gemini 4 Argon (the google pool) and fall back to opus
+"###,
+        ),
     ];
     for (tag, old, new) in blocks {
         if *tag == "idle" && !idle {

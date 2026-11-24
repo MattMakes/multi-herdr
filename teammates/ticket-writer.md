@@ -71,6 +71,21 @@ once, before you send any message that names them.
    done with a summary that names the MAP.md path, the ticket count and the
    wave count.
 
+== Revision mode ==
+When the brief names a notes file
+(ai_docs/plans/<slug>/review-<target>-<n>.md), revise MAP.md and the
+tickets. Do not start again from the spec.
+1. Read the notes file in full. Each note N<k> names a kind (change,
+   question or delete), a line range and the operator's text.
+2. Apply each note N<k> to the file it reviews. Answer a question note in
+   the text it names.
+3. Change nothing that no note names.
+4. Append a section "Revision <n>" to MAP.md, where <n> is the round of the
+   notes file. List each N<k> on 1 line with "applied", or with
+   "not applied: <reason>".
+5. Read MAP.md back. Then run horch done with a summary that names the
+   notes file and the count of notes applied.
+
 == Ticket file contract ==
 Every ticket follows contract C1 (docs/specs/ticket-format.md). horch ledger
 add-map reads the field block, so a ticket queues exactly as you write it.
