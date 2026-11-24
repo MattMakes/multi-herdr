@@ -545,6 +545,30 @@ fn shell_env_args(shell_env: &[(String, String)], prepared: &mut Prepared) -> Re
     Ok(())
 }
 
+fn cargo_home_args(
+    ctx: &RuntimeContext,
+    req: &PrepareRequest<'_>,
+    sandbox: Option<&str>,
+    prepared: &mut Prepared,
+) -> Result<()> {
+    let sandboxed_writes = !matches!(sandbox, Some(READ_ONLY | DANGER_FULL_ACCESS));
+    let own = req.shell_env.iter().any(|(key, _)| key == "CARGO_HOME");
+    let state_root = &ctx.paths.state_root;
+    let default = ctx.paths.home.join(".cargo");
+    let writable = default.starts_with(req.workdir) || default.starts_with(state_root);
+    if !sandboxed_writes || own || writable || !launch_has_network(req.teammate) {
+        return Ok(());
+    }
+    let dir = state_root.join("cargo");
+    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    let value = serde_json::to_string(&dir.to_string_lossy()).context("encoding CARGO_HOME")?;
+    prepared.extra_args.push("-c".into());
+    prepared
+        .extra_args
+        .push(format!("shell_environment_policy.set.CARGO_HOME={value}"));
+    Ok(())
+}
+
 fn read_config(path: &Path) -> Option<String> {
     crate::fsx::read_regular_bounded(path).ok().flatten()
 }
@@ -589,6 +613,7 @@ impl Harness for Codex {
         });
         let mut prepared = Prepared::default();
         launch_sandbox_args(ctx, req, sandbox.as_deref(), &mut prepared)?;
+        cargo_home_args(ctx, req, sandbox.as_deref(), &mut prepared)?;
         shell_env_args(req.shell_env, &mut prepared)?;
         if let Rules::Private { dir } = &rules {
             prepared
@@ -789,6 +814,8 @@ fn toml_scalar(raw: &str) -> String {
 const WORKSPACE_WRITE: &str = "workspace-write";
 
 const READ_ONLY: &str = "read-only";
+
+const DANGER_FULL_ACCESS: &str = "danger-full-access";
 
 const WRITABLE_ROOTS_KEY: &str = "sandbox_workspace_write.writable_roots";
 
