@@ -15,11 +15,11 @@ Run expensive work off the main thread without corrupting the scene tree. Prefer
 
 The main thread owns the scene tree — **interacting with the active scene tree is not thread-safe.** Observe these doc-sourced rules:
 
-- **Servers** (RenderingServer, PhysicsServer) are thread-safe **only after enabling it in Project Settings** (`Rendering > Driver > Thread Model = Separate`, `Physics > {2D,3D} > Run on Separate Thread`). Servers handle thousands of thread-driven instances well.
+- **Servers** (RenderingServer, PhysicsServer) are thread-safe **only after enabling it in Project Settings** (`Rendering > Driver > Thread Model = Separate`, `Physics > {2D,3D} > Run on Separate Thread`). Separate server threads are not automatically faster: physics API access becomes restricted to physics processing, Jolt separate-thread support is experimental in 4.7, and the rendering `Separate` thread model has known bugs. Enable them only after profiling shows the server is a main-thread blocker.
 - **NavigationServer2D/3D are thread-safe and thread-friendly** (true parallel queries); tune `Navigation > Pathfinding > Max Threads`.
 - **AStar2D/3D/Grid2D are NOT thread-safe** — one dedicated thread per object only; sharing one object across threads corrupts data.
 - **GDScript `Array`/`Dictionary`:** reading/writing existing elements across threads is OK; **resizing (add/remove) needs a `Mutex`.**
-- **No GPU work off the main thread** (texture creation, image read/modify) — causes RenderingServer sync stalls.
+- **Separate CPU preparation from GPU synchronization.** Workers can fill plain `Image` and packed-array data. Creating textures, reading GPU-backed image data or uploading from a worker can synchronize with `RenderingServer` and stall. Hand the prepared data to the main thread for the upload.
 - **Build scene chunks off-tree** in a thread, then add them on the main thread via `add_child.call_deferred()` — only with a single loader thread (multiple threads risk tweaking the same cached resource → crashes).
 
 > **Golden rule:** Mutate the scene tree only on the main thread. From a worker, hand results back with `call_deferred` / `set_deferred`.
@@ -191,27 +191,42 @@ In C#, `CallDeferred("AddChild")` fails — the deferred/`Call`/`Connect` APIs u
 
 `ResourceLoader.load_threaded_request(path)` starts the load. Poll `load_threaded_get_status(path, progress)` each frame (`progress[0]` is the 0–1 ratio); on `THREAD_LOAD_LOADED` call `load_threaded_get(path)`. **`load_threaded_get` blocks like `load()` if the load is not finished** — always poll first. Statuses: `THREAD_LOAD_INVALID_RESOURCE` / `THREAD_LOAD_IN_PROGRESS` / `THREAD_LOAD_FAILED` / `THREAD_LOAD_LOADED`.
 
+Loading is only part of the hitch. `instantiate()`, `_enter_tree`, child propagation, `_ready`, server registration and pipeline surface preparation still run on the main thread after `load_threaded_get()`. Stage that work: instantiate and add a small batch per frame, or do it behind a loading screen.
+
 ### GDScript
 
 ```gdscript
 const SCENE_PATH := "res://enemy.tscn"
+const SPAWN_COUNT := 64
+const BATCH_SIZE := 4
 var _progress: Array = []
+var _scene: PackedScene
+var _spawned := 0
 
 func _ready():
     ResourceLoader.load_threaded_request(SCENE_PATH)
 
 func _process(_delta):
+    if _scene:
+        _integrate_next_batch()
+        return
     var status := ResourceLoader.load_threaded_get_status(SCENE_PATH, _progress)
     match status:
         ResourceLoader.THREAD_LOAD_IN_PROGRESS:
             $ProgressBar.value = _progress[0] * 100.0
         ResourceLoader.THREAD_LOAD_LOADED:
-            var scene: PackedScene = ResourceLoader.load_threaded_get(SCENE_PATH)
-            add_child(scene.instantiate())
-            set_process(false)
+            _scene = ResourceLoader.load_threaded_get(SCENE_PATH)
         ResourceLoader.THREAD_LOAD_FAILED, ResourceLoader.THREAD_LOAD_INVALID_RESOURCE:
             push_error("Threaded load failed: %s" % SCENE_PATH)
             set_process(false)
+
+func _integrate_next_batch():
+    var end := mini(_spawned + BATCH_SIZE, SPAWN_COUNT)
+    while _spawned < end:
+        add_child(_scene.instantiate())
+        _spawned += 1
+    if _spawned == SPAWN_COUNT:
+        set_process(false)
 ```
 
 ### C# Equivalent
