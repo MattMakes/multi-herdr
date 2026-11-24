@@ -20,8 +20,26 @@ const AHEAD_OF_WORK: i64 = -500;
 const WAIT: &str = "reviewers";
 
 const NOT_CODE: &[&str] = &[
-    ".md", ".txt", ".json", ".lock", ".csv", ".snap", ".svg", ".png", ".jpg", ".jpeg", ".gif",
-    ".webp", ".ico", ".pdf",
+    ".md",
+    ".txt",
+    ".json",
+    ".lock",
+    ".csv",
+    ".snap",
+    ".svg",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".webp",
+    ".ico",
+    ".pdf",
+    ".tscn",
+    ".tres",
+    ".import",
+    ".uid",
+    ".gdextension",
+    "project.godot",
 ];
 
 #[derive(Debug, Serialize, Deserialize)]

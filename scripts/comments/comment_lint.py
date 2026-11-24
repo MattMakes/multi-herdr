@@ -47,6 +47,7 @@ LANGUAGES = {
     ".js": "javascript",
     ".mjs": "javascript",
     ".ts": "javascript",
+    ".cs": "csharp",
     ".toml": "toml",
     ".yml": "yaml",
     ".yaml": "yaml",
@@ -204,6 +205,48 @@ def lex_javascript(src: str) -> list[Comment]:
             pos = m.end()
 
 
+CS_TOKEN = re.compile(
+    r"""
+      (?P<raw>"{3,})
+    | (?P<verbatim>(?:@\$|\$@|@)")
+    | (?P<str>\$?"(?:[^"\\\n]|\\.)*")
+    | (?P<chr>'(?:\\.|[^\\'\n])+')
+    | (?P<line>//[^\n]*)
+    | (?P<block>/\*.*?\*/)
+    """,
+    re.X | re.S,
+)
+
+
+def lex_csharp(src: str) -> list[Comment]:
+    out = []
+    pos = 0
+    while True:
+        m = CS_TOKEN.search(src, pos)
+        if not m:
+            return out
+        if m.lastgroup == "raw":
+            close = src.find(m.group(), m.end())
+            pos = len(src) if close < 0 else close + len(m.group())
+        elif m.lastgroup == "verbatim":
+            i = m.end()
+            while True:
+                q = src.find('"', i)
+                if q < 0:
+                    pos = len(src)
+                    break
+                if src[q + 1 : q + 2] == '"':
+                    i = q + 2
+                    continue
+                pos = q + 1
+                break
+        elif m.lastgroup in ("line", "block"):
+            out.append(Comment(m.start(), m.end(), m.group()))
+            pos = m.end()
+        else:
+            pos = m.end()
+
+
 def lex_python(src: str) -> list[Comment]:
     starts = [0]
     for line in src.splitlines(keepends=True):
@@ -320,6 +363,7 @@ LEXERS = {
     "gdscript": lex_gdscript,
     "shell": lex_shell,
     "javascript": lex_javascript,
+    "csharp": lex_csharp,
     "toml": lex_toml,
     "yaml": lex_yaml,
     "just": lex_just_plain,

@@ -142,6 +142,22 @@ class JavaScript(unittest.TestCase):
         self.assertEqual(found("a.ts", "// @ts-expect-error\nx();\n// eslint-disable-next-line\n"), [])
 
 
+class CSharp(unittest.TestCase):
+    def test_line_and_block_comments_are_found_outside_strings(self):
+        src = (
+            'var a = "// not"; // yes1\n'
+            'var b = @"C:\\dir\\ ""/* not */"""; /* yes2 */\n'
+            'var c = $"{d} // not";\n'
+            'var e = """\n// not\n""";\n'
+            "var f = '/'; /// yes3\n"
+        )
+        self.assertEqual(found("A.cs", src), ["// yes1", "/* yes2 */", "/// yes3"])
+
+    def test_strip_keeps_the_code(self):
+        src = "class A {\n    // gone\n    int b = 1; /* gone */\n}\n"
+        self.assertEqual(stripped("A.cs", src), "class A {\n    int b = 1;\n}\n")
+
+
 class Config(unittest.TestCase):
     def test_gdscript(self):
         src = '## doc\nvar a = "# not" # yes\n#region Folded\n'
