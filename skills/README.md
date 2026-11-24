@@ -141,13 +141,16 @@ These skills belong to no phase; each attaches by name to the specialist whose w
 
 ## Rust skills
 
-These skills are own text. They belong to no phase; the Rust seats name them, as `docs/specs/godot-rust-support.md` sets out. `rust-unsafe-review` covers `// SAFETY:` contracts, pointer provenance and aliasing, FFI and GDExtension boundaries, and Miri. `rust-async` covers ownership across `.await`, cancellation in `select!`, `Send` bounds, blocking calls and bounded channels. `rust-cargo-workspace` covers `[workspace.dependencies]`, additive features, MSRV, the lockfile and the workspace clippy gate. `rust-error-handling` covers typed library errors, contextual application errors, the cause chain and no panics on untrusted input. Each tells the worker to follow the repository's own crates and to check library behaviour with a docs tool.
+These skills are own text. They belong to no phase; the Rust seats name them, as `docs/specs/godot-rust-support.md` sets out. `rust-unsafe-review` covers `// SAFETY:` contracts, pointer provenance and aliasing, FFI and GDExtension boundaries, and Miri. `rust-async` covers ownership across `.await`, cancellation in `select!`, `Send` bounds, blocking calls and bounded channels. `rust-cargo-workspace` covers `[workspace.dependencies]`, additive features, MSRV, the lockfile and the workspace clippy gate. `rust-error-handling` covers typed library errors, contextual application errors, the cause chain and no panics on untrusted input. `rust-perf` covers measuring first with `cargo bench` and Criterion baselines, allocation profiling, borrowing instead of cloning, iterator versus index trade-offs and no `unsafe` without a benchmark. `rust-fuzz` covers property tests with a fixed-seed PRNG or `proptest`, `cargo fuzz` harnesses, and shrinking each failure into a named regression test. `rust-testing` covers unit, integration and doc tests, hermetic temp-dir fixtures, `cargo test --workspace --no-fail-fast` and `cargo nextest`, and asserting error variants. Each tells the worker to follow the repository's own crates and to check library behaviour with a docs tool.
 
 | Skill | Kind |
 | --- | --- |
 | [rust-async](rust-async/SKILL.md) | own text |
 | [rust-cargo-workspace](rust-cargo-workspace/SKILL.md) | own text |
 | [rust-error-handling](rust-error-handling/SKILL.md) | own text |
+| [rust-fuzz](rust-fuzz/SKILL.md) | own text |
+| [rust-perf](rust-perf/SKILL.md) | own text |
+| [rust-testing](rust-testing/SKILL.md) | own text |
 | [rust-unsafe-review](rust-unsafe-review/SKILL.md) | own text |
 
 ## UI property testing skill

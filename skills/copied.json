@@ -1572,6 +1572,21 @@
       "verbatim": false
     },
     {
+      "name": "rust-fuzz",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "rust-perf",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "rust-testing",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
       "name": "rust-unsafe-review",
       "copied_files": [],
       "verbatim": false
