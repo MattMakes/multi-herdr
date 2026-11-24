@@ -119,7 +119,11 @@ pub fn in_changed_functions(
     Ok(keep_changed(found, &starts, changed))
 }
 
-const CLIPPY_LINT: &str = "clippy::cognitive_complexity";
+const CLIPPY_LINTS: &[(&str, &str)] = &[
+    ("clippy::cognitive_complexity", "cognitiveComplexity"),
+    ("clippy::too_many_lines", "functionLength"),
+    ("clippy::too_many_arguments", "parameterCount"),
+];
 
 #[derive(Debug, Deserialize)]
 struct CargoLine {
@@ -157,39 +161,60 @@ struct SpanText {
     text: String,
 }
 
-pub fn clippy_violations(json: &str, root: &Path) -> Vec<Violation> {
+fn metric(d: &Diagnostic) -> Option<&'static str> {
+    let code = d.code.as_ref()?.code.as_str();
+    CLIPPY_LINTS
+        .iter()
+        .find(|(lint, _)| *lint == code)
+        .map(|(_, m)| *m)
+}
+
+fn work_rel(file: &str, krate: &Path, dir: &Path) -> String {
+    let p = Path::new(file);
+    if p.is_absolute() {
+        return rel(file, dir);
+    }
+    let mut base = krate.to_path_buf();
+    while base.starts_with(dir) {
+        if base.join(p).is_file() {
+            return rel(&base.join(p).to_string_lossy(), dir);
+        }
+        if !base.pop() {
+            break;
+        }
+    }
+    rel(&krate.join(p).to_string_lossy(), dir)
+}
+
+fn push_new(out: &mut Vec<Violation>, v: Violation) {
+    if !out
+        .iter()
+        .any(|o| o.file_path == v.file_path && o.line == v.line && o.metric == v.metric)
+    {
+        out.push(v);
+    }
+}
+
+fn clippy_violation(line: &str, krate: &Path, dir: &Path) -> Option<Violation> {
+    let CargoLine { reason, message } = serde_json::from_str::<CargoLine>(line).ok()?;
+    let d = message.filter(|_| reason == "compiler-message")?;
+    let metric = metric(&d)?;
+    let span = d.spans.iter().find(|s| s.is_primary)?;
+    let (value, threshold) = score(&d.message).unwrap_or((0.0, 0.0));
+    Some(Violation {
+        function_name: name(span),
+        file_path: work_rel(&span.file_name, krate, dir),
+        line: span.line_start,
+        metric: metric.to_string(),
+        value,
+        threshold,
+    })
+}
+
+pub fn clippy_violations(json: &str, krate: &Path, dir: &Path) -> Vec<Violation> {
     let mut out: Vec<Violation> = Vec::new();
-    for line in json.lines() {
-        let Ok(CargoLine {
-            reason,
-            message: Some(d),
-        }) = serde_json::from_str::<CargoLine>(line)
-        else {
-            continue;
-        };
-        if reason != "compiler-message"
-            || d.code.as_ref().map(|c| c.code.as_str()) != Some(CLIPPY_LINT)
-        {
-            continue;
-        }
-        let Some(span) = d.spans.iter().find(|s| s.is_primary) else {
-            continue;
-        };
-        let (value, threshold) = score(&d.message).unwrap_or((0.0, 0.0));
-        let v = Violation {
-            function_name: name(span),
-            file_path: rel(&span.file_name, root),
-            line: span.line_start,
-            metric: "cognitiveComplexity".to_string(),
-            value,
-            threshold,
-        };
-        if !out
-            .iter()
-            .any(|o| o.file_path == v.file_path && o.line == v.line)
-        {
-            out.push(v);
-        }
+    for v in json.lines().filter_map(|l| clippy_violation(l, krate, dir)) {
+        push_new(&mut out, v);
     }
     out
 }
@@ -204,11 +229,21 @@ fn name(span: &Span) -> String {
     let Some(t) = span.text.first() else {
         return String::new();
     };
-    t.text
-        .chars()
-        .skip(span.column_start.saturating_sub(1))
-        .take(span.column_end.saturating_sub(span.column_start))
-        .collect()
+    let tail = t.text.chars().skip(span.column_start.saturating_sub(1));
+    let slice: String = if span.text.len() == 1 {
+        tail.take(span.column_end.saturating_sub(span.column_start))
+            .collect()
+    } else {
+        tail.collect()
+    };
+    signature_name(&slice).unwrap_or(slice)
+}
+
+fn signature_name(slice: &str) -> Option<String> {
+    let mut words = slice.split_whitespace();
+    words.find(|w| *w == "fn")?;
+    let ident = words.next()?.split(['<', '(']).next()?;
+    Some(ident.to_string())
 }
 
 fn fn_starts(source: &str) -> Vec<u64> {
@@ -233,18 +268,36 @@ fn starts_fn(line: &str) -> bool {
     false
 }
 
-fn rust_sources(names: &str, dir: &Path) -> Vec<String> {
-    if !dir.join("Cargo.toml").is_file() {
-        return Vec::new();
+fn nearest_crate(dir: &Path, file: &str) -> Option<PathBuf> {
+    let mut folder = dir.join(file).parent()?.to_path_buf();
+    loop {
+        if folder.join("Cargo.toml").is_file() {
+            return Some(folder);
+        }
+        if folder == dir || !folder.pop() || !folder.starts_with(dir) {
+            return None;
+        }
     }
-    names
-        .lines()
-        .filter(|f| f.ends_with(".rs"))
-        .map(|s| s.to_string())
-        .collect()
 }
 
-fn clippy(dir: &Path) -> Command {
+fn rust_crates(names: &str, dir: &Path) -> BTreeMap<PathBuf, Vec<String>> {
+    let mut by: BTreeMap<PathBuf, Vec<String>> = BTreeMap::new();
+    for f in names.lines().filter(|f| f.ends_with(".rs")) {
+        if let Some(krate) = nearest_crate(dir, f) {
+            by.entry(krate).or_default().push(f.to_string());
+        }
+    }
+    by
+}
+
+fn clippy_evidence(evidence_dir: &Path, seq: i64, i: usize) -> PathBuf {
+    evidence_dir.join(match i {
+        0 => format!("{seq}-clippy.json"),
+        n => format!("{seq}-clippy-{}.json", n + 1),
+    })
+}
+
+fn clippy(krate: &Path) -> Command {
     let mut cmd = Command::new("cargo");
     cmd.args([
         "clippy",
@@ -255,21 +308,21 @@ fn clippy(dir: &Path) -> Command {
         "--",
         "-A",
         "clippy::all",
-        "-W",
-        CLIPPY_LINT,
-        "--cap-lints",
-        "warn",
-    ])
-    .current_dir(dir);
+    ]);
+    for (lint, _) in CLIPPY_LINTS {
+        cmd.args(["-W", lint]);
+    }
+    cmd.args(["--cap-lints", "warn"]).current_dir(krate);
     crate::runtime::process::scrub_child_env(&mut cmd);
     cmd
 }
 
 fn analyse_rust(
+    krate: &Path,
     dir: &Path,
     evidence: &Path,
 ) -> Result<std::result::Result<Vec<Violation>, Outcome>> {
-    let mut cmd = clippy(dir);
+    let mut cmd = clippy(krate);
     cmd.stdout(std::fs::File::create(evidence)?);
     let out = cmd.output().context("running cargo clippy")?;
     if !out.status.success() {
@@ -287,7 +340,7 @@ fn analyse_rust(
         )));
     }
     let json = std::fs::read_to_string(evidence)?;
-    Ok(Ok(clippy_violations(&json, dir)))
+    Ok(Ok(clippy_violations(&json, krate, dir)))
 }
 
 fn rust_starts(dir: &Path, files: &[String]) -> BTreeMap<String, Vec<u64>> {
@@ -415,14 +468,29 @@ impl Analyser<'_> {
     }
 }
 
+type RustFindings = (Vec<Violation>, Vec<PathBuf>);
+
 pub fn rust_violations(
     dir: &Path,
-    files: &[String],
+    crates: &BTreeMap<PathBuf, Vec<String>>,
     changed: &BTreeMap<String, Vec<(u64, u64)>>,
-    evidence: &Path,
-) -> Result<std::result::Result<Vec<Violation>, Outcome>> {
-    Ok(analyse_rust(dir, evidence)?
-        .map(|found| keep_changed(found, &rust_starts(dir, files), changed)))
+    evidence_dir: &Path,
+    seq: i64,
+) -> Result<std::result::Result<RustFindings, Outcome>> {
+    let mut found = Vec::new();
+    let mut evidence = Vec::new();
+    for (i, (krate, files)) in crates.iter().enumerate() {
+        let path = clippy_evidence(evidence_dir, seq, i);
+        let group = match analyse_rust(krate, dir, &path)? {
+            Ok(group) => group,
+            Err(failed) => return Ok(Err(failed)),
+        };
+        for v in keep_changed(group, &rust_starts(dir, files), changed) {
+            push_new(&mut found, v);
+        }
+        evidence.push(path);
+    }
+    Ok(Ok((found, evidence)))
 }
 
 pub fn step(cx: &Ctx<'_>) -> Result<Outcome> {
@@ -438,7 +506,7 @@ pub fn step(cx: &Ctx<'_>) -> Result<Outcome> {
         ],
     )?;
     let files = sources(&names);
-    let rust = rust_sources(&names, &cx.dir);
+    let rust = rust_crates(&names, &cx.dir);
     let tree = git.tree(&cx.dir).ok();
     if files.is_empty() && rust.is_empty() {
         return Ok(
@@ -478,19 +546,19 @@ pub fn step(cx: &Ctx<'_>) -> Result<Outcome> {
         found.extend(in_changed_functions(&json, &changed, &cx.dir)?);
         evidence.push(path);
     }
-    if !rust.is_empty() {
-        let path = cx.evidence_dir.join(format!("{}-clippy.json", cx.seq));
-        match rust_violations(&cx.dir, &rust, &changed, &path)? {
-            Ok(v) => found.extend(v),
-            Err(failed) => return Ok(failed),
+    match rust_violations(&cx.dir, &rust, &changed, &cx.evidence_dir, cx.seq)? {
+        Ok((v, paths)) => {
+            found.extend(v);
+            evidence.extend(paths);
         }
-        evidence.push(path);
+        Err(failed) => return Ok(failed),
     }
+    let rust_files: usize = rust.values().map(Vec::len).sum();
     let outcome = if found.is_empty() {
         Outcome::pass(
             "0 violations",
             evidence.first().cloned(),
-            &format!("{} files analysed", files.len() + rust.len()),
+            &format!("{} files analysed", files.len() + rust_files),
         )
     } else {
         violations(&found, &evidence)
@@ -534,7 +602,7 @@ mod tests {
         let line = r#"{"reason":"compiler-message","message":{"message":"the function has a cognitive complexity of (5/2)","code":{"code":"clippy::cognitive_complexity","explanation":null},"spans":[{"file_name":"src/lib.rs","line_start":5,"is_primary":true,"column_start":8,"column_end":15,"text":[{"text":"pub fn tangled(v: &[u32]) -> u32 {"}]}]}}"#;
         let other = r#"{"reason":"compiler-message","message":{"message":"unused variable","code":{"code":"unused_variables"},"spans":[]}}"#;
         let json = format!("{line}\n{line}\n{other}\n{{\"reason\":\"build-finished\",\"success\":true}}\nnot json\n");
-        let v = clippy_violations(&json, Path::new("/repo"));
+        let v = clippy_violations(&json, Path::new("/repo"), Path::new("/repo"));
         assert_eq!(v.len(), 1, "{v:?}");
         assert_eq!(v[0].function_name, "tangled");
         assert_eq!(v[0].file_path, "src/lib.rs");
@@ -615,13 +683,17 @@ pub fn tangled(v: &[u32]) -> u32 {
                 &["diff", "--name-only", "--diff-filter=AMR", "base...HEAD"],
             )
             .unwrap();
-        let files = rust_sources(&names, d);
-        assert_eq!(files, vec!["src/lib.rs".to_string()]);
+        let crates = rust_crates(&names, d);
+        assert_eq!(
+            crates,
+            BTreeMap::from([(d.to_path_buf(), vec!["src/lib.rs".to_string()])])
+        );
         let diff = git.run(d, &["diff", "-U0", "base...HEAD", "--"]).unwrap();
-        let evidence = d.join("clippy.json");
-        rust_violations(d, &files, &changed_lines(&diff), &evidence)
+        let (found, evidence) = rust_violations(d, &crates, &changed_lines(&diff), d, 0)
             .unwrap()
-            .expect("clippy runs")
+            .expect("clippy runs");
+        assert_eq!(evidence, vec![d.join("0-clippy.json")]);
+        found
     }
 
     #[test]
@@ -645,7 +717,7 @@ pub fn tangled(v: &[u32]) -> u32 {
         assert_eq!(v[0].file_path, "src/lib.rs");
         assert_eq!(v[0].line, 5);
         assert_eq!(v[0].threshold, 2.0);
-        let out = violations(&v, &[d.join("clippy.json")]);
+        let out = violations(&v, &[d.join("0-clippy.json")]);
         assert!(
             out.note
                 .contains("src/lib.rs:5 tangled cognitiveComplexity=5 (max 2)"),
@@ -762,11 +834,74 @@ printf ']}\n'
     #[test]
     fn trf_07_rust_files_outside_a_cargo_project_are_not_sent_to_clippy() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(rust_sources("a.rs\nb.ts\n", dir.path()).is_empty());
+        assert!(rust_crates("a.rs\nb.ts\n", dir.path()).is_empty());
         std::fs::write(dir.path().join("Cargo.toml"), "").unwrap();
         assert_eq!(
-            rust_sources("a.rs\nb.ts\n", dir.path()),
-            vec!["a.rs".to_string()]
+            rust_crates("a.rs\nb.ts\n", dir.path()),
+            BTreeMap::from([(dir.path().to_path_buf(), vec!["a.rs".to_string()])])
         );
+    }
+
+    fn touch(path: &Path) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "").unwrap();
+    }
+
+    fn primary(file: &str) -> String {
+        format!(
+            r#"{{"reason":"compiler-message","message":{{"message":"the function has a cognitive complexity of (5/2)","code":{{"code":"clippy::cognitive_complexity"}},"spans":[{{"file_name":"{file}","line_start":3,"is_primary":true,"column_start":4,"column_end":5,"text":[{{"text":"fn f() {{"}}]}}]}}}}"#
+        )
+    }
+
+    #[test]
+    fn grs_01_nested_cargo_crates_are_grouped_and_paths_prefixed() {
+        let top = tempfile::tempdir().unwrap();
+        let dir = top.path().join("work");
+        touch(&top.path().join("Cargo.toml"));
+        touch(&dir.join("rust/Cargo.toml"));
+        touch(&dir.join("game/native/Cargo.toml"));
+        let names =
+            "rust/src/lib.rs\nscripts/x.rs\nrust/src/a/b.rs\ngame/native/src/lib.rs\na.ts\n";
+        assert_eq!(
+            rust_crates(names, &dir),
+            BTreeMap::from([
+                (
+                    dir.join("game/native"),
+                    vec!["game/native/src/lib.rs".to_string()]
+                ),
+                (
+                    dir.join("rust"),
+                    vec!["rust/src/lib.rs".to_string(), "rust/src/a/b.rs".to_string()]
+                ),
+            ])
+        );
+
+        let rust = dir.join("rust");
+        let paths = |file: &str, krate: &Path| -> Vec<String> {
+            clippy_violations(&primary(file), krate, &dir)
+                .into_iter()
+                .map(|v| v.file_path)
+                .collect()
+        };
+        assert_eq!(paths("src/lib.rs", &rust), vec!["rust/src/lib.rs"]);
+        let absolute = rust.join("src/lib.rs");
+        assert_eq!(
+            paths(&absolute.to_string_lossy(), &rust),
+            vec!["rust/src/lib.rs"]
+        );
+        touch(&dir.join("crates/core/Cargo.toml"));
+        touch(&dir.join("crates/core/src/lib.rs"));
+        assert_eq!(
+            paths("crates/core/src/lib.rs", &dir.join("crates/core")),
+            vec!["crates/core/src/lib.rs"],
+            "a workspace member reports paths from the workspace root"
+        );
+    }
+
+    #[test]
+    fn grs_01_each_crate_writes_its_own_clippy_evidence() {
+        let dir = Path::new("/e");
+        assert_eq!(clippy_evidence(dir, 4, 0), dir.join("4-clippy.json"));
+        assert_eq!(clippy_evidence(dir, 4, 1), dir.join("4-clippy-2.json"));
     }
 }

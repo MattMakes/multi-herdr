@@ -2556,6 +2556,73 @@ fn a_rust_only_change_is_not_sent_to_the_complexity_analyser() {
     assert!(!called.exists(), "the analyser parses TypeScript only");
 }
 
+const GDEXT_LIB: &str = "use godot::prelude::*;\n\n#[godot_api]\nimpl Player {\npub fn tangled(v: &[u32]) -> u32 {\n    v.len() as u32\n}\n}\n";
+
+const FAKE_CARGO: &str = r#"#!/bin/sh
+if [ "$1" = warm ]; then exit 0; fi
+echo "$PWD $*" >> "$FAKE_CARGO_CALLS"
+cc='{"reason":"compiler-message","message":{"message":"the function has a cognitive complexity of (30/25)","code":{"code":"clippy::cognitive_complexity"},"spans":[{"file_name":"src/lib.rs","line_start":5,"is_primary":true,"column_start":8,"column_end":15,"text":[{"text":"pub fn tangled(v: &[u32]) -> u32 {"}]}]}}'
+tl='{"reason":"compiler-message","message":{"message":"this function has too many lines (120/100)","code":{"code":"clippy::too_many_lines"},"spans":[{"file_name":"src/lib.rs","line_start":5,"is_primary":true,"column_start":1,"column_end":2,"text":[{"text":"pub fn tangled(v: &[u32]) -> u32 {"},{"text":"}"}]}]}}'
+echo "$cc"
+echo "$tl"
+echo "$cc"
+echo '{"reason":"build-finished","success":true}'
+"#;
+
+#[test]
+fn grs_01_finish_analyses_nested_gdext_rust_crate() {
+    let mut h = finish_world("tl-complexity-gdext");
+    let calls = h.root.join("cargo-calls");
+    h.write_warmed("cargo", FAKE_CARGO.as_bytes());
+    h.set("FAKE_CARGO_CALLS", calls.to_string_lossy());
+    let (w, path) = claimed_with_commit(&h, "complexity-sweep", None, "notes.md");
+    std::fs::create_dir_all(path.join("rust/src")).unwrap();
+    std::fs::write(
+        path.join("rust/Cargo.toml"),
+        "[package]\nname = \"game\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    std::fs::write(path.join("rust/src/lib.rs"), GDEXT_LIB).unwrap();
+    git_in(&h, &path, &["add", "rust"]);
+    git_in(
+        &h,
+        &path,
+        &["commit", "--quiet", "--no-gpg-sign", "-m", "gdext crate"],
+    );
+    let (code, r) = finish_json(&h, &w);
+    assert_eq!(code, Some(1), "{r}");
+    let (status, verdict) = step_of(&r, "complexity-sweep");
+    assert_eq!(
+        (status.as_str(), verdict.as_str()),
+        ("failed", "2 violations"),
+        "{r}"
+    );
+    let report = r.to_string();
+    assert!(
+        report.contains("rust/src/lib.rs:5 tangled cognitiveComplexity=30 (max 25)"),
+        "{r}"
+    );
+    assert!(
+        report.contains("rust/src/lib.rs:5 tangled functionLength=120 (max 100)"),
+        "{r}"
+    );
+    let calls = std::fs::read_to_string(&calls).unwrap();
+    assert_eq!(calls.lines().count(), 1, "{calls}");
+    assert!(
+        calls.contains("/rust clippy "),
+        "clippy runs in the crate: {calls}"
+    );
+    for lint in [
+        "-A clippy::all",
+        "-W clippy::cognitive_complexity",
+        "-W clippy::too_many_lines",
+        "-W clippy::too_many_arguments",
+        "--cap-lints warn",
+    ] {
+        assert!(calls.contains(lint), "{lint}: {calls}");
+    }
+}
+
 #[test]
 fn finish_finds_the_complexity_analyser_in_a_local_marketplace_of_the_store() {
     let mut h = finish_world("tl-complexity-store");
