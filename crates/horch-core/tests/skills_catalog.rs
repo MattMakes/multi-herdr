@@ -430,6 +430,7 @@ const EXEMPT_FROM_TEXT_ONLY: &[&str] = &[
     "blender-time-of-day",
     "blender-video-editing",
     "blender-weather-fx",
+    "design-system",
     "hark",
     "incremental-game-design",
     "one-page-design",
