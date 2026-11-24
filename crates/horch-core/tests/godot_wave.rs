@@ -13,11 +13,7 @@ use horch_core::skills::{SkillCatalog, BUNDLED_SKILL_FILES};
 
 const CSHARP_SKILLS: [&str; 2] = ["godot-csharp-godot", "godot-csharp-signals"];
 
-const NO_CSHARP_SEATS: [&str; 3] = [
-    "godot-tech-lead",
-    "godot-code-reviewer",
-    "godot-qa-engineer",
-];
+const NO_CSHARP_SEATS: [&str; 1] = ["godot-tech-lead"];
 
 const CSHARP_SEAT: &str = "godot-csharp-engineer";
 
@@ -214,7 +210,7 @@ fn gdw_03_a_csharp_project_adds_the_csharp_skills_to_the_builder_seats() {
             );
         }
     }
-    assert_eq!(builders, 16);
+    assert_eq!(builders, 18);
 }
 
 #[test]

@@ -36,7 +36,10 @@ skills:
   - godot-multithreading
   - godot-safe-refactor
 # Named by name only: related skills.
-available_skills: [godot-csharp-godot, godot-multiplayer-sync, godot-optimization, godot-language-choice, godot-test-loop]
+available_skills: [godot-multiplayer-sync, godot-optimization, godot-language-choice, godot-test-loop]
+# A C# project (a *.csproj next to project.godot) adds the C# skills to this
+# seat (roster/offer.rs project_skills).
+skills_when: {"*.csproj": [godot-csharp-godot, godot-csharp-signals]}
 # No MCP servers: the shell and `godot --doctool` give a worker everything
 # DONE: needs.
 mcp_servers: {}

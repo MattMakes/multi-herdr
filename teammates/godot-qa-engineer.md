@@ -35,10 +35,11 @@ skills:
   - godot-build-verify
   - godot-test-loop
   - godot-headless-runs
-  - godot-bot-balance-loop
-  - godot-visual-verification
 # Named by name only: related skills.
-available_skills: [godot-dependency-injection, godot-gdscript-advanced, godot-optimization, godot-language-choice, godot-fleet-game-dev]
+available_skills: [godot-bot-balance-loop, godot-visual-verification, godot-dependency-injection, godot-gdscript-advanced, godot-optimization, godot-language-choice, godot-fleet-game-dev]
+# A C# project (a *.csproj next to project.godot) adds the C# skills to this
+# seat (roster/offer.rs project_skills).
+skills_when: {"*.csproj": [godot-csharp-godot, godot-csharp-signals]}
 # No MCP servers: the shell and `godot --doctool` give a worker everything
 # DONE: needs.
 mcp_servers: {}
