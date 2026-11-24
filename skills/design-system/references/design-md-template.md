@@ -1,6 +1,6 @@
 # DESIGN.md template
 
-`DESIGN.md` is the design system in plain language plus exact values. A person or an agent reads it before building a screen and can then build that screen without asking. Keep it at the project root, next to the code it describes, and change it in the same commit as the tokens.
+`DESIGN.md` is the design system in plain language plus exact values. A person or an agent reads it before building a screen and can then build that screen without asking. Keep it at the project root, next to the code it describes, and change it in the same commit as the tokens. The theme record (`theme-spec-template.md`) goes beside it: `DESIGN.md` describes the system, the record proves it and holds the palette receipt. Link the record from the header line.
 
 ## Writing rules
 
@@ -26,7 +26,7 @@ Three 1 to 10 dials summarize the intent. Record them so that later screens stay
 ```markdown
 # Design System: <Product>
 
-> Version <x.y> - updated <YYYY-MM-DD> - tokens: `<path to token file>`
+> Version <x.y> - updated <YYYY-MM-DD> - tokens: `<path to token file>` - theme record: `<path to theme spec>`
 
 ## 1. Atmosphere
 <2 to 4 sentences: mood, audience, density, variance, motion. Example: "A calm, document-like
