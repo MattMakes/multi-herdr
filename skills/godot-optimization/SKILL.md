@@ -103,7 +103,7 @@ Every distinct mesh, sprite, or canvas item that cannot be batched with its neig
 
 ## 3. Physics Optimization
 
-Physics tuning hinges on minimising broadphase work and avoiding mesh colliders on moving bodies. Trim collision masks to only the layers each body actually needs, replace `ConcavePolygonShape3D` with primitives on anything that moves, and prefer `Area2D/3D` over per-frame raycasts for overlap detection.
+Physics tuning hinges on minimising broadphase work and avoiding mesh colliders on moving bodies. Trim collision masks to only the layers each body actually needs, replace `ConcavePolygonShape3D` with primitives on anything that moves, and use `Area2D/3D` for continuous enter/exit tracking but a bounded direct query for sparse or on-demand checks, measured at the real entity count.
 
 > See [references/physics-tuning.md](references/physics-tuning.md) for the full recipes (layer/mask bit examples, collision-shape cost table, `Engine.physics_ticks_per_second` tuning, Area-vs-raycast patterns).
 

@@ -133,7 +133,7 @@ Always prefer `queue_free()` for nodes created during gameplay. `free()` inside 
 
 ## Object Pooling
 
-Calling `instantiate()` and `queue_free()` repeatedly for short-lived objects (bullets, hit effects, particles) is expensive because each cycle allocates and deallocates memory and re-runs `_ready()`. A pool pre-allocates a fixed set of instances and recycles them.
+Calling `instantiate()` and `queue_free()` repeatedly for short-lived objects (bullets, hit effects, particles) is expensive because each cycle allocates and deallocates memory. A pool pre-allocates a fixed set of instances and recycles them. `_ready()` runs on the first tree entry only: re-adding a pooled node needs `Node.request_ready()` for another `_ready()` call. A pool can cost more than it saves, because it keeps nodes, callbacks and collision objects alive, so measure the full acquire/reset/release path.
 
 ### GDScript Pool
 
