@@ -763,6 +763,7 @@ fn overlay_horch_paths(
     }
     if let (HorchAccess::Full, Some(root)) = (teammate.horch_access, &env.state_root) {
         changed |= deny_writes(&root.join("skill-bundles"), settings)?;
+        changed |= overlay_message_dir(&root.join("messages"), settings)?;
     }
     changed |= overlay_sandbox_dirs(env, teammate, settings)?;
     if let Some(bundle) = &env.skill_bundle {
@@ -827,6 +828,21 @@ fn overlay_roster_dirs(
         )?;
     }
     Ok(changed)
+}
+
+fn overlay_message_dir(dir: &Path, settings: &mut serde_json::Map<String, Value>) -> Result<bool> {
+    if !dir.is_dir() {
+        return Ok(false);
+    }
+    let dir = dir.to_string_lossy();
+    add_entries(
+        settings,
+        [
+            (PERMS, "additionalDirectories", dir.to_string()),
+            (PERMS, "deny", format!("Edit(/{dir}/**)")),
+            (PERMS, "deny", format!("Write(/{dir}/**)")),
+        ],
+    )
 }
 
 fn overlay_bundle_paths(
@@ -1454,6 +1470,101 @@ mod tests {
             .as_array()
             .unwrap()
             .contains(&json!(worktrees.to_string_lossy())));
+    }
+
+    fn listed(list: &Value, entry: &str) -> bool {
+        list.as_array()
+            .is_some_and(|items| items.contains(&json!(entry)))
+    }
+
+    #[test]
+    fn an_hc_sandboxed_worker_in_a_repository_gets_the_git_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let [base, _] = sandbox_envs(tmp.path());
+        if !host_can_sandbox(&base) {
+            return;
+        }
+        let root = tmp.path().canonicalize().unwrap();
+        let repo = root.join("repo");
+        let status = Command::new("git")
+            .args(["init", "-q"])
+            .arg(&repo)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let home = root.join("home");
+        let map = crate::runtime::MapEnv::new(&repo)
+            .with("HOME", &home.to_string_lossy())
+            .with("HORCH_BACKEND", "hc")
+            .with("HORCH_STATE_DIR", "/state/horch");
+        let ctx = crate::runtime::RuntimeContext::from_env(&map).unwrap();
+        let env = LaunchEnv {
+            path: base.path.clone(),
+            ..LaunchEnv::from_context(&ctx)
+        };
+
+        let built = super::super::launch::command_in(
+            &env,
+            &sandboxed(json!({})),
+            Session::Fresh("id"),
+            "go",
+            None,
+        )
+        .unwrap();
+        let settings = settings_arg(&built);
+        let writes = &settings["sandbox"]["filesystem"]["allowWrite"];
+        let worktrees = json!(repo.join(".worktrees").to_string_lossy());
+
+        assert!(listed(writes, &repo.join(".git").to_string_lossy()), "{settings}");
+        assert!(writes.as_array().unwrap().contains(&worktrees), "{settings}");
+        assert!(settings["permissions"]["additionalDirectories"]
+            .as_array()
+            .unwrap()
+            .contains(&worktrees));
+    }
+
+    #[test]
+    fn a_full_sandboxed_launch_lets_the_read_tool_open_spooled_messages() {
+        let tmp = tempfile::tempdir().unwrap();
+        let [base, _] = sandbox_envs(tmp.path());
+        if !host_can_sandbox(&base) {
+            return;
+        }
+        let state = tmp.path().join("state");
+        let messages = state.join("messages");
+        std::fs::create_dir_all(&messages).unwrap();
+        let env = LaunchEnv {
+            state_root: Some(state),
+            ..base
+        };
+        let dir = messages.to_string_lossy().into_owned();
+        let mut report = sandboxed(json!({}));
+        report.horch_access = HorchAccess::Report;
+
+        let full = settings_arg(
+            &super::super::launch::command_in(
+                &env,
+                &sandboxed(json!({})),
+                Session::Fresh("id"),
+                "go",
+                None,
+            )
+            .unwrap(),
+        );
+        let reported = settings_arg(
+            &super::super::launch::command_in(&env, &report, Session::Fresh("id"), "go", None)
+                .unwrap(),
+        );
+
+        let perms = &full["permissions"];
+        assert!(listed(&perms["additionalDirectories"], &dir), "{full}");
+        assert!(listed(&perms["deny"], &format!("Edit(/{dir}/**)")), "{full}");
+        assert!(listed(&perms["deny"], &format!("Write(/{dir}/**)")), "{full}");
+        assert!(
+            !listed(&full["sandbox"]["filesystem"]["denyWrite"], &dir),
+            "{full}"
+        );
+        assert!(!reported.to_string().contains(&dir), "{reported}");
     }
 
     #[test]
