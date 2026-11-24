@@ -3,6 +3,11 @@
 Use this when the game stalls the first time a material draws, or the first frames of a run hitch.
 The warm-up must stay complete as the game grows, so it needs a guard test.
 
+Forward+ and Mobile have automatic ubershader and pipeline precompilation since Godot 4.4. On
+those renderers, read the pipeline compilation monitors (`Performance.PIPELINE_COMPILATIONS_*`) on
+the hitch frame to find the missing path. Loading and instantiating the hidden effect can be
+enough. Only the Compatibility renderer needs a first-draw warm-up of every variant, as below.
+
 1. Scan the code for every `.gdshader`, every script that builds a material in code, and every
    MultiMesh or instanced draw (each is a separate shader variant). List the materials of each scene:
    meshes, ground, lights, masks, post-process, transitions.
@@ -20,6 +25,3 @@ The warm-up must stay complete as the game grows, so it needs a guard test.
    per compile.
 8. When you add a material, add one row to its group. Remove rows for deleted placeholders.
 9. Measure the first render frame on its own. Part of its cost is not shader compile.
-
-Newer engine versions (for example Godot 4.4 and later) reduce compile stalls with ubershaders.
-Measure before you build a warm-up on those versions.

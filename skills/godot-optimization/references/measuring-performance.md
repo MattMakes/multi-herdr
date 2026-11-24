@@ -102,13 +102,23 @@ func _process(_delta: float) -> void:
 		set_process(false)
 
 
+func _percentile(sorted: Array, p: float) -> float:
+	var n := sorted.size()
+	return sorted[maxi(int(ceil(p * n)) - 1, 0)]
+
+
 func _report() -> void:
 	var sorted := _samples.duplicate()
 	sorted.sort()
 	var n := sorted.size()
-	print("frames %d | median %.2f ms | p95 %.2f ms | p99 %.2f ms | worst %.2f ms" % [
-		n, sorted[n / 2], sorted[int(n * 0.95)], sorted[int(n * 0.99)], sorted[n - 1]])
+	var p99 := _percentile(sorted, 0.99)
+	print("frames %d | median %.2f ms | p95 %.2f ms | p99 %.2f ms | worst %.2f ms | 1%% low %.1f fps" % [
+		n, _percentile(sorted, 0.5), _percentile(sorted, 0.95), p99, sorted[n - 1], 1000.0 / p99])
 ```
+
+The percentiles use the nearest-rank convention: index `ceil(p * n) - 1` in the sorted frame
+times. Report 1% low FPS as `1000 / p99_frame_ms`. Do not average FPS values, because FPS is the
+reciprocal of frame time.
 
 Skip the first second or two after a scene loads: shader compilation and
 resource loading inflate those frames.
