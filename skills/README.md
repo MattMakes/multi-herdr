@@ -139,6 +139,17 @@ These skills belong to no phase; each attaches by name to the specialist whose w
 | [product-requirements](product-requirements/SKILL.md) | own text |
 | [system-design](system-design/SKILL.md) | own text |
 
+## Rust skills
+
+These skills are own text. They belong to no phase; the Rust seats name them, as `docs/specs/godot-rust-support.md` sets out. `rust-unsafe-review` covers `// SAFETY:` contracts, pointer provenance and aliasing, FFI and GDExtension boundaries, and Miri. `rust-async` covers ownership across `.await`, cancellation in `select!`, `Send` bounds, blocking calls and bounded channels. `rust-cargo-workspace` covers `[workspace.dependencies]`, additive features, MSRV, the lockfile and the workspace clippy gate. `rust-error-handling` covers typed library errors, contextual application errors, the cause chain and no panics on untrusted input. Each tells the worker to follow the repository's own crates and to check library behaviour with a docs tool.
+
+| Skill | Kind |
+| --- | --- |
+| [rust-async](rust-async/SKILL.md) | own text |
+| [rust-cargo-workspace](rust-cargo-workspace/SKILL.md) | own text |
+| [rust-error-handling](rust-error-handling/SKILL.md) | own text |
+| [rust-unsafe-review](rust-unsafe-review/SKILL.md) | own text |
+
 ## UI property testing skill
 
 `ui-prop-tester` is own text, written clean-room from the behaviour spec in [docs/specs/ui-prop-tester.md](../docs/specs/ui-prop-tester.md). It teaches the `ui-prop-tester` tool (the `crates/ui-prop-tester` workspace crate): seeded random walks over a web page in Chromium or a program in a pseudo-terminal, with temporal properties checked after every step, and trace reading, replay and shrinking for each failure. It belongs to no phase; `qa-engineer` and `frontend-developer` name it under `available_skills`. It ships 3 things: `SKILL.md`, 4 reference pages (specifications, browser, terminal, traces) and the launcher `scripts/ui-prop-tester`. The launcher runs `UI_PROP_TESTER_BIN`, then `ui-prop-tester` on `PATH`, then a cached build under `~/.local/state/horch/ui-prop-tester/bin/` that it builds from a multi-herdr checkout on first use; with no binary and no checkout it exits 3 and prints the `cargo install` command. The tool is not part of a horch release archive.

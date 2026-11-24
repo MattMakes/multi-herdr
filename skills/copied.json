@@ -1557,6 +1557,26 @@
       "verbatim": false
     },
     {
+      "name": "rust-async",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "rust-cargo-workspace",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "rust-error-handling",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "rust-unsafe-review",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
       "name": "security-review",
       "copied_files": [
         "SKILL.md"
