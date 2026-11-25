@@ -441,6 +441,25 @@ Every intake teammate denies `Agent`, `WebFetch`, `WebSearch` and
 `NotebookEdit`, and has no fallback. `skill-importer` also denies Read on
 `contaminated/*/quarantine/**`.
 
+## The Rust team
+
+Three specialists staff Rust work. Each sets `offer_when: ["Cargo.toml"]` and
+`requires: [rust]`, so `horch teammates` offers them in a Cargo project and
+`horch doctor` checks `cargo`, `rustc` and `cargo clippy`. Each falls back to
+`codex-sol`.
+
+| teammate | phase | agent, model, effort | use for |
+|---|---|---|---|
+| `rust-developer` | implementation | claude, opus, medium | crates and workspaces, ownership, async, `unsafe`, error types, test-first builds |
+| `rust-reviewer` | validation | claude, opus, high | ownership, `unsafe` soundness, async cancellation, API contracts; never edits |
+| `rust-qa-engineer` | validation | claude, sonnet, high | failing unit, integration and property tests first; `cargo test`, fuzz and Miri runs |
+
+`rust-reviewer` denies `Edit`, `Write` and `NotebookEdit`, the same as
+`godot-code-reviewer`. The 7 own-text skills are `rust-unsafe-review`,
+`rust-async`, `rust-cargo-workspace`, `rust-perf`, `rust-fuzz`,
+`rust-testing` and `rust-error-handling`. Each is expected or available on at
+least 1 Rust seat (`docs/specs/godot-rust-support.md`, GRS-06 and GRS-07).
+
 ## The Swift and Apple team
 
 Seven specialists staff Swift and Apple-platform work. Each sets
