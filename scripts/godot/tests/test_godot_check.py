@@ -1,8 +1,3 @@
-"""Tests for skills/godot-build-verify/scripts/godot-check.sh (GRS-09). Run: python3 -m unittest discover -s scripts/godot/tests -p 'test_godot_check.py'
-
-A fake engine stands in for Godot: it prints the lines in FAKE_LINES and exits with FAKE_EXIT.
-"""
-
 import os
 import stat
 import subprocess
