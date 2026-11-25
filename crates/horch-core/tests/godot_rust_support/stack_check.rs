@@ -21,13 +21,13 @@ fn grs_14_suggested_check_proposes_canonical_command_per_stack() {
     }
 
     let skill = std::fs::read_to_string(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../skills/orchestrate/SKILL.md"),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../skills/orchestrate/references/stack-checks.md"),
     )
     .unwrap();
     for command in [RUST, GODOT, SWIFT] {
         assert!(
             skill.contains(&format!("`{command}`")),
-            "skills/orchestrate/SKILL.md must name `{command}`"
+            "skills/orchestrate/references/stack-checks.md must name `{command}`"
         );
     }
 }
