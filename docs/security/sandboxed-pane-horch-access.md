@@ -597,6 +597,9 @@ The harness rules win over the grants above:
   `horch_access: full` (see the table above). Still open: a `report` pane has
   no state root, so it cannot read a spooled message at all. See "Broker
   design (O1)", "Related: spooled messages".
+- Open, for a later run: in the Claude sandbox of `skill-importer-1` (hc
+  backend), hc `pane_get` and `horch tell <worker>` fail with "Operation not
+  permitted (os error 1)"; `horch tell orchestrator` works.
 
 Status: the 4 ledger commands still fail in a sandboxed pane. The
 workaround for run `external-imports` is O3: the orchestrator makes the
