@@ -105,9 +105,6 @@ def horch_bin() -> str:
 
 
 def mode() -> str:
-    """The mode rule of spec 6.2: `fleet` when HORCH_ROLE, HORCH_RECORD_ID and
-    HERDR_PANE_ID or HC_TERMINAL_ID are set and not empty and `horch --version`
-    exits 0 within 5 seconds; else `plain`. SKILL_INTAKE_MODE=fleet|plain overrides it."""
     forced = os.environ.get(MODE_ENV)
     if forced:
         if forced not in ("fleet", "plain"):
