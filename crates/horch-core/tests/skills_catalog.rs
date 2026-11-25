@@ -457,6 +457,7 @@ const EXEMPT_FROM_TEXT_ONLY: &[&str] = &[
 ];
 
 const EXEMPT_FILES: &[&str] = &[
+    "godot-build-verify/scripts/godot-check.sh",
     "godot-build-verify/scripts/godot-run.sh",
     "ui-prop-tester/scripts/ui-prop-tester",
 ];
@@ -967,6 +968,7 @@ fn skl_11_materialized_bundle_keeps_the_execute_bit() {
             & 0o777
     };
     assert_eq!(mode("scripts/godot-run.sh"), 0o755);
+    assert_eq!(mode("scripts/godot-check.sh"), 0o755);
     assert_eq!(mode("SKILL.md") & 0o111, 0);
 }
 

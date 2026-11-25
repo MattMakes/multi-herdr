@@ -57,6 +57,8 @@ before the text). A log check must strip them first, for example
 
 ## Run script
 
+To run import, the parse check and the GUT suite in one command, use `godot-build-verify`'s `scripts/godot-check.sh` from the project root. It strips ANSI escapes and exits 3 on `SCRIPT ERROR`, `Parse Error`, `Failed to load script` or `Nothing was run`.
+
 `gd` runs Godot through `godot-build-verify`'s wrapper; see its `references/commands.md`, Common setup.
 
 GUT exits 0 when a test script does not parse (it skips the script) and when

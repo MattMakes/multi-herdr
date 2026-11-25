@@ -67,12 +67,11 @@ parse all exit 0. Read the output, not only the exit code.
    `HOME="$PWD/.godot/horch-home"`, adds `--headless`, and writes a log to
    `.godot/horch-home/logs/`. That keeps two instances, and the operator's
    editor, out of each other's files. `.godot/` is git-ignored and never
-   scanned for resources. On Linux, Godot reads `XDG_DATA_HOME`,
+   scanned. On Linux, Godot reads `XDG_DATA_HOME`,
    `XDG_CONFIG_HOME` and `XDG_CACHE_HOME` instead; the script sets all 3 under
-   the same directory (proof: run on 2026-10-06, Godot 4.7.2 on aarch64
-   Linux: `--import` and a headless script wrote only under those 3 and
-   nothing under `HOME`; `docs/live-checks/linux.md`). Command lines and exit
-   codes: `references/commands.md`, "Common setup".
+   the same directory (proof: `docs/live-checks/linux.md`, run on 2026-10-06,
+   Godot 4.7.2, aarch64 Linux). Command lines and exit codes:
+   `references/commands.md`, "Common setup".
    Check: `.godot/horch-home/` exists after the first call.
 
    **In a Codex pane** (`CODEX_SANDBOX` is set, macOS), the script also writes
@@ -86,7 +85,7 @@ parse all exit 0. Read the output, not only the exit code.
 4. **Import when `.godot/` is missing or files were added.**
    `--headless --path . --import` exits 0 and writes a `.uid` sidecar next to
    every new script. One import at a time per working copy: `.godot/` is
-   shared. Run a long import in the background with a log file, and poll it.
+   shared. Run a long import in the background with a log file.
    New project: import, build the scenes (`godot-scene-files`), import again,
    then run steps 5 to 9. When `run/main_scene` names a scene that does not
    exist yet, the first import prints
@@ -172,6 +171,8 @@ parse all exit 0. Read the output, not only the exit code.
   orchestrator agrees: the next import rebuilds every asset.
 - Commit the `.uid` sidecars that the import writes, with their scripts. A
   git-ignored scratch project has nothing to commit.
+- Land check: `scripts/godot-check.sh` (import, build, parse check, GUT;
+  exit 3 on a script error or an empty GUT run).
 - Never trust an exit code alone. Read the output.
 - A `DONE:` names the Godot version, the parse check result, the C# build
   result (C# projects), the test framework with counts, the smoke run, and the
