@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Implemented: 82 `godot-*` skills (80 from the wave, the `godot-library` reference library and `godot-cutscenes`), 20 `godot-*` seats with a `codex-sol` fallback, `Requirement::Godot` with its C# checks, `skills_when`, the `godot-run.sh` wrapper with the .NET engine lookup and 4 Godot checks in `just gate`. The real-project seat runs and the Codex trial are live checks (§4). A run of `godot-run.sh` inside a real Codex pane is pending. |
+| Status | Implemented: 82 `godot-*` skills (80 from the wave, the `godot-library` reference library and `godot-cutscenes`), 20 `godot-*` seats with a `codex-sol` fallback, `Requirement::Godot` with its C# checks, `skills_when`, the `godot-run.sh` wrapper with the .NET engine lookup and 4 Godot checks in `just gate`. The real-project seat runs and the Codex trial are live checks (§4). The Codex `godot-run.sh` live check is complete. |
 | Date | 2026-10-07 |
 | Authors | opus-2 (this spec). The wave: units GW1 to GW13, U-22, U-25, U-49. |
 | Evidence | The wave report (`ai_docs/reports/godot-wave.md`, committed text at `c6b1a48`) and its status check (`ai_docs/reports/godot-wave-status.md`, items 1 to 21, checked at `32639cd`). |
