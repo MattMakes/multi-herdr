@@ -1772,8 +1772,11 @@ fn gate_cmd(
         Some(c) => c.to_string(),
         None => finish::default_check(store.conn(), &r.run_id)?.with_context(|| {
             format!(
-                "run {} has no check. Pass --check \"<cmd>\", or create the run with horch ledger run new <slug> --check \"<cmd>\"",
-                r.slug
+                "run {} has no check. Pass --check \"<cmd>\", or create the run with horch ledger run new <slug> --check \"<cmd>\".{}",
+                r.slug,
+                stack_check_hint(Path::new(&r.project_root))
+                    .map(|h| format!(" {h}"))
+                    .unwrap_or_default()
             )
         })?,
     };
@@ -1862,6 +1865,11 @@ fn new_run_cmd(
     let check = a.check.as_deref().filter(|c| !c.trim().is_empty());
     let r = insert_run(ctx, store, root, &new, check)?;
     report_created(&r);
+    if check.is_none() {
+        if let Some(hint) = stack_check_hint(root) {
+            output::println(&format!("NOTE: run {} has no check. {hint}", r.slug));
+        }
+    }
     Ok(ExitCode::SUCCESS)
 }
 
@@ -1903,6 +1911,11 @@ fn default_branches(
     let remote = (a.remote.clone())
         .or_else(|| (is_repo && git.has_remote(root, "origin")).then(|| "origin".to_string()));
     (run_branch, base, remote)
+}
+
+fn stack_check_hint(root: &Path) -> Option<String> {
+    horch_core::roster::suggested_check(&horch::project::project_facts(root))
+        .map(|c| format!("The stack check for this project is: --check \"{c}\""))
 }
 
 fn report_created(r: &Run) {
@@ -3222,6 +3235,18 @@ mod tests {
                 horch_core::taskledger::finish::default_check(store.conn(), &run.run_id).unwrap();
             assert_eq!(got.as_deref(), want, "{slug}");
         }
+    }
+
+    #[test]
+    fn grs_14_stack_check_hint_names_the_rust_check_in_a_cargo_project() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(super::stack_check_hint(dir.path()), None);
+        std::fs::write(dir.path().join("Cargo.toml"), "").unwrap();
+        let hint = super::stack_check_hint(dir.path()).unwrap();
+        assert!(
+            hint.contains("--check \"cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings\""),
+            "{hint}"
+        );
     }
 
     fn takes_check(cmd: &clap::Command) -> bool {

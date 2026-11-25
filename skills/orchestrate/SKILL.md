@@ -11,7 +11,15 @@ Direct independent workers. Each unit has 1 owner, precise instructions and evid
 
 1. Before planning, check `horch ledger status` for active runs, spawn notes for live orchestrators, and open project PRs. Read `horch ledger unfinished` and discuss each item with the operator. Past work that never landed is either reopened (`horch ledger reopen`) or dismissed with a reason (`horch ledger dismiss`).
 2. Vet each idea with the operator before it becomes work. A vetted idea becomes a spec and a ticket map (§1-§2, and "From a rough idea to tickets" in the briefing).
-3. Create the run once: `horch ledger run new <slug> [--check "<cmd>"]`. It makes the run branch every task lands on. A task with no check lands only if its ticket says `**Check:** none`. Godot check: `bash skills/godot-build-verify/scripts/godot-check.sh`, not bare `godot --headless`.
+3. Create the run once: `horch ledger run new <slug> [--check "<cmd>"]`. It makes the run branch every task lands on. A task with no check lands only if its ticket says `**Check:** none`. Godot check: `bash skills/godot-build-verify/scripts/godot-check.sh`, not bare `godot --headless`. Without `--check`, `run new` prints the stack check for the project:
+
+   | Project files | Stack check |
+   |---|---|
+   | `Cargo.toml` (also with `project.godot`) | `cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings` |
+   | `project.godot` | `bash skills/godot-build-verify/scripts/godot-check.sh` |
+   | `Package.swift` | `swift test` |
+
+   In a Godot+Rust project, also run `godot-check.sh` when a task changes scenes or scripts.
 4. Check the map with `horch ledger add-map --dry-run <MAP.md>`, then queue it with `horch ledger add-map <MAP.md>`. The ledger works out what can run together.
 5. Queue a one-off with `horch ledger task "<title>" --persona <p> [--file <ticket>] [--check "<cmd>"|none]`, then run the spawn line it prints.
 6. Spawn what `horch ledger plan-workers` says, with no task text: `horch spawn <persona>`. Each worker claims its own task. Never type a task into a worker.
