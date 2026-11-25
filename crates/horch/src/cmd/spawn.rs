@@ -376,16 +376,13 @@ fn parent_pid(_pid: u32) -> Option<u32> {
 
 fn caller(ctx: &RuntimeContext) -> Option<Caller> {
     let pane = ctx.herdr.pane.as_ref()?;
-    let info = PaneHost::of(ctx).pane_get(pane.as_str()).ok()?;
-    let workspace = info
-        .workspace_id
-        .clone()
-        .or_else(|| ctx.herdr.workspace.as_ref().map(|w| w.to_string()))?;
+    let (pane_id, workspace) = match PaneHost::of(ctx).pane_get(pane.as_str()) {
+        Ok(info) => (info.pane_id, info.workspace_id),
+        Err(_) => (pane.as_str().to_string(), None),
+    };
+    let workspace = workspace.or_else(|| ctx.herdr.workspace.as_ref().map(|w| w.to_string()))?;
     let mailbox = Mailbox::in_context(ctx, &workspace);
-    let (role, _) = mailbox
-        .roles()
-        .into_iter()
-        .find(|(_, p)| *p == info.pane_id)?;
+    let (role, _) = mailbox.roles().into_iter().find(|(_, p)| *p == pane_id)?;
     let brief = mailbox.read_brief(&role).ok()?;
     let agent = brief
         .worker_id
@@ -1001,6 +998,72 @@ mod tests {
         c.worker_id = Some("w-ctl".into());
         c.agent = Some(AGENT);
         c
+    }
+
+    #[test]
+    fn an_hc_ledger_worker_is_the_caller_when_its_sandbox_blocks_hc() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tmp.path().join("state");
+        std::fs::create_dir(&state).unwrap();
+        let env = horch_core::runtime::MapEnv::new(tmp.path())
+            .with("HOME", &tmp.path().to_string_lossy())
+            .with("HORCH_STATE_DIR", &state.to_string_lossy())
+            .with("HORCH_BACKEND", "hc")
+            .with("HC_TERMINAL_ID", "t3j")
+            .with("HC_SCOPE", "s1")
+            .with(
+                "HC_TERMINAL_SOCKET",
+                &tmp.path().join("blocked.sock").to_string_lossy(),
+            )
+            .with("HORCH_WORKSPACE_ID", "sp1")
+            .with(
+                "HORCH_HC_BIN",
+                &tmp.path().join("blocked-hc").to_string_lossy(),
+            )
+            .with(
+                "HORCH_LEDGER_DB",
+                &tmp.path().join("ledger.sqlite3").to_string_lossy(),
+            );
+        let ctx = RuntimeContext::from_env(&env).unwrap();
+        assert!(PaneHost::of(&ctx).pane_get("t3j").is_err());
+        let mailbox = Mailbox::in_context(&ctx, "sp1");
+        std::fs::create_dir_all(mailbox.dir()).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(mailbox.dir(), std::fs::Permissions::from_mode(0o700))
+                .unwrap();
+        }
+        mailbox.register_role("skill-importer-1", "t3j").unwrap();
+        mailbox
+            .write_brief(&horch_core::messaging::brief::Brief {
+                schema: 1,
+                role: "skill-importer-1".into(),
+                teammate: "skill-importer".into(),
+                agent: "claude".into(),
+                model: "opus".into(),
+                record_id: "r1".into(),
+                session: SessionMode::Fresh(None),
+                task: String::new(),
+                project_dir: "/repo".into(),
+                state_dir: None,
+                claude_bin: None,
+                codex_bin: None,
+                resolved: Some(importer(&["intake-*"]).teammate),
+                teammates_dir: Some("/repo/teammates".into()),
+                workdir: None,
+                bin_overrides: Default::default(),
+                report_to: horch_core::execution::ReportTarget::Orchestrator,
+                worker_id: Some("w-ctl".into()),
+                ledger_db: None,
+                controller: None,
+                backend: horch_core::runtime::Backend::Hc,
+            })
+            .unwrap();
+        let c = caller(&ctx).expect("the hc pane resolves its caller");
+        assert_eq!(c.role, "skill-importer-1");
+        assert_eq!(c.worker_id.as_deref(), Some("w-ctl"));
+        assert_eq!(c.teammate.spawn_only, vec!["intake-*".to_string()]);
     }
 
     #[test]
