@@ -36,7 +36,7 @@ A production interactive element is not finished until it has all of the states 
 
 ## Overlays
 
-- Modal: native `<dialog>` with `showModal()`; `inert` on the page behind; close on Escape, backdrop click, and a close button; first focus on the first field. Keep it centered: `position: fixed; inset: 0; margin: auto; height: fit-content; max-height: min(80vh, 40rem);`.
+- Modal: native `<dialog>` with `showModal()`; the browser makes the page behind inert, traps focus, and closes on Escape, so add no `inert`, no manual focus trap, and no Escape handler; close also on backdrop click and a close button; first focus on the first field. Keep it centered: `position: fixed; inset: 0; margin: auto; height: fit-content; max-height: min(80vh, 40rem);`.
 - Menus, popovers, tooltips: the `popover` attribute where available; flip near the viewport edge; never inside an `overflow: hidden` parent.
 - Tooltips: hover delay 800 to 1000 ms, focus delay 0 ms; hoverable, persistent, dismissible with Escape (WCAG 1.4.13).
 - Prefer undo to confirm: do reversible actions at once and show an Undo toast for 5 to 10 seconds. Keep confirm dialogs for irreversible actions, and make the user type the name of what is destroyed.

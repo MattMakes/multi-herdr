@@ -125,7 +125,8 @@ Priority-ordered rules for building and reviewing UI, merged and deduplicated fr
 
 | Rule | Check |
 |---|---|
-| Animate `transform` and `opacity` only; never `width`, `height`, `top`, `left` | Grep transitions and keyframes |
+| Animate `transform` and `opacity` only; never `width`, `top`, `left`, and never `height` with a fixed `max-height` value | Grep transitions and keyframes |
+| Animate open and close to intrinsic size with `interpolate-size: allow-keywords` and a transition on `block-size`, as a progressive enhancement; where the browser does not support it, the element opens with no animation | Open and close in a browser with and without support |
 | Motion shows cause and effect; animate 1 or 2 key elements per view | Review each animation's purpose |
 | Shared duration and easing tokens; ease-out to enter, ease-in to exit; exit about 60 to 70% of enter | Token file lists motion values |
 | Stagger list entrances by 30 to 50 ms per item | Watch a list mount |

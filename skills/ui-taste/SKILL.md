@@ -58,6 +58,10 @@ These apply every time. The references give the detail and the checks.
 - **Imagery.** No hand-drawn fake browser bars, phone frames, or dashboards made of `<div>` boxes. Use a real screenshot, a labeled placeholder slot, or no image. One icon library; no emoji as icons.
 - **Respect the project.** Do not replace an existing design system, framework, or global stylesheet. Add to the global stylesheet; never remove its framework directives. Check `package.json` (or the equivalent) before you import a library.
 
+## Precedence
+
+Modern platform guidance wins on platform API use and browser support. `ui-taste` and the direction contract win on look. For a scroll effect, native CSS (`animation-timeline`) comes before GSAP.
+
 ## Review checklist
 
 - [ ] Design read stated; tokens defined in one place and used everywhere.
