@@ -611,7 +611,10 @@ impl Session {
 
 pub fn has_transcript(kind: crate::harness::HarnessKind) -> bool {
     use crate::harness::HarnessKind as K;
-    matches!(kind, K::Claude | K::Codex | K::OpenCode | K::Pi | K::Prime)
+    matches!(
+        kind,
+        K::Claude | K::Codex | K::OpenCode | K::Pi | K::Prime | K::Antigravity
+    )
 }
 
 pub fn read_session_events(
@@ -928,6 +931,18 @@ mod tests {
         let pi = home.join(".pi/agent/sessions/--proj--");
         std::fs::create_dir_all(&pi).unwrap();
         std::fs::write(pi.join("2026-09-24_sid-p.jsonl"), fixture("pi.jsonl")).unwrap();
+        let agy = home.join(".gemini/antigravity-cli/brain/sid-a/.system_generated/logs");
+        std::fs::create_dir_all(&agy).unwrap();
+        std::fs::write(
+            agy.join("transcript.jsonl"),
+            concat!(
+                r#"{"step_index":1,"type":"PLANNER_RESPONSE","created_at":"2026-11-25T02:07:28Z","#,
+                r#""model":"gemini-3.8-flash-medium","input_tokens":10,"cache_read_tokens":20,"#,
+                r#""output_tokens":3}"#,
+                "\n"
+            ),
+        )
+        .unwrap();
         let loc = Locations {
             home: home.to_path_buf(),
             claude_projects: home.join(".claude/projects"),
@@ -942,6 +957,13 @@ mod tests {
         assert!(read_session(&loc, "pi", Some("sid-p")).is_ok());
         let prime_path = pi.join("2026-09-24_sid-p.jsonl");
         assert!(read_session(&loc, "prime", prime_path.to_str()).is_ok());
+        let (agy_path, agy_usage) = read_session(&loc, "antigravity", Some("sid-a")).unwrap();
+        assert_eq!(agy_path, agy.join("transcript.jsonl"));
+        assert_eq!(agy_usage.calls, 1);
+        assert_eq!(
+            read_session(&loc, "antigravity", Some("gone")).unwrap_err(),
+            Missing::NoTranscript
+        );
         assert_eq!(
             read_session(&loc, "claude", Some("gone")).unwrap_err(),
             Missing::NoTranscript

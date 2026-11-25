@@ -28,12 +28,9 @@ fn doctor_text(name: &str, to_claude: &[&str]) -> String {
 }
 
 #[test]
-fn doctor_warns_for_a_harness_the_watchdog_cannot_see() {
+fn doctor_does_not_warn_that_the_watchdog_cannot_see_antigravity() {
     let text = doctor_text("extras-watchdog-agy", &[]);
-    assert!(
-        text.contains("warning: harness antigravity has no timer format and no transcript lookup"),
-        "{text}"
-    );
+    assert!(!text.contains("no timer format"), "{text}");
 }
 
 fn antigravity_teammates() -> Vec<String> {

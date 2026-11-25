@@ -169,7 +169,7 @@ fn ctx_04_harness_without_reader_is_not_read() {
     let got = read_current(&fixture_loc(), cache.path(), "antigravity", Some(PRE));
     assert_eq!(
         got,
-        Err(Unreadable::NotRead("unknown agent 'antigravity'".into()))
+        Err(Unreadable::NotRead("no antigravity context reader".into()))
     );
 }
 

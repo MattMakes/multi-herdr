@@ -1750,16 +1750,16 @@ mod tests {
     }
 
     #[test]
-    fn a_harness_with_no_timer_and_no_transcript_is_a_doctor_warning() {
+    fn no_builtin_harness_is_blind_to_the_watchdog() {
         let r = Roster::builtin().unwrap();
-        let warnings = watchdog_blind_warnings(&r);
-        assert_eq!(warnings.len(), 1, "{warnings:?}");
         assert!(
-            warnings[0]
-                .starts_with("harness antigravity has no timer format and no transcript lookup"),
-            "{}",
-            warnings[0]
+            r.offered()
+                .iter()
+                .any(|t| t.agent == HarnessKind::Antigravity),
+            "the builtin roster offers an antigravity teammate"
         );
+        let warnings = watchdog_blind_warnings(&r);
+        assert!(warnings.is_empty(), "{warnings:?}");
     }
 
     #[test]

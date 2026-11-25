@@ -70,6 +70,15 @@ pub(crate) fn locate(loc: &Locations, agent: &str, sid: &str) -> Result<Located,
             Ok(Located::Files(vec![path]))
         }
         "opencode" => Ok(Located::OpenCode(loc.opencode_db.clone())),
+        "antigravity" => {
+            let path = crate::harness::antigravity::transcript(&loc.home, sid).ok_or_else(|| {
+                Unreadable::NoTranscript(format!(
+                    ".gemini/antigravity-cli/brain/{sid}/.system_generated/logs/transcript.jsonl under {}",
+                    loc.home.display()
+                ))
+            })?;
+            Ok(Located::Files(vec![path]))
+        }
         "none" => Err(Unreadable::NotRead("agent none is not read".into())),
         other => Err(Unreadable::NotRead(format!("unknown agent '{other}'"))),
     }
@@ -162,8 +171,42 @@ fn read_line(
     match agent {
         "claude" => claude_line(c, at, line, subagent, out),
         "codex" => codex_line(c, at, line, out),
+        "antigravity" => antigravity_line(at, line, out),
         _ => pi_line(c, at, line, out),
     }
+}
+
+fn antigravity_line(at: u64, line: &str, out: &mut Vec<Observation>) {
+    let Ok(v) = serde_json::from_str::<Value>(line) else {
+        return;
+    };
+    let tokens = TokenClasses {
+        input: first_n(&v, &["input_tokens"]),
+        cache_read: first_n(&v, &["cache_read_tokens"]),
+        output: first_n(&v, &["output_tokens"]),
+        ..TokenClasses::default()
+    };
+    if tokens.is_zero() {
+        return;
+    }
+    out.push(Observation::Usage(RawUsage {
+        ts: ts(v.get("created_at").and_then(Value::as_str)),
+        event_id: v
+            .get("step_index")
+            .and_then(Value::as_u64)
+            .map_or_else(|| format!("@{at}"), |i| format!("step:{i}")),
+        model: v
+            .get("model")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        effort: None,
+        tokens,
+        subagent: false,
+        delta: false,
+        tool_nested: false,
+        harness_cost: None,
+    }));
 }
 
 fn poll_file(
@@ -1116,6 +1159,32 @@ mod line_reader_tests {
     }
 
     #[test]
+    fn antigravity_lines_with_tokens_are_usage() {
+        let user = r#"{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","created_at":"2026-11-25T02:07:11Z","content":"go"}"#;
+        let reply = r#"{"step_index":3,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-25T02:07:28Z","model":"gemini-3.8-flash-medium","input_tokens":2452,"cache_read_tokens":8133,"output_tokens":87,"content":"ok"}"#;
+        let (obs, _) = run(
+            |c, at, line, out| read_line("antigravity", false, c, at, line, out),
+            &[user, reply, "not json"],
+        );
+        let got = usages(&obs);
+        assert_eq!(got.len(), 1, "{obs:?}");
+        let u = got[0];
+        assert_eq!(
+            (u.event_id.as_str(), u.model.as_str(), u.ts.as_str()),
+            ("step:3", "gemini-3.8-flash-medium", "2026-11-25T02:07:28Z")
+        );
+        assert_eq!(
+            u.tokens,
+            TokenClasses {
+                input: 2452,
+                cache_read: 8133,
+                output: 87,
+                ..TokenClasses::default()
+            }
+        );
+    }
+
+    #[test]
     fn pi_line_roles_models_times_and_ids() {
         let line = r#"{"id":"e1","timestamp":"2026-09-20T12:00:00Z","message":{"role":"assistant","provider":"acme","model":"m1","usage":{"input":5,"output":2,"cacheWrite":9,"cacheWrite1h":4,"cacheRead":1}}}"#;
         let obs = pi(line);
@@ -1242,7 +1311,7 @@ mod line_reader_tests {
     fn locate_errors_name_what_was_looked_for() {
         let home = tempfile::tempdir().unwrap();
         let loc = Locations::under_home(home.path(), &crate::runtime::Inherited::default());
-        for agent in ["claude", "codex", "pi", "prime"] {
+        for agent in ["claude", "codex", "pi", "prime", "antigravity"] {
             assert!(
                 matches!(
                     locate(&loc, agent, "nope"),
