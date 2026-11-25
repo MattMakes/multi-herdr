@@ -257,8 +257,7 @@ def _run_spawn(role: str, brief_path: Path) -> str | None:
     except (OSError, subprocess.TimeoutExpired) as e:
         raise RoleError(SPAWN_FAILED, f"horch spawn failed: {evidence.escape(str(e))}") from e
     if r.returncode != 0:
-        raise RoleError(SPAWN_FAILED, f"horch spawn exited {r.returncode}: "
-                                      f"{evidence.escape(r.stderr.strip()[-ERROR_MAX:])}")
+        raise RoleError(SPAWN_FAILED, f"horch spawn exited {r.returncode}: {r.stderr.strip()}")
     m = SPAWNED.search(r.stderr + "\n" + r.stdout)
     return m.group(1) if m else None
 

@@ -41,7 +41,7 @@ if sys.argv[1:2] == ["spawn"]:
     if code == 0:
         sys.stderr.write(f"spawned {{sys.argv[2]}}-{{n}} (pane p{{n}}): none none, new session\\n")
     else:
-        sys.stderr.write("horch spawn: no such teammate\\n")
+        sys.stderr.write(os.environ.get("STUB_SPAWN_STDERR", "horch spawn: no such teammate\\n"))
     sys.exit(code)
 """
 FLEET = {"HORCH_ROLE": "skill-importer-1", "HORCH_RECORD_ID": "rec-1", "HERDR_PANE_ID": "p0"}
@@ -306,6 +306,14 @@ class SpawnTest(RolesCase):
         self.spawn(t, "analyst", expect=roles.SPAWN_FAILED, STUB_SPAWN_EXIT="1")
         self.assertFalse((t.c / "roles.jsonl").exists())
         self.spawn(t, "analyst")
+
+    def test_a_failed_horch_spawn_prints_the_whole_horch_error(self):
+        t = self.task()
+        error = ("horch spawn takes no task text: a worker claims its task from the task ledger. "
+                 + "x" * 300 + "\nIt prints the horch spawn command that starts a worker for it.")
+        r = self.fleet("spawn", "auditor", "--task", str(t.c), STUB_SPAWN_EXIT="1", STUB_SPAWN_STDERR=error + "\n")
+        self.assertEqual(r.returncode, roles.SPAWN_FAILED, r.stderr)
+        self.assertIn(error, r.stderr)
 
     def test_one_role_at_a_time(self):
         t = self.task()
