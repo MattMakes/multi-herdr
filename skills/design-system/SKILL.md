@@ -53,7 +53,7 @@ If product type, required modes, or the accessibility target is missing and chan
    `grep -rnE '\b(p|m|gap|w|h|text|rounded)-\[[0-9.]+(px|rem)\]' src`
    Check: zero hits outside token files, or each remaining hit has a written reason. Tab through one screen: every interactive element shows a visible focus ring. With `prefers-reduced-motion: reduce`, no non-essential motion runs. At 375, 768, 1024, and 1440 px there is no horizontal scroll.
 
-9. **Write `DESIGN.md`** at the project root (or update it) from `references/design-md-template.md`. It records the decisions, the exact values, the component rules, and the banned patterns. Write the theme record beside it from `references/theme-spec-template.md`: it stores the `receipt` of step 3, the `check` output as contrast evidence, and the decision log.
+9. **Write `DESIGN.md`** at the project root (or update it) from `references/design-md-template.md`. It records the decisions, the exact values, the component rules, and the banned patterns. Write the theme record beside it from `references/theme-spec-template.md`: it stores the `receipt` of step 3, the output of `palette.py check` as contrast evidence, and the decision log.
    Check: every value in `DESIGN.md` matches the code; a reader can build a new screen from `DESIGN.md` alone; the record names a test that can fail for each contract.
 
 ## Rules

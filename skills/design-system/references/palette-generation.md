@@ -8,7 +8,7 @@
 |---|---|---|
 | Pick colours | `ramp` | You have 1 or more seed colours (brand or a row of `palettes.md`) and need ramps and roles |
 | Probe a pair | `contrast` | You need the ratio of 2 colours, for example a hand-picked brand pair |
-| Verify | `check` | A token JSON file exists and every role pair must pass before you ship |
+| Verify | `palette.py check` | A token JSON file exists and every role pair must pass before you ship |
 
 ## ramp
 
@@ -64,8 +64,8 @@ Surfaces use fixed neutral stops (light / dark): page 95 / 10, surface 100 / 15,
 | 4.5 | each `X-foreground` on `X`; `foreground` on `background` and `card`; `muted-foreground` on `background` and `muted`; `<intent>-text` on `background`, `card` and `<intent>-muted`; `<intent>-muted-foreground` on `<intent>-muted` |
 | 3.0 | `primary` and each status fill on `background`; `input` on `background` and `card`; `ring` on `background` and `card`; `<intent>-border` on `background` |
 
-Run `check` after every change to a seed, a role or a mode. A hand-edited token file works the same way: it only needs role names from the list.
+Run `palette.py check` after every change to a seed, a role or a mode. A hand-edited token file works the same way: it only needs role names from the list.
 
 ## Exact brand colours
 
-The script does not pin a brand colour at an arbitrary stop. A seed is used exactly as the light fill. To use another brand value for a role, edit the output token and run `check`: the result is the proof.
+The script does not pin a brand colour at an arbitrary stop. A seed is used exactly as the light fill. To use another brand value for a role, edit the output token and run `palette.py check`: the result is the proof.

@@ -81,7 +81,7 @@ Either one file with ordered sections, or one file per layer:
 
 Generate ramps with `python3 -I scripts/palette.py ramp` (see `palette-generation.md`). A ramp has 1 colour per tone stop: stops 0, 5, ... 100 (21 stops) or 0, 10, ... 100 (compact, 11 stops). A tone is CIE L*, so the same stop has the same lightness in every family. Stop 0 is `#000000` and stop 100 is `#ffffff`. Name a primitive `--color-<family>-<stop>`: `--color-accent-50`. Dark mode has its own ramp per family with the same lightness and 15 percent less chroma.
 
-One neutral ramp per product; do not mix a cool gray and a warm gray. Tint it with `--gray-tint` (`none`, `warm`, `cool`, `from-seed`). Hand-made ramps are allowed as seeds. A project that keeps 50 to 950 names maps each name to 1 tone stop and still runs `check`.
+One neutral ramp per product; do not mix a cool gray and a warm gray. Tint it with `--gray-tint` (`none`, `warm`, `cool`, `from-seed`). Hand-made ramps are allowed as seeds. A project that keeps 50 to 950 names maps each name to 1 tone stop and still runs `palette.py check`.
 
 ```css
 :root {
