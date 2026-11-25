@@ -169,21 +169,33 @@ fn metric(d: &Diagnostic) -> Option<&'static str> {
         .map(|(_, m)| *m)
 }
 
-fn work_rel(file: &str, krate: &Path, dir: &Path) -> String {
-    let p = Path::new(file);
-    if p.is_absolute() {
-        return rel(file, dir);
+fn work_rel(file: &str, root: &Path, dir: &Path) -> String {
+    let joined = root.join(file);
+    let full = joined.canonicalize().unwrap_or_else(|_| joined.clone());
+    let base = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+    full.strip_prefix(&base)
+        .or_else(|_| joined.strip_prefix(dir))
+        .map(|r| r.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| file.trim_start_matches("./").to_string())
+}
+
+#[derive(Debug, Deserialize)]
+struct Metadata {
+    workspace_root: PathBuf,
+}
+
+fn workspace_root(krate: &Path) -> Result<std::result::Result<PathBuf, String>> {
+    let mut cmd = Command::new("cargo");
+    cmd.args(["metadata", "--no-deps", "--format-version", "1"])
+        .current_dir(krate);
+    crate::runtime::process::scrub_child_env(&mut cmd);
+    let out = cmd.output().context("running cargo metadata")?;
+    if !out.status.success() {
+        return Ok(Err(String::from_utf8_lossy(&out.stderr).trim().to_string()));
     }
-    let mut base = krate.to_path_buf();
-    while base.starts_with(dir) {
-        if base.join(p).is_file() {
-            return rel(&base.join(p).to_string_lossy(), dir);
-        }
-        if !base.pop() {
-            break;
-        }
-    }
-    rel(&krate.join(p).to_string_lossy(), dir)
+    let m: Metadata =
+        serde_json::from_slice(&out.stdout).context("reading the cargo metadata JSON")?;
+    Ok(Ok(m.workspace_root))
 }
 
 fn push_new(out: &mut Vec<Violation>, v: Violation) {
@@ -195,7 +207,7 @@ fn push_new(out: &mut Vec<Violation>, v: Violation) {
     }
 }
 
-fn clippy_violation(line: &str, krate: &Path, dir: &Path) -> Option<Violation> {
+fn clippy_violation(line: &str, root: &Path, dir: &Path) -> Option<Violation> {
     let CargoLine { reason, message } = serde_json::from_str::<CargoLine>(line).ok()?;
     let d = message.filter(|_| reason == "compiler-message")?;
     let metric = metric(&d)?;
@@ -203,7 +215,7 @@ fn clippy_violation(line: &str, krate: &Path, dir: &Path) -> Option<Violation> {
     let (value, threshold) = score(&d.message).unwrap_or((0.0, 0.0));
     Some(Violation {
         function_name: name(span),
-        file_path: work_rel(&span.file_name, krate, dir),
+        file_path: work_rel(&span.file_name, root, dir),
         line: span.line_start,
         metric: metric.to_string(),
         value,
@@ -211,9 +223,9 @@ fn clippy_violation(line: &str, krate: &Path, dir: &Path) -> Option<Violation> {
     })
 }
 
-pub fn clippy_violations(json: &str, krate: &Path, dir: &Path) -> Vec<Violation> {
+pub fn clippy_violations(json: &str, root: &Path, dir: &Path) -> Vec<Violation> {
     let mut out: Vec<Violation> = Vec::new();
-    for v in json.lines().filter_map(|l| clippy_violation(l, krate, dir)) {
+    for v in json.lines().filter_map(|l| clippy_violation(l, root, dir)) {
         push_new(&mut out, v);
     }
     out
@@ -322,6 +334,19 @@ fn analyse_rust(
     dir: &Path,
     evidence: &Path,
 ) -> Result<std::result::Result<Vec<Violation>, Outcome>> {
+    let root = match workspace_root(krate)? {
+        Ok(root) => root,
+        Err(stderr) => {
+            return Ok(Err(Outcome::fail(
+                "cargo metadata failed",
+                None,
+                &format!(
+                    "cargo metadata failed in {}; fix the crate, commit, then run finish again: {stderr}",
+                    krate.display()
+                ),
+            )))
+        }
+    };
     let mut cmd = clippy(krate);
     cmd.stdout(std::fs::File::create(evidence)?);
     let out = cmd.output().context("running cargo clippy")?;
@@ -340,7 +365,7 @@ fn analyse_rust(
         )));
     }
     let json = std::fs::read_to_string(evidence)?;
-    Ok(Ok(clippy_violations(&json, krate, dir)))
+    Ok(Ok(clippy_violations(&json, &root, dir)))
 }
 
 fn rust_starts(dir: &Path, files: &[String]) -> BTreeMap<String, Vec<u64>> {
@@ -877,8 +902,8 @@ printf ']}\n'
         );
 
         let rust = dir.join("rust");
-        let paths = |file: &str, krate: &Path| -> Vec<String> {
-            clippy_violations(&primary(file), krate, &dir)
+        let paths = |file: &str, root: &Path| -> Vec<String> {
+            clippy_violations(&primary(file), root, &dir)
                 .into_iter()
                 .map(|v| v.file_path)
                 .collect()
@@ -889,10 +914,24 @@ printf ']}\n'
             paths(&absolute.to_string_lossy(), &rust),
             vec!["rust/src/lib.rs"]
         );
-        touch(&dir.join("crates/core/Cargo.toml"));
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/core\"]\nresolver = \"2\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.join("crates/core/src")).unwrap();
+        std::fs::write(
+            dir.join("crates/core/Cargo.toml"),
+            "[package]\nname = \"core\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
         touch(&dir.join("crates/core/src/lib.rs"));
+        let root = workspace_root(&dir.join("crates/core"))
+            .unwrap()
+            .expect("cargo metadata runs");
+        assert_eq!(root, dir.canonicalize().unwrap());
         assert_eq!(
-            paths("crates/core/src/lib.rs", &dir.join("crates/core")),
+            paths("crates/core/src/lib.rs", &root),
             vec!["crates/core/src/lib.rs"],
             "a workspace member reports paths from the workspace root"
         );

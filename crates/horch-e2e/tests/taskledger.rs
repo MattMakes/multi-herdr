@@ -2560,6 +2560,7 @@ const GDEXT_LIB: &str = "use godot::prelude::*;\n\n#[godot_api]\nimpl Player {\n
 
 const FAKE_CARGO: &str = r#"#!/bin/sh
 if [ "$1" = warm ]; then exit 0; fi
+if [ "$1" = metadata ]; then printf '{"workspace_root":"%s"}\n' "$PWD"; exit 0; fi
 echo "$PWD $*" >> "$FAKE_CARGO_CALLS"
 cc='{"reason":"compiler-message","message":{"message":"the function has a cognitive complexity of (30/25)","code":{"code":"clippy::cognitive_complexity"},"spans":[{"file_name":"src/lib.rs","line_start":5,"is_primary":true,"column_start":8,"column_end":15,"text":[{"text":"pub fn tangled(v: &[u32]) -> u32 {"}]}]}}'
 tl='{"reason":"compiler-message","message":{"message":"this function has too many lines (120/100)","code":{"code":"clippy::too_many_lines"},"spans":[{"file_name":"src/lib.rs","line_start":5,"is_primary":true,"column_start":1,"column_end":2,"text":[{"text":"pub fn tangled(v: &[u32]) -> u32 {"},{"text":"}"}]}]}}'
