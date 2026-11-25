@@ -515,10 +515,10 @@ fn launch_sandbox_args(
 }
 
 fn profile_form_args(ctx: &RuntimeContext, role: &str, prepared: &mut Prepared) -> Result<()> {
-    let state_root = ctx.paths.state_root.to_string_lossy().into_owned();
     let tmpdir = pane_tmpdir(&ctx.paths.state_root, role);
     std::fs::create_dir_all(&tmpdir).with_context(|| format!("creating {}", tmpdir.display()))?;
-    prepared.extra_args = fleet_write_profile_args(&state_root);
+    let roots = horch_write_roots(&ctx.paths.state_root, &ctx.paths.ledger_db);
+    prepared.extra_args = fleet_write_profile_args(&roots);
     let value = serde_json::to_string(&tmpdir.to_string_lossy()).context("encoding TMPDIR")?;
     prepared.extra_args.push("-c".into());
     prepared
@@ -881,8 +881,26 @@ fn profile_sandbox(profile: &str) -> String {
 
 pub const FLEET_WRITE_PROFILE: &str = "fleet_write";
 
-fn fleet_write_profile_args(state_root: &str) -> Vec<String> {
+fn horch_write_roots(state_root: &Path, ledger_db: &Path) -> Vec<String> {
+    let mut roots = vec![state_root.to_path_buf()];
+    if let Some(dir) = ledger_db.parent() {
+        if !dir.as_os_str().is_empty() && !dir.starts_with(state_root) {
+            roots.push(dir.to_path_buf());
+        }
+    }
+    roots
+        .into_iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect()
+}
+
+fn fleet_write_profile_args(roots: &[String]) -> Vec<String> {
     let p = FLEET_WRITE_PROFILE;
+    let roots = roots
+        .iter()
+        .map(|r| format!("{}=true", toml_string(r)))
+        .collect::<Vec<_>>()
+        .join(",");
     [
         format!("permissions.{p}.extends=\":workspace\""),
         format!(
@@ -890,10 +908,7 @@ fn fleet_write_profile_args(state_root: &str) -> Vec<String> {
              \".codex\"=\"write\",\".agents\"=\"write\",\".aws\"=\"write\"}},\
              \":slash_tmp\"=\"read\",\":tmpdir\"=\"read\"}}"
         ),
-        format!(
-            "permissions.{p}.workspace_roots={{{}=true}}",
-            toml_string(state_root)
-        ),
+        format!("permissions.{p}.workspace_roots={{{roots}}}"),
         format!("permissions.{p}.network.enabled=true"),
     ]
     .into_iter()
@@ -903,7 +918,8 @@ fn fleet_write_profile_args(state_root: &str) -> Vec<String> {
 
 pub fn sandbox_args(state_root: &Path, dir: &Path) -> Vec<String> {
     let mut args = vec!["sandbox".to_string()];
-    args.extend(fleet_write_profile_args(&state_root.to_string_lossy()));
+    let state = state_root.to_string_lossy().into_owned();
+    args.extend(fleet_write_profile_args(&[state]));
     args.extend([
         "-P".into(),
         FLEET_WRITE_PROFILE.into(),
@@ -2318,6 +2334,12 @@ mod tests {
                 ..Default::default()
             };
             let (state, got) = config_pairs(&teammate);
+            let ledger = Path::new(&state)
+                .parent()
+                .unwrap()
+                .join("home")
+                .join(".horch");
+            let ledger = ledger.to_string_lossy();
             assert_eq!(
                 got,
                 vec![
@@ -2326,7 +2348,9 @@ mod tests {
                      \".git\"=\"write\",\".codex\"=\"write\",\".agents\"=\"write\",\".aws\"=\"write\"},\
                      \":slash_tmp\"=\"read\",\":tmpdir\"=\"read\"}"
                         .to_string(),
-                    format!("permissions.fleet_write.workspace_roots={{\"{state}\"=true}}"),
+                    format!(
+                        "permissions.fleet_write.workspace_roots={{\"{state}\"=true,\"{ledger}\"=true}}"
+                    ),
                     "permissions.fleet_write.network.enabled=true".to_string(),
                     format!("shell_environment_policy.set.TMPDIR=\"{state}/tmp/codex-1\""),
                 ],
@@ -2362,14 +2386,37 @@ mod tests {
                 .iter()
                 .find_map(|a| a.strip_prefix(key))
                 .unwrap_or_else(|| panic!("{key} missing"));
-            serde_json::from_str::<String>(pair.trim_end_matches("=true}"))
-                .or_else(|_| serde_json::from_str::<String>(pair))
-                .unwrap()
+            let first = pair.split("=true").next().unwrap();
+            serde_json::from_str::<String>(first).unwrap()
         };
         let root = PathBuf::from(value("permissions.fleet_write.workspace_roots={"));
         let tmpdir = PathBuf::from(value("shell_environment_policy.set.TMPDIR="));
         assert!(tmpdir.starts_with(&root), "{tmpdir:?} not in {root:?}");
         assert!(tmpdir.is_dir());
+    }
+
+    #[test]
+    fn the_ledger_folder_is_a_write_root_only_outside_the_state_root() {
+        let state = Path::new("/s/horch");
+        assert_eq!(
+            horch_write_roots(state, Path::new("/home/a/.horch/ledger.sqlite3")),
+            vec!["/s/horch".to_string(), "/home/a/.horch".to_string()]
+        );
+        assert_eq!(
+            horch_write_roots(state, Path::new("/s/horch/db/ledger.sqlite3")),
+            vec!["/s/horch".to_string()]
+        );
+        assert_eq!(
+            horch_write_roots(state, Path::new("ledger.sqlite3")),
+            vec!["/s/horch".to_string()]
+        );
+    }
+
+    #[test]
+    fn the_land_step_sandbox_keeps_the_state_root_only() {
+        let args = sandbox_args(Path::new("/s/horch"), Path::new("/w"));
+        let roots = "permissions.fleet_write.workspace_roots={\"/s/horch\"=true}";
+        assert!(args.iter().any(|a| a == roots), "{args:?}");
     }
 
     #[test]
