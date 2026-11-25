@@ -956,6 +956,11 @@
       "verbatim": false
     },
     {
+      "name": "godot-hfr-hunt",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
       "name": "godot-hud-system",
       "copied_files": [
         "SKILL.md",

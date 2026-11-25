@@ -43,6 +43,7 @@ const REPO_ORIGINAL: &[&str] = &[
     "godot-economy-system",
     "godot-gameplay-loops",
     "godot-genre-blueprints",
+    "godot-hfr-hunt",
     "godot-language-choice",
     "godot-library",
     "godot-project-context",
