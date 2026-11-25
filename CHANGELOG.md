@@ -4,6 +4,16 @@
 
 ## Unreleased
 
+- Fix: a Codex worker can finish its task. The `fleet_write` profile of a
+  Codex pane made the state root writable (`~/.local/state/horch`), but not the
+  folder of the task ledger (`~/.horch` by default). So `horch ledger progress`
+  and `horch ledger done` failed with `attempt to write a readonly database`
+  after the work landed, and the watchdog then reaped the idle worker and
+  queued its task again. The profile now makes the ledger folder writable too,
+  as the sandbox block of the Claude harness already does. A `HORCH_LEDGER_DB`
+  inside the state root adds no folder. The sandbox of the land step does not
+  change.
+
 ## v0.5.3 - 2026-11-22
 
 - The video team grows from 7 to 10 seats, plus 1 Blender seat, so that a film

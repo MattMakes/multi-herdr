@@ -231,8 +231,9 @@ enum SessionCommand {
     Mode {
         /// The registered role of the Codex pane.
         role: String,
-        /// write: the fleet_write profile (the state root and the project
-        /// are writable). plan: Read Only, as the pane launched.
+        /// write: the fleet_write profile (the state root, the task ledger
+        /// folder and the project are writable). plan: Read Only, as the pane
+        /// launched.
         #[arg(value_parser = ["write", "plan"])]
         mode: String,
         /// The maximum wait, in seconds, for the pane to be at its prompt.
