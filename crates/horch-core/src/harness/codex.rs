@@ -881,11 +881,6 @@ fn profile_sandbox(profile: &str) -> String {
 
 pub const FLEET_WRITE_PROFILE: &str = "fleet_write";
 
-/// The folders that horch itself writes from a Codex write pane: the state root, and the
-/// folder of the task ledger when it is outside the state root. The default ledger is
-/// `~/.horch/ledger.sqlite3`, so without that folder `horch ledger done` fails with
-/// "attempt to write a readonly database". The Claude harness grants the same 2 folders in
-/// its sandbox block (`claude.rs`).
 fn horch_write_roots(state_root: &Path, ledger_db: &Path) -> Vec<String> {
     let mut roots = vec![state_root.to_path_buf()];
     if let Some(dir) = ledger_db.parent() {
