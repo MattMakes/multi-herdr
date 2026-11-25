@@ -2008,6 +2008,8 @@ w3-codex: sandbox is Claude only; agent codex cannot honour it";
                 | "codex-swift-reviewer"
                 | "godot-qa-engineer"
                 | "godot-code-reviewer"
+                | "rust-qa-engineer"
+                | "rust-reviewer"
                 | "blender-qa"
                 | "video-critic"
                 | "root-cause-auditor" => Some(Phase::Validation),
@@ -2631,8 +2633,8 @@ w3-codex: sandbox is Claude only; agent codex cannot honour it";
             .collect();
         assert_eq!(
             covered.len(),
-            88,
-            "the rule should cover 88 claude teammates"
+            91,
+            "the rule should cover 91 claude teammates"
         );
         assert!(covered.contains(&"sound-engineer"), "{covered:?}");
         assert!(!covered.contains(&"audio-reviewer"), "{covered:?}");
