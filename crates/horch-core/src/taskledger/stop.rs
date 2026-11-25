@@ -345,6 +345,50 @@ pub fn stop_worker(
     })
 }
 
+pub const SELF_CLOSE_FAILED: &str =
+    "horch done recorded the worker as finished but could not close its pane, so the supervisor ended the agent";
+
+fn own_close_failed(conn: &Connection, worker_id: &str) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM stops
+         WHERE worker_id = ?1 AND requested_by = ?2 AND target = ?3 AND result = ?4)",
+        params![
+            worker_id,
+            StopRequester::SelfExit.as_str(),
+            StopTarget::Pane.as_str(),
+            StopResult::Error.as_str()
+        ],
+        |r| r.get(0),
+    )?)
+}
+
+pub fn end_agent_after_failed_close(
+    store: &Store,
+    worker_id: &str,
+    procs: &dyn Processes,
+    opts: &StopOptions,
+) -> Result<Vec<StopStep>> {
+    let w = workers::get(store.conn(), worker_id)?;
+    if w.status()?.is_live()
+        || live_identity(procs, w.agent_pid, w.agent_started).is_err()
+        || !own_close_failed(store.conn(), worker_id)?
+    {
+        return Ok(Vec::new());
+    }
+    let steps = stop_process(procs, StopTarget::Agent, w.agent_pid, w.agent_started, opts);
+    for s in &steps {
+        record(
+            store.conn(),
+            &w,
+            StopRequester::SelfExit,
+            SELF_CLOSE_FAILED,
+            s,
+            w.agent_started,
+        )?;
+    }
+    Ok(steps)
+}
+
 pub fn stop_cancelled(
     store: &mut Store,
     holders: &[String],
@@ -688,6 +732,63 @@ mod tests {
             )
             .unwrap();
         assert_eq!(agent_pid, 7);
+    }
+
+    fn after_done(failed_close: bool, status: &str) -> (tempfile::TempDir, Store, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("l.sqlite3");
+        let mut s = Store::open(&db).unwrap();
+        let id = worker(&mut s, 7);
+        s.conn()
+            .execute(
+                "UPDATE workers SET status = ?2 WHERE worker_id = ?1",
+                params![id, status],
+            )
+            .unwrap();
+        if failed_close {
+            let refused = Err(anyhow::anyhow!("herdr is unreachable"));
+            crate::taskledger::supervisor::closed_own_pane(&db, &id, "p1", &refused).unwrap();
+        }
+        (dir, s, id)
+    }
+
+    fn agent_rows(s: &Store) -> Vec<(String, String, String)> {
+        let mut q = s
+            .conn()
+            .prepare("SELECT requested_by, signal, result FROM stops WHERE target = 'agent'")
+            .unwrap();
+        let rows = q
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap();
+        rows.map(|r| r.unwrap()).collect()
+    }
+
+    #[test]
+    fn an_agent_left_running_after_a_failed_self_close_is_ended() {
+        let (_d, s, id) = after_done(true, "done");
+        let procs = Scripted::new(true, true, true);
+        let steps = end_agent_after_failed_close(&s, &id, &procs, &fast()).unwrap();
+        assert_eq!(*procs.sent.borrow(), vec![procid::Stop::Term]);
+        assert_eq!(steps.len(), 1);
+        assert_eq!(
+            agent_rows(&s),
+            [("self".to_string(), "TERM".to_string(), "sent".to_string())]
+        );
+        let again = end_agent_after_failed_close(&s, &id, &procs, &fast()).unwrap();
+        assert!(again.is_empty(), "{again:?}");
+        assert_eq!(agent_rows(&s).len(), 1);
+    }
+
+    #[test]
+    fn an_agent_is_not_ended_while_its_worker_works_or_closed_its_pane() {
+        for (failed_close, status) in [(false, "done"), (true, "working"), (true, "claiming")] {
+            let (_d, s, id) = after_done(failed_close, status);
+            let procs = Scripted::new(true, true, true);
+            let steps = end_agent_after_failed_close(&s, &id, &procs, &fast()).unwrap();
+            assert!(steps.is_empty(), "{status} {failed_close}: {steps:?}");
+            assert!(procs.sent.borrow().is_empty(), "{status} {failed_close}");
+            assert!(agent_rows(&s).is_empty(), "{status} {failed_close}");
+        }
     }
 
     fn pane_step(r: &StopReport) -> &StopStep {

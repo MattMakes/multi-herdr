@@ -8,6 +8,7 @@ use anyhow::Result;
 use rusqlite::params;
 
 use super::model::{Actor, EventKind, StopRequester, StopResult, StopTarget, WorkerStatus};
+use super::stop;
 use super::store::Store;
 use super::tasks;
 use super::util::{self, About};
@@ -173,6 +174,7 @@ fn beat(
             *session_known = w.session_id.is_some() && w.transcript_path.is_some();
         }
     }
+    stop::end_agent_after_failed_close(&s, worker_id, &stop::Os, &stop::StopOptions::default())?;
     Ok(())
 }
 
@@ -414,6 +416,46 @@ mod tests {
         );
         assert_eq!(row(&f), ("done".into(), None, Some(7)));
         assert_eq!(exited_text(&f), ["agent exited with code 7"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_supervisor_ends_an_agent_whose_done_could_not_close_the_pane() {
+        use std::os::unix::process::ExitStatusExt;
+        let f = fixture("done");
+        let mut agent = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        agent_started(&f.db, &f.worker, agent.id()).unwrap();
+        let refused = Err(anyhow::anyhow!("herdr is unreachable"));
+        closed_own_pane(&f.db, &f.worker, "p1", &refused).unwrap();
+        let checkins = start_checkins(
+            f.db.clone(),
+            f.worker.clone(),
+            Duration::from_millis(20),
+            Box::new(|| (None, None)),
+        );
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(agent.wait());
+        });
+        let status = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the supervisor did not end the agent")
+            .unwrap();
+        checkins.stop();
+        assert_eq!(status.signal(), Some(libc::SIGTERM));
+        let reason: String = f
+            .store
+            .conn()
+            .query_row(
+                "SELECT reason FROM stops WHERE target = 'agent' AND result = 'sent'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(reason, stop::SELF_CLOSE_FAILED);
     }
 
     #[test]

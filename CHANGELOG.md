@@ -4,6 +4,12 @@
 
 ## Unreleased
 
+- An `antigravity` worker in auto mode no longer leaves its pane open after
+  `horch done`. agy's sandbox refuses every Unix socket, so `horch done`
+  cannot reach herdr to close the pane. It now records the failed close in
+  the task ledger, and the worker's supervisor, which runs outside the
+  sandbox, ends the agent at its next check-in. The pane then closes.
+
 ## v0.5.3 - 2026-11-22
 
 - The video team grows from 7 to 10 seats, plus 1 Blender seat, so that a film
