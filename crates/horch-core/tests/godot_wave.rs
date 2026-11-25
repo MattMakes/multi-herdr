@@ -359,7 +359,7 @@ fn gdw_06_copied_failures_fail_only_above_the_baseline() {
 #[test]
 fn gdw_07_the_catalog_has_82_godot_skills_and_no_excluded_one() {
     let skills = godot_skills();
-    assert_eq!(skills.len(), 82, "{skills:?}");
+    assert_eq!(skills.len(), 83, "{skills:?}");
     for name in EXCLUDED {
         assert!(!skills.contains(name), "{name} is excluded");
     }
