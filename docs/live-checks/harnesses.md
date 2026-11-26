@@ -234,3 +234,27 @@ in print mode. `routing/quota_probe.rs:probe_google` runs it.
 Not covered: the reply when the login has expired or the quota is spent.
 `parse_agy_usage` treats any `status` other than `SUCCESS` as a probe error,
 so the pool is then `unknown` and the Argon teammates run on their fallback.
+
+## 2026-11-25: the sandbox and the transcript (agy 1.5.17)
+
+Host: macOS 27.2.1 (Darwin 27.2.0), arm64. 4 dummy turns on
+`gemini-3.8-flash` with `--sandbox --dangerously-skip-permissions`, in a
+scratch folder. A probe script tried a dummy Unix socket inside the folder,
+one under `~/.config/<scratch>/`, and a signal to a process outside the
+sandbox. The transcripts show that no command set `BypassSandbox`.
+
+| Check | Result | Evidence |
+|---|---|---|
+| socket in the workspace | DENIED | `connect`: errno 1, "Operation not permitted"; the server logged no connection |
+| socket outside the workspace | DENIED | the same, also with `--settings '{"permissions":{"allow":["write_file(<dir>)"]}}'` |
+| the `write_file` grant takes effect | PASS | with the grant a file write in `<dir>` succeeds; without it the write fails with "Operation not permitted" |
+| signal to an outside process | DENIED | `kill(pid, SIGUSR1)`: errno 1 |
+| SIGTERM ends `agy` | PASS | an interactive `agy` exited 0.1 s after SIGTERM, status 0 |
+| the transcript grows while the agent works | PASS | `~/.gemini/antigravity-cli/brain/<conversation>/.system_generated/logs/transcript.jsonl` grew by 1 line per step (909 to 4683 bytes in 30 s); `conversations/<conversation>.db` kept its size until the end |
+| the transcript is found by the session id | PASS | `last_conversations.json` named the scratch folder with the same conversation id as the `brain/` folder |
+
+So a sandboxed `horch done` cannot reach the herdr socket, and no permission
+rule opens a Unix socket: `unsandboxed(...)` rules are for business and
+enterprise accounts only (antigravity.google/docs/permissions.md, read
+2026-11-25). The worker supervisor runs outside the sandbox and ends the
+agent instead (`taskledger/stop.rs:end_agent_after_failed_close`).

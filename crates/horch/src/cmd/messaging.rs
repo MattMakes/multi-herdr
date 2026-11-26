@@ -998,6 +998,22 @@ impl DoneSteps for CliDone<'_> {
             record_id,
         )
     }
+
+    fn close_failed(&self, pane: &str, error: &anyhow::Error) {
+        let Some(wid) = super::taskledger::worker_id_opt(self.ctx) else {
+            return;
+        };
+        let failed = Err(anyhow::anyhow!("{error:#}"));
+        let noted = horch_core::taskledger::supervisor::closed_own_pane(
+            &self.ctx.paths.ledger_db,
+            &wid,
+            pane,
+            &failed,
+        );
+        if let Err(e) = noted {
+            eprintln!("horch done: the task ledger did not record the failed close ({e:#})");
+        }
+    }
 }
 
 fn claim_line(
@@ -1169,6 +1185,66 @@ mod tests {
             orchestrator::lock(&locks, "w1").unwrap().is_some(),
             "register frees the lock when it ends"
         );
+    }
+
+    #[test]
+    fn a_failed_close_of_a_ledger_worker_is_recorded_for_its_supervisor() {
+        use horch_core::runtime::MapEnv;
+        use horch_core::taskledger::runs::{self, NewRun};
+        use horch_core::taskledger::workers::{self, NewWorker};
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("ledger.sqlite3");
+        let mut store = horch_core::taskledger::Store::open(&db).unwrap();
+        let wid = store
+            .immediate(|tx| {
+                let run = runs::create(
+                    tx,
+                    dir.path(),
+                    &NewRun {
+                        slug: "r1".into(),
+                        ..Default::default()
+                    },
+                )?;
+                workers::insert(
+                    tx,
+                    &NewWorker {
+                        run_id: run.run_id,
+                        persona: "agy".into(),
+                        ..Default::default()
+                    },
+                )
+            })
+            .unwrap();
+        let rows = || -> i64 {
+            store
+                .conn()
+                .query_row(
+                    "SELECT COUNT(*) FROM stops WHERE requested_by = 'self'
+                     AND target = 'pane' AND result = 'error' AND reason LIKE '%unreachable%'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        };
+        let close_failed = |worker: Option<&str>| {
+            let mut env = MapEnv::new(dir.path())
+                .with("HOME", &dir.path().to_string_lossy())
+                .with("HORCH_LEDGER_DB", &db.to_string_lossy());
+            if let Some(id) = worker {
+                env = env.with("HORCH_WORKER_ID", id);
+            }
+            let ctx = RuntimeContext::from_env(&env).unwrap();
+            let steps = CliDone {
+                ctx: &ctx,
+                outgoing: std::cell::RefCell::new(None),
+                after_mark_done: &|| {},
+            };
+            steps.close_failed("p1", &anyhow::anyhow!("herdr is unreachable"));
+        };
+        close_failed(None);
+        assert_eq!(rows(), 0);
+        close_failed(Some(&wid));
+        assert_eq!(rows(), 1);
     }
 
     #[test]

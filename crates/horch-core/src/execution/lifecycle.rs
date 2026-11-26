@@ -86,6 +86,7 @@ pub trait DoneSteps {
     fn record_run(&self, _record_id: &str) -> Result<()> {
         Ok(())
     }
+    fn close_failed(&self, _pane: &str, _error: &anyhow::Error) {}
 }
 
 pub fn done(ws: &dyn WorkspaceClient, steps: &dyn DoneSteps, req: &DoneRequest) -> Result<()> {
@@ -225,7 +226,7 @@ fn close(ws: &dyn WorkspaceClient, steps: &dyn DoneSteps, req: &DoneRequest) -> 
         "horch: NOTE: fleet run row not written",
     );
 
-    close_pane(ws, pane, unreachable)
+    close_pane(ws, pane, unreachable).inspect_err(|e| steps.close_failed(req.pane, e))
 }
 
 fn lookup_pane(ws: &dyn WorkspaceClient, pane: &str) -> (Option<Pane>, Option<anyhow::Error>) {
@@ -1061,6 +1062,9 @@ mod tests {
             self.order.borrow_mut().push("unregister");
         }
         fn settle(&self, _: &str) {}
+        fn close_failed(&self, _: &str, _: &anyhow::Error) {
+            self.order.borrow_mut().push("close_failed");
+        }
     }
 
     fn claim_request<'a>(pane: &'a str, unlanded: Option<&'a str>) -> DoneRequest<'a> {
@@ -1542,6 +1546,7 @@ mod tests {
         close_pane: bool,
         at: Step,
         ran: std::cell::RefCell<Vec<String>>,
+        failed: std::cell::RefCell<Vec<String>>,
     }
 
     impl HerdrDown<'_> {
@@ -1581,6 +1586,9 @@ mod tests {
             self.ran.borrow_mut().push(format!("settle {workspace}"));
             self.reach(Step::Close);
         }
+        fn close_failed(&self, pane: &str, _: &anyhow::Error) {
+            self.failed.borrow_mut().push(pane.to_string());
+        }
     }
 
     #[test]
@@ -1596,6 +1604,7 @@ mod tests {
                         close_pane,
                         at,
                         ran: Default::default(),
+                        failed: Default::default(),
                     };
                     let req = DoneRequest {
                         record_id: "r1",
@@ -1608,6 +1617,8 @@ mod tests {
                     };
                     let case = format!("{at:?}, {workspace:?}, close_pane {close_pane}");
                     let got = done(&ws, &steps, &req);
+                    let failed = steps.failed.into_inner();
+                    assert_eq!(failed.is_empty(), got.is_ok(), "{case}: {failed:?}");
                     let ran = steps.ran.into_inner();
                     assert_eq!(ran[0], "mark_done finished", "{case}");
                     let known = workspace.is_some() || at == Step::Close;
