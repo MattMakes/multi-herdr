@@ -588,7 +588,7 @@ impl<'a> PaneWorker<'a> {
             eprintln!("warning: {w}");
         }
         let teammate = match &brief.resolved {
-            Some(t) => t.clone(),
+            Some(t) => with_persona(t.clone(), &roster),
             None => roster.require(&brief.teammate)?.clone(),
         };
         Ok((roster, teammate))
@@ -932,6 +932,15 @@ fn run_horch(env: &[(String, String)], args: &[&str]) -> Result<()> {
         bail!("horch {} failed: {status}", args.join(" "));
     }
     Ok(())
+}
+
+fn with_persona(mut teammate: Teammate, roster: &Roster) -> Teammate {
+    if teammate.persona.is_empty() {
+        if let Some(entry) = roster.get(&teammate.name) {
+            teammate.persona = entry.persona.clone();
+        }
+    }
+    teammate
 }
 
 #[cfg(test)]
@@ -2227,5 +2236,27 @@ mod tests {
             );
             assert!(!tmp.path().join("state").exists(), "no mailbox is written");
         }
+    }
+
+    #[test]
+    fn a_teammate_from_the_brief_gets_its_persona_back() {
+        let roster = Roster::builtin().unwrap();
+        let original = roster.require("codex-luna").unwrap().clone();
+        assert!(!original.persona.is_empty());
+        let json = serde_json::to_string(&original).unwrap();
+        let from_brief: Teammate = serde_json::from_str(&json).unwrap();
+        assert!(
+            from_brief.persona.is_empty(),
+            "the brief does not carry the persona"
+        );
+        assert_eq!(with_persona(from_brief, &roster).persona, original.persona);
+    }
+
+    #[test]
+    fn a_persona_that_the_brief_carries_is_kept() {
+        let roster = Roster::builtin().unwrap();
+        let mut teammate = roster.require("codex-luna").unwrap().clone();
+        teammate.persona = "Kept as it is.".into();
+        assert_eq!(with_persona(teammate, &roster).persona, "Kept as it is.");
     }
 }

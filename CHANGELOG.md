@@ -4,6 +4,14 @@
 
 ## Unreleased
 
+- Fix: a spawned worker gets its persona. `horch spawn` puts the resolved
+  teammate into the worker's brief file, and the persona is not serialized
+  (`#[serde(skip)]` on `Teammate::persona`). So the supervisor read the teammate
+  back with an empty persona, and `{persona}` in the `fleet-worker` base
+  rendered as nothing: each worker ran without the text of its teammate file,
+  for built-in and project teammates. This was so from the first commit. The
+  supervisor now takes the persona from the roster entry of the same name.
+
 ## v0.5.3 - 2026-11-22
 
 - The video team grows from 7 to 10 seats, plus 1 Blender seat, so that a film
