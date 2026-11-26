@@ -731,6 +731,48 @@ pathspec commit plus push, and `cleanup` is `not_applicable`.
    transaction, with `spec_ref` and `issue_url` set. A run stays `active`
    while the operator keeps adding ideas.
 
+### 5.5b The review gate and its notes file
+
+The operator reviews each spec and each `MAP.md` before the next step of
+5.5a starts. The orchestrator asks for the review. The result goes in a
+notes file:
+
+- Path: `ai_docs/plans/<slug>/review-<target>-<n>.md`. `<target>` is
+  `spec` or `map`. `<n>` is the review round, from 1.
+- Header: `Reviewed: <path>` and `Blob: <git blob sha of that file>`.
+- Then 1 line `Result: approved|annotated|dismissed`.
+- Then the notes, numbered `N1`, `N2`, and so on. Each note has a kind
+  (`change`, `question` or `delete`), a line range of the reviewed file,
+  the start of the first line in quotes (at most 80 characters), and the
+  operator's text.
+
+`approved` lets the next step start. `annotated` makes the orchestrator
+queue a revision task for the same writer, with the notes file path in the
+brief. `dismissed` is not an approval: the orchestrator asks again or stops.
+The orchestrator records each result in `decisions.md`. When the operator
+answers in chat, the orchestrator writes the notes file in the operator's
+words. The writer answers each note under a "Revision <n>" section of its
+output: "applied", or "not applied: <reason>".
+
+Example, `ai_docs/plans/retry-limit/review-spec-1.md`:
+
+```markdown
+# Review: spec, round 1
+
+Reviewed: docs/specs/retry-limit.md
+Blob: 3f2a9c41d07e5b8a1c6e2f90d4b7a3c5e8f1d2a6
+Result: annotated
+
+N1 change L12-L14 "As an operator, I want the retry limit in the con"
+Read the limit from the config file only. Drop the environment variable.
+
+N2 question L40-L40 "A negative limit means retry forever."
+Is "retry forever" needed? I expect a refusal instead.
+
+N3 delete L58-L63 "## Further Notes"
+Remove this section. It repeats the Solution.
+```
+
 ### 5.6 Done and "is the run done?"
 
 - `ledger done` writes `tasks.summary`, `status = done`, `finished_at`;

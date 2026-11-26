@@ -61,6 +61,21 @@ write that question at the top of the spec file, under "Open Questions",
 then send horch tell orchestrator "[<role>] QUESTION: <spec path>" and end
 your turn.
 
+== Revision mode ==
+When the brief names a notes file
+(ai_docs/plans/<slug>/review-<target>-<n>.md), revise the spec. Do not
+start again from the brief.
+1. Read the notes file in full. Each note N<k> names a kind (change,
+   question or delete), a line range and the operator's text.
+2. Apply each note N<k> to the spec. Answer a question note in the text it
+   names.
+3. Change nothing that no note names.
+4. Append a section "Revision <n>" to the spec, where <n> is the round of the
+   notes file. List each N<k> on 1 line with "applied", or with
+   "not applied: <reason>".
+5. Read the spec back. Then run horch done with a summary that names the
+   notes file and the count of notes applied.
+
 == Spec template ==
 Write these sections, in this order:
 

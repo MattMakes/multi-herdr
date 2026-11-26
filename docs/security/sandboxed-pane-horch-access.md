@@ -530,6 +530,258 @@ Limit: a steered controller still has `full` access. It can unset
 `horch spawn` as written. C4 (caller identity from herdr, not the
 environment) and a `report`-like mode for the controller close the rest.
 
+## Git writes from a sandboxed pane (T-9, run `external-imports`)
+
+Date: 2026-11-24. horch 0.5.3, Claude Code 2.1.331, agy 1.5.16, backend hc.
+
+### Paths a sandboxed worker can write
+
+Claude, `horch_access: full` (`overlay_horch_paths`, `harness/claude.rs`):
+
+| path | access | why |
+|---|---|---|
+| the persona's own `sandbox.filesystem.allowWrite` entries | write | the persona's work folder |
+| state root (`~/.local/state/horch`), except `skill-bundles/` | write | mail, briefs, run files of `horch` commands |
+| ledger folder (`~/.horch`) | write | `horch ledger progress`, `claim`, `finish` write the ledger |
+| git common directory (`git rev-parse --git-common-dir` in the project) | write | objects and refs of a commit |
+| `<repository root>/.worktrees` | write, and `permissions.additionalDirectories` | the files of the ledger worktrees |
+| the roster folder and the skill bundle | read only | the pane reads them; it must not change them |
+| `<state root>/messages` | Read tool (`permissions.additionalDirectories`), Edit and Write tools denied | the pane reads a truncated horch message from its spool file; Bash already reads the state root |
+
+Claude, `horch_access: report`: only the persona's own entries. The report
+socket is the only way out (C1 to C3).
+
+agy: horch adds no path. `--sandbox` gives write access to the agy
+workspace only.
+
+### What the harness blocks after these grants
+
+The harness rules win over the grants above:
+
+- Claude Code 2.1.331 always denies writes to `<cwd>/.git/worktrees`,
+  `.git/config`, `.git/hooks`, `.git/commondir`, `.git/modules` and
+  `.git/info/exclude`. `allowWrite` cannot remove the deny. Only the
+  admin folder of a worktree that is the session's cwd, or that is in
+  `permissions.additionalDirectories` when the sandbox is built, is exempt.
+- agy 1.5.16 `--sandbox` makes the `.git` folder of every repository read
+  only. Its changelog says so.
+
+### Effect on the 4 ledger commands
+
+| command | Claude sandbox | agy sandbox |
+|---|---|---|
+| `horch ledger worktree new` (`git worktree add`) | fails: creates `.git/worktrees/<name>` | fails: writes `.git/refs/heads/<branch>.lock` |
+| `git add`, `git commit` in a ledger worktree | fails unless the worktree is an exempt worktree: writes `.git/worktrees/<name>/index.lock` | fails: `.git` is read only |
+| `horch ledger finish` | the detached run is a child of the sandboxed Bash, so land and cleanup fail on the same paths | same |
+
+### Root cause
+
+- Claude: the harness denies `.git/worktrees` itself. horch already opens
+  the git common directory, so no grant can fix it.
+- agy: the harness makes `.git` read only, and horch passes agy no path.
+- The hc launch path is not the cause. The live `skill-importer-1` settings
+  list the git common directory and `.worktrees` in `allowWrite`.
+
+### Other defects found
+
+- A failed `git worktree add -b` left the new branch, so the next attempt
+  failed with "a branch named ... already exists". Fixed in T-9:
+  `worktree_ops::add_worktree` deletes the branch with
+  `git update-ref -d refs/heads/<branch> <commit>` when git made it and the
+  add failed. `finish::create_worktree` and `worktree_ops::create` use it.
+- A sandboxed Claude pane could not open a spooled message
+  (`<state root>/messages/<workspace>/*.md`) with the Read tool.
+  `blockReadsOutsideWorkingDirectories` is on, and the folder was in
+  `sandbox.filesystem.allowRead` only. A truncated orchestrator message then
+  stopped `skill-importer-1` on a permission prompt. Fixed in T-9 for
+  `horch_access: full` (see the table above). Still open: a `report` pane has
+  no state root, so it cannot read a spooled message at all. See "Broker
+  design (O1)", "Related: spooled messages".
+- Open, for a later run: in the Claude sandbox of `skill-importer-1` (hc
+  backend), hc `pane_get` and `horch tell <worker>` fail with "Operation not
+  permitted (os error 1)"; `horch tell orchestrator` works.
+
+Status: the 4 ledger commands still fail in a sandboxed pane. The
+workaround for run `external-imports` is O3: the orchestrator makes the
+worktrees and the commits. The target design is O1 below. O2
+(`sandbox.excludedCommands` for `horch ledger` and `git`) is rejected: an
+unsandboxed `git` with agent arguments (`git -c core.pager=...`) leaves the
+sandbox.
+
+## Broker design (O1)
+
+Not built. This section is the input for the O1 tickets.
+
+### Goal
+
+A sandboxed worker in a ledger run creates its worktree, commits, lands and
+drops worktrees. The unsandboxed `horch worker` parent of the pane does
+every `.git` write for it. The agent never runs code outside the sandbox,
+and the parent never runs code from the worktree.
+
+### Who gets a broker
+
+The parent starts a broker when all of these are true:
+
+- the brief has a ledger worker id (`brief.worker_id`);
+- the teammate has a `sandbox:` block (Claude) or runs agy with `--sandbox`;
+- the teammate has `horch_access: full`. A `report` pane does no ledger work.
+
+### Socket contract
+
+- Path: `<broker root>/<record id>.sock`. The broker root is a sibling of
+  the state root (`~/.local/state/horch-broker`), not inside it. A `full`
+  pane can connect to every socket under the state root, so a socket there
+  would let a pane reach the broker of another pane.
+- Folder mode 0700, socket mode 0600. The parent binds the socket before the
+  agent starts and removes it when the agent exits, as for the C1 report
+  socket (`messaging/report.rs`, `execution/lifecycle.rs`).
+- The launch adds only this 1 path to `network.allowUnixSockets` and sets
+  `HORCH_BROKER_SOCKET` to it.
+- Framing: 1 JSON object on 1 line per connection, at most 16384 bytes, read
+  timeout 10 s. The parent sends 1 JSON reply line. The parent serves 1
+  request at a time.
+- Request: `{"verb": "<verb>", ...fields}`. Unknown verbs and unknown fields
+  are refused (`deny_unknown_fields`).
+- Reply: `{"ok": true, ...result}` or `{"ok": false, "error": "<text>"}`.
+- Identity: the socket is the identity. The parent acts for the worker id,
+  task and worktree of its own brief and ledger rows. A request never names
+  a worker, a task, a run or a path outside its worktree.
+
+### Requests
+
+| verb | fields | the parent does | reply fields |
+|---|---|---|---|
+| `worktree_new` | `name`, optional `from` | `worktree_ops::create` for its own worker | `path`, `branch`, `base` |
+| `worktree_drop` | `name`, `reason`, `keep_branch` | `worktree_ops::drop_worktree` in its own run | `status` |
+| `commit` | `message`, `paths` (list) | `git add -- <paths>` and `git commit -m <message>` in its own open worktree | `commit` |
+| `land_rebase` | none | rebase its own worktree branch on the base | `head` |
+| `land_advance` | `tested` (commit id) | fast-forward the base to `tested` | `landed` |
+| `worktree_remove` | none | remove its own landed worktree (cleanup step) | none |
+
+The finish steps that run code (`check`, `recheck`, the check inside
+`land`) stay in the agent's sandbox. With `HORCH_BROKER_SOCKET` set,
+`horch ledger finish` runs them as today and calls `land_rebase`, then the
+check, then `land_advance`, then `worktree_remove`. The `pr` step is out of
+scope: it needs `gh` and the network.
+
+### What the parent validates
+
+Every request:
+
+- size, JSON shape and verb as above;
+- the worker still owns its task (`tasks.current_worker_id`), and the task
+  is not done or cancelled.
+
+Per field:
+
+- `name`: `valid_name` (1 to 60 letters, digits, `-`, `_`).
+- `from`: a ref that `git rev-parse --verify` resolves, with no leading `-`
+  and no newline.
+- `message`: not empty after trim, at most 4096 bytes, no NUL.
+- `paths`: 1 to 1000 entries. Each is relative, has no `..` part, no leading
+  `-`, is not `.git` and does not start with `.git/`. After the parent
+  resolves symlinks, each path is inside the worktree.
+- `tested`: equals the head of the recorded worktree branch, descends from
+  the current base, and the base can fast-forward to it.
+
+Git execution for every request:
+
+- The parent takes the worktree path, branch and git common directory from
+  the ledger row, never from the worktree. It runs git with
+  `--git-dir=<common>/worktrees/<admin name>` and `--work-tree=<path>`, and
+  first checks that `<common>/worktrees/<admin name>/gitdir` names
+  `<path>/.git`. The `<path>/.git` file is in the writable worktree, so the
+  agent can point it at a folder with its own `config`.
+- The parent adds `-c core.hooksPath=<empty folder>`,
+  `-c core.fsmonitor=false` and `-c protocol.allow=never`, and never passes
+  `--recurse-submodules`.
+- The parent runs git with its own environment, with every `GIT_*` variable
+  removed. It never uses the agent's environment.
+- Paths go after `--`. No agent text becomes a git option.
+
+### Threat model
+
+Attacker: a steered sandboxed worker with `horch_access: full`, same user id
+as the operator.
+
+| threat | mitigation | residual |
+|---|---|---|
+| code runs outside the sandbox through git in the parent (hooks, `core.fsmonitor`, filters, a forged `.git` file) | hooks off, fsmonitor off, explicit `--git-dir` from the ledger with the back-pointer check, no submodules, no agent environment | filter and diff drivers need config; both harnesses deny `.git/config` writes. A new git feature that runs a program from a tracked file needs a new `-c` switch |
+| the parent runs worktree code | the broker never runs a check, a build or a script; those stay in the sandbox | none |
+| a pane acts on another worker's task or branch | 1 socket per record outside the state root; identity from the socket; only rows of its own worker | a `full` pane can still write the ledger (R4) |
+| a pane moves the run branch or `main` | `land_advance` fast-forwards only the base of its own task, only to the tested head of its own branch | today the git common directory is in `allowWrite`, so a pane can move refs directly. O1 removes the common directory from `allowWrite`; `.worktrees` stays |
+| a pane forges a passed check | none in the broker | check evidence is in the ledger folder, which a `full` pane can write (R4). C4 or a `report`-like ledger mode closes it |
+| argument injection | field checks above, paths after `--` | none |
+| denial of service | size limit, read timeout, 1 request at a time | a pane can block only its own broker |
+
+### Files that change
+
+- `crates/horch-core/src/messaging/broker.rs` (new): request and reply
+  types, `handle(line, &Identity, &Executor) -> Reply`, field validation,
+  the socket server. Share the server loop with `messaging/report.rs`.
+- `crates/horch-core/src/execution/lifecycle.rs`: start and stop the broker
+  next to `start_report_server`; the executor calls the ledger functions in
+  process.
+- `crates/horch-core/src/harness/launch.rs`: `LaunchEnv::broker_socket`;
+  set `HORCH_BROKER_SOCKET`.
+- `crates/horch-core/src/harness/claude.rs`: add the broker socket to
+  `allowUnixSockets`; with a broker, leave the git common directory out of
+  `allowWrite`.
+- `crates/horch-core/src/harness/antigravity.rs`: pass the socket variable;
+  open the socket if agy needs a setting for it.
+- `crates/horch-core/src/taskledger/git.rs`: a hardened runner with an
+  explicit git dir and work tree, the `-c` switches and a clean environment.
+- `crates/horch-core/src/taskledger/worktree_ops.rs`,
+  `crates/horch-core/src/taskledger/finish/mod.rs`,
+  `crates/horch-core/src/taskledger/finish/land.rs`: use the hardened runner;
+  split land into rebase, check and advance.
+- `crates/horch/src/main.rs`, `crates/horch/src/cmd/taskledger.rs`,
+  `crates/horch/src/cmd/worktree.rs`,
+  `crates/horch/src/cmd/taskledger_finish.rs`: client mode when
+  `HORCH_BROKER_SOCKET` is set; a new `horch ledger commit -m <message> --
+  <paths>` subcommand.
+- The worker prompt text that tells a worker to commit
+  (`crates/horch-core/src/prompts.rs` and its golden tests): a sandboxed
+  worker commits with `horch ledger commit`.
+- This document and a live check in `docs/live-checks/`.
+
+### Test seams
+
+- `broker::handle` is a pure function with a fake executor: size, shape,
+  unknown verb, unknown field, each field rule, a refused request runs
+  nothing.
+- Path validation: `..`, an absolute path, a leading `-`, `.git/`, and a
+  symlink that leaves the worktree are refused.
+- Hardened runner, with a temporary repository and linked worktree:
+  - a `pre-commit` hook that writes a marker file leaves no marker;
+  - a worktree `.git` file that points at a folder whose `config` sets
+    `core.fsmonitor` to a marker command is refused, and no marker appears;
+  - a `GIT_DIR` in the caller's environment is ignored.
+- Land: `land_advance` refuses a non-fast-forward, a commit other than the
+  branch head, and a branch other than the recorded branch.
+- Server: socket mode 0600, folder 0700, the socket is gone after the agent
+  exits (copy the report socket tests).
+- Claude overlay: with a broker socket, `allowUnixSockets` gains only that
+  path, and `allowWrite` has `.worktrees` but not the git common directory.
+- CLI: with `HORCH_BROKER_SOCKET` pointing at a fake server, `horch ledger
+  worktree new` sends 1 request and runs no git.
+- Live check: a sandboxed Claude pane and a sandboxed agy pane each run
+  `horch ledger worktree new`, `horch ledger commit` and `horch ledger
+  finish` with no orchestrator help.
+
+### Open questions for the tickets
+
+- Can an agy `--sandbox` command connect to a Unix socket, and which agy
+  setting allows it? Check before the agy ticket.
+- Does agy let a sandboxed command read `<state root>/messages`?
+
+### Related: spooled messages
+
+A `report` pane cannot read `<state root>/messages`. Add a `message` verb to
+the report socket that returns the text of 1 spooled message addressed to
+the pane's role, or do not truncate messages to a `report` pane.
+
 ## Ranked list
 
 | rank | risk | severity | change | when |

@@ -26,6 +26,43 @@ Pattern: `--{category}-{item}-{variant}-{state}`.
 
 shadcn/ui uses bare semantic names (`--background`, `--primary`). Keep that convention in shadcn projects; use the `--color-*` prefix for primitives.
 
+## Colour naming grammar
+
+A project uses 1 naming system. A shadcn project keeps its names (`--primary`, `--primary-foreground`) and does not adopt the grammar below. A new non-shadcn project can use it. Never run both in 1 project.
+
+| Form | Pattern | Example |
+|---|---|---|
+| Paint | `--color-<paint>-<role>`; paint is `text`, `icon`, `background`, `border`; role is an emphasis (`primary`, `secondary`, `disabled`, `emphasized`), an intent, a surface name, a hue name or `control` | `--color-text-secondary`, `--color-border-control` |
+| Intent | `--color-<intent>`; intents are `accent`, `neutral`, `info`, `success`, `warning`, `error` | `--color-success` |
+| Variant | A paint or intent name plus 1 suffix: `-muted` (pale), `-emphasized` (strong), `-hover`, `-pressed`, `-inverted` | `--color-accent-muted` |
+| Content | `--color-on-<fill>`; fill is an intent, a variant, `dark` or `light`. A `-muted` fill pairs with `--color-on-<intent>-muted` | `--color-on-accent` |
+| Domain | `--color-<domain>-<name>` for a separate layer such as charts or code syntax | `--color-chart-1` |
+
+Role-less utility names allowed: `border`, `overlay` (with `-hover`, `-pressed`), `shadow`, `skeleton`, `track`.
+
+- Do not add a group word (`status`), a second paint word (`foreground`) or a paint suffix (`-text`).
+- A role that changes by mode is 1 token with a `[light, dark]` pair (CSS `light-dark()`). Never make `-light` and `-dark` names.
+- A utility alias (Tailwind key) is a projection of a token. It never adds a CSS variable.
+- A name is either portable or local to 1 theme, never both.
+
+Map to the current names:
+
+| Grammar | Current name |
+|---|---|
+| `--color-background-page` | `--background` |
+| `--color-text-primary` | `--foreground` |
+| `--color-text-secondary` | `--muted-foreground` |
+| `--color-background-muted` | `--muted` |
+| `--color-accent` / `--color-on-accent` | `--primary` / `--primary-foreground` |
+| `--color-accent-muted` / `--color-on-accent-muted` | `--accent` / `--accent-foreground` |
+| `--color-error` / `--color-on-error` | `--destructive` / `--destructive-foreground` |
+| `--color-<intent>` / `--color-on-<intent>` | `--<intent>` / `--<intent>-foreground` |
+| `--color-<intent>-muted` / `--color-on-<intent>-muted` | `--<intent>-muted` / `--<intent>-muted-foreground` |
+| `--color-text-<intent>` | `--<intent>-text` |
+| `--color-border-<intent>` | `--<intent>-border` |
+| `--color-border-control` | `--input` |
+| `--color-border-focus` | `--ring` |
+
 ## File layout
 
 Either one file with ordered sections, or one file per layer:
@@ -42,21 +79,18 @@ Either one file with ordered sections, or one file per layer:
 
 ### Color ramps
 
-Generate 11 steps per hue (50, 100 ... 900, 950). Prefer OKLCH: keep hue fixed, step lightness evenly, reduce chroma at both ends. One neutral ramp per product; do not mix a cool gray and a warm gray.
+Generate ramps with `python3 -I scripts/palette.py ramp` (see `palette-generation.md`). A ramp has 1 colour per tone stop: stops 0, 5, ... 100 (21 stops) or 0, 10, ... 100 (compact, 11 stops). A tone is CIE L*, so the same stop has the same lightness in every family. Stop 0 is `#000000` and stop 100 is `#ffffff`. Name a primitive `--color-<family>-<stop>`: `--color-accent-50`. Dark mode has its own ramp per family with the same lightness and 15 percent less chroma.
+
+One neutral ramp per product; do not mix a cool gray and a warm gray. Tint it with `--gray-tint` (`none`, `warm`, `cool`, `from-seed`). Hand-made ramps are allowed as seeds. A project that keeps 50 to 950 names maps each name to 1 tone stop and still runs `palette.py check`.
 
 ```css
 :root {
-  --color-gray-50: #f9fafb;  --color-gray-100: #f3f4f6; --color-gray-200: #e5e7eb;
-  --color-gray-300: #d1d5db; --color-gray-400: #9ca3af; --color-gray-500: #6b7280;
-  --color-gray-600: #4b5563; --color-gray-700: #374151; --color-gray-800: #1f2937;
-  --color-gray-900: #111827; --color-gray-950: #030712;
-  --color-blue-400: #60a5fa; --color-blue-500: #3b82f6; --color-blue-600: #2563eb;
-  --color-blue-700: #1d4ed8;
-  --color-red-600: #dc2626;  --color-green-600: #16a34a; --color-amber-500: #f59e0b;
+  --color-neutral-95: #f1f1f1;  --color-neutral-50: #777777;  --color-neutral-10: #1b1b1b;
+  --color-accent-50: #366ee6;   --color-accent-90: #d4e3ff;   --color-accent-10: #001053;
 }
 ```
 
-Hex, HSL, and OKLCH all work (OKLCH example: `oklch(0.55 0.22 264)`). Pick one format per project.
+Hex, HSL, and OKLCH all work (OKLCH example: `oklch(0.55 0.22 264)`). Pick one format per project; the script writes hex.
 
 ### Type scale
 
@@ -149,7 +183,39 @@ Add `primary-hover` and `primary-active` only if the design cannot use an opacit
 }
 ```
 
-Measured: `primary` on white 5.17:1; `muted-foreground` on `muted` 6.87:1 (light) and 5.78:1 (dark); `input` on `background` 4.63:1 (light) and 4.16:1 (dark); `ring` on `background` 3.52:1 (light). `gray-400` on `gray-50` is only 2.43:1: never use it for text or input borders.
+Measured: `primary` on white 5.16:1; `muted-foreground` on `muted` 6.87:1 (light) and 5.78:1 (dark); `input` on `background` 4.63:1 (light) and 4.16:1 (dark); `ring` on `background` 3.52:1 (light). `gray-400` on `gray-50` is only 2.43:1: never use it for text or input borders.
+
+## Role derivation
+
+`palette.py ramp` applies these rules. Stops are `[light / dark]`. If a stop is not in the layout, use the nearest stop; on a tie use the one nearer 50.
+
+| Role | Rule |
+|---|---|
+| `background`, `muted`, `secondary` | neutral `[95 / 10]` |
+| `card`, `popover` | neutral `[100 / 10]` |
+| surface (raised page area) | neutral `[100 / 15]` |
+| `foreground` | neutral `[0 / 100]` |
+| inverted surface (tooltip, toast) | neutral `[10 / 95]` |
+| `border` | neutral 0 at alpha 20/255 (light), neutral 100 at alpha 26/255 (dark), composited to hex |
+| hover and pressed overlay | neutral `[0 / 100]` at alpha 13/255 and 26/255 |
+| `muted-foreground` | start neutral `[30 / 65]`, need 4.5:1 on every surface |
+| `input` (control edge) | start neutral `[60 / 50]`, need 3:1 on every surface |
+| `primary`, status fill | light: the seed. Dark: the seed if its content reaches 4.5:1 and it reaches 3:1 on every dark surface; else the stop nearest 70 that does. |
+| `primary-foreground`, `<status>-foreground` | first choice neutral 100 (light) or 5 (dark); warning prefers 5; the other if the first fails 4.5:1; then the ramp end |
+| `accent` (tint) | accent ramp `[85 / 30]` |
+| `<status>-muted` (tint) | status ramp 85 (light); stop 75 at alpha 61/255 (dark), composited over the page |
+| `<status>-text` | start at the seed stop (exact fill) or `[45 / 80]`, need 4.5:1 on every surface and on the tint |
+| `<status>-muted-foreground` | start `[25 / 80]`, need 4.5:1 on the tint |
+| `<status>-border` | start `[80 / 65]`, need 3:1 on every surface |
+| `ring` | start at the seed stop, need 3:1 on every surface |
+
+Stop search: order all stops by distance from the start; on a tie take the one that moves toward more contrast (darker in light, lighter in dark). Take the first stop whose lowest ratio on all grounds meets the need. If none does, take the best and report a failure.
+
+"Every surface" is page, surface and card. A light fill under 3:1 on a light surface gets a warning with the first darker colour that passes (RGB scaled by `1 - i/100`). Never invent a hue for a gray seed: if its chroma is under 0.02, treat it as neutral.
+
+If a theme sets only status fills, derive their content per mode and never create a fill. Content on a fill: the theme's light or dark content colour, whichever contrasts more; below 4.5:1, `#fff` or `#000`. Status text: keep the fill hue and chroma, solve for lightness to reach 4.58:1 (4.5 plus a 0.08 margin) on surface and card, 32 bisection steps, and lower chroma by 10 percent per step until it is in gamut. A status fill or text colour needs OKLCH chroma 0.03 or more and lightness 0.20 to 0.95; else use the base theme's hue. Derive a role again when the theme sets a colour the role is measured against. A value the theme sets always wins.
+
+Secondary text on a tinted ground (accent tint, neutral track, coloured card): search the neutral ramp for 4.5:1 on that ground over every surface and under the hover overlay. Emit it as a per-component override, not a new token.
 
 ## Dark mode rules
 
@@ -163,25 +229,40 @@ Measured: `primary` on white 5.17:1; `muted-foreground` on `muted` 6.87:1 (light
 
 ## Contrast check
 
-WCAG 2.x ratio. Compute it; do not estimate it.
+WCAG 2.2 ratio. Compute it; do not estimate it: `python3 -I scripts/palette.py contrast '#2563eb' '#ffffff'` prints `5.16`. A ratio is truncated to 2 decimals, never rounded up: 4.499 shows as 4.49 and fails 4.5.
 
-```js
-// node -e, or a browser console
-const lin = c => { c /= 255; return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
-const L = hex => { const n = parseInt(hex.slice(1), 16);
-  return 0.2126 * lin(n >> 16) + 0.7152 * lin((n >> 8) & 255) + 0.0722 * lin(n & 255); };
-const ratio = (a, b) => { const [x, y] = [L(a), L(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
-console.log(ratio('#2563eb', '#ffffff').toFixed(2)); // 5.17
-```
-
-| Element | AA | AAA |
+| Pair | Need | WCAG |
 |---|---|---|
-| Normal text | 4.5:1 | 7:1 |
-| Large text (24 px, or 18.66 px bold) | 3:1 | 4.5:1 |
-| UI boundaries, icons that carry meaning, focus rings | 3:1 | - |
+| Primary and secondary text on every surface | 4.5:1 | 1.4.3 |
+| Content on the accent fill and on each status fill | 4.5:1 | 1.4.3 |
+| Content on each status tint, tint drawn over the surface | 4.5:1 | 1.4.3 |
+| Role text on every surface and on its tint | 4.5:1 | 1.4.3 |
+| Secondary text on each coloured tint | 4.5:1 | 1.4.3 |
+| Strong fill against every surface (fill boundary) | 3:1 | 1.4.11 |
+| Secondary icon, role icon, status border on every surface | 3:1 | 1.4.11 |
+| Form-control edge against surface and page | 3:1 | 1.4.11 |
+| Focus ring against every surface | 3:1 | 1.4.11, 2.4.13 |
+| Large text (24 px, or 18.66 px bold) | 3:1 (AAA 4.5:1) | 1.4.3 |
 | Disabled controls | exempt | - |
 
-For a translucent color, composite it over the real background first, then measure. Record results in a table: pair, mode, ratio, pass or fail.
+For a translucent colour, composite it over the real ground (`top * alpha + under * (1 - alpha)` per channel), round to 8-bit hex, then measure. Run `palette.py check` on the token file; it prints 1 line per pair.
+
+## Scale formulas
+
+- Type: size at step `s` (-5 to 6) is `round(base * ratio^s)` px, written as rem (`px / 16`, 4 decimals). Headings h1 to h6 use steps 3, 2, 1, 0, -1, -2. Body, label and code use 0, large text 1, supporting text -1, display sizes 4, 5, 6.
+- Line height for size `f` px: target factor 1.5 when `f < 20`, 1.4 when `f < 32`, else 1.25. Snapped height is `max(4 * round(f * target / 4), 4 * ceil((f + 4) / 4))`. Leading is snapped height over `f`. Example: base 16, ratio 1.25, h1 is 31 px, 44 px high, leading 1.4194.
+- Radius from `base` and `multiplier`: inner `round(base * mult)`, element `2x`, container `3x`, page `7x` px; none 0; full 9999px.
+- Spacing is rem: step `N` is `N * 0.25rem`. A px step is allowed only as a documented exception.
+- Motion: tempo is clamped to 0.75 to 1.5 and multiplies every duration. A character (`crisp`, `standard`, `expressive`) sets the easing curves. An explicit duration wins over tempo, an explicit token over both. Busy-indicator loops ignore tempo.
+- Adaptation rules are ordered `{when, value}` pairs. `when` combines a width bound (sm 640, md 768, lg 1024, xl 1280, 2xl 1536 px), pointer (`coarse`, `fine`), contrast preference and reduced motion. A rule compiles to 1 media query. A rule cannot turn reduced motion off for the whole theme.
+
+## Theme inheritance
+
+- A child names 1 base theme. The base must be a fully built theme; anything else is an error, never a partial theme.
+- The built child is complete and flat. Its stylesheet works without the base stylesheet.
+- Precedence, lowest first: resolved base; scale-generated values (colour, type, radius, motion); palette role tokens; explicit tokens; component typography, then palette component overrides, then explicit component overrides; surface overrides; local tokens; icon registries. A later layer wins token by token, whatever the key order.
+- Component overrides merge deeply: restating 1 property keeps the other inherited properties of the same component. Motion inherits field by field. Adaptation rules keep order: inherited first, then local.
+- A role the base sets counts as set in the child. A role the base only derived is derived again from the child's colours.
 
 ## Token JSON (W3C DTCG)
 

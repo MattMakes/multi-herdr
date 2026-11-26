@@ -94,7 +94,8 @@ def read_json(path: Path):
 
 MODE_ENV = "SKILL_INTAKE_MODE"
 HORCH_ENV = "SKILL_INTAKE_HORCH"
-FLEET_VARS = ("HORCH_ROLE", "HORCH_RECORD_ID", "HERDR_PANE_ID")
+FLEET_VARS = ("HORCH_ROLE", "HORCH_RECORD_ID")
+PANE_VARS = ("HERDR_PANE_ID", "HC_TERMINAL_ID")
 VERSION_TIMEOUT = 5  # seconds
 
 
@@ -104,15 +105,12 @@ def horch_bin() -> str:
 
 
 def mode() -> str:
-    """The mode rule of spec 6.2: `fleet` when HORCH_ROLE, HORCH_RECORD_ID and
-    HERDR_PANE_ID are set and not empty and `horch --version` exits 0 within
-    5 seconds; else `plain`. SKILL_INTAKE_MODE=fleet|plain overrides it."""
     forced = os.environ.get(MODE_ENV)
     if forced:
         if forced not in ("fleet", "plain"):
             raise TaskError(f"{MODE_ENV} must be fleet or plain, not {forced!r}")
         return forced
-    if not all(os.environ.get(v) for v in FLEET_VARS):
+    if not (all(os.environ.get(v) for v in FLEET_VARS) and any(os.environ.get(v) for v in PANE_VARS)):
         return "plain"
     try:
         r = subprocess.run([horch_bin(), "--version"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,

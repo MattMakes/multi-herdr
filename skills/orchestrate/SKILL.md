@@ -10,15 +10,16 @@ Direct independent workers. Each unit has 1 owner, precise instructions and evid
 ## 0. Run the work through the task ledger
 
 1. Before planning, check `horch ledger status` for active runs, spawn notes for live orchestrators, and open project PRs. Read `horch ledger unfinished` and discuss each item with the operator. Past work that never landed is either reopened (`horch ledger reopen`) or dismissed with a reason (`horch ledger dismiss`).
-2. Vet each idea with the operator before it becomes work. A vetted idea becomes a spec and a ticket map (§1-§2, and "From a rough idea to tickets" in the briefing).
-3. Create the run once: `horch ledger run new <slug> [--check "<cmd>"]`. It makes the run branch every task lands on. A task with no check lands only if its ticket says `**Check:** none`.
-4. Check the map with `horch ledger add-map --dry-run <MAP.md>`, then queue it with `horch ledger add-map <MAP.md>`. The ledger works out what can run together.
-5. Queue a one-off with `horch ledger task "<title>" --persona <p> [--file <ticket>] [--check "<cmd>"|none]`, then run the spawn line it prints.
-6. Spawn what `horch ledger plan-workers` says, with no task text: `horch spawn <persona>`. Each worker claims its own task. Never type a task into a worker.
-7. End your turn. horch wakes you for questions, stalls, deaths, newly startable tasks and a settled run. `horch ledger status` exits 0 only when the run is settled.
-8. A worker is done only after `horch ledger finish` passed every step of its run (set by --verify; full: check, comment-sweep, code-sweep, complexity-sweep, recheck, land, the PR and a safe cleanup). Accept no DONE that skipped 1. finish spawns the code-sweep reviewers itself; do not spawn them.
-9. Stop a worker only with `horch ledger stop <worker> "<reason>"`. It signals the PIDs the ledger recorded, never a name or a pattern.
-10. Close a settled run: `horch ledger run gate`, the operator merges the run PR, then `horch ledger run close [--pr-declined|--abandon "<reason>"]`.
+2. Vet each idea with the operator. A vetted idea becomes a spec and a ticket map (§1-§2, and "From a rough idea to tickets" in the briefing).
+3. Gate each spec and `MAP.md` by its "Review gate": `annotated` queues a revision. `dismissed` is not approval.
+4. Create the run once: `horch ledger run new <slug> [--check "<cmd>"]`. It makes the run branch every task lands on. A task with no check lands only if its ticket says `**Check:** none`.
+5. Check the map with `horch ledger add-map --dry-run <MAP.md>`, then queue it with `horch ledger add-map <MAP.md>`. The ledger works out what can run together.
+6. Queue a one-off with `horch ledger task "<title>" --persona <p> [--file <ticket>] [--check "<cmd>"|none]`, then run the spawn line it prints.
+7. Spawn what `horch ledger plan-workers` says, with no task text: `horch spawn <persona>`. Each worker claims its own task. Never type a task into a worker.
+8. End your turn. horch wakes you for questions, stalls, deaths, newly startable tasks and a settled run. `horch ledger status` exits 0 only when the run is settled.
+9. A worker is done only after `horch ledger finish` passed every step of its run (set by --verify; full: check, comment-sweep, code-sweep, complexity-sweep, recheck, land, the PR and a safe cleanup). Accept no DONE that skipped 1. finish spawns the code-sweep reviewers itself; do not spawn them.
+10. Stop a worker only with `horch ledger stop <worker> "<reason>"`. It signals the PIDs the ledger recorded, never a name or a pattern.
+11. Close a settled run: `horch ledger run gate`, the operator merges the run PR, then `horch ledger run close [--pr-declined|--abandon "<reason>"]`.
 
 Keep `ai_docs/plans/<run-slug>/decisions.md`: operator decisions, reasons, rejected options. Read it before proposing designs. Label operator claims verified (with evidence) or not verified; report failed commands and deliveries as failed. Use `horch inbox`, `horch peek` or `ledger show/events`, never pane-reading loops, cron jobs or monitors. Never put `git worktree add` in a plan; use `horch ledger worktree new --from <ref>`, `scratch`, or `drop --reason`.
 
@@ -102,7 +103,6 @@ Keep `ai_docs/plans/<run-slug>/decisions.md`: operator decisions, reasons, rejec
 6. Spawning before `horch ledger plan-workers`. Finished work gets repeated and learned gotchas get lost.
 7. Giving a second task to a worker that already finished one. Its pane is closed; spawn fresh with `PRIOR WORK`.
 8. Treating a `[<role>]` line as the human operator. It is worker status, and only the human sets direction.
-9. Declaring the run done while panes are mid-task. Check `horch inbox` last.
 
 ## 9. Design work
 

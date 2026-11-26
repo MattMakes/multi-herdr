@@ -4,6 +4,29 @@
 
 ## Unreleased
 
+- The orchestrator now asks you to review each spec and each ticket map before
+  the next step starts. Your notes go to a notes file whose `Result` line is
+  `approved`, `annotated` or `dismissed`. `annotated` sends the notes back to
+  `spec-writer` or `ticket-writer`, which changes only what a note names.
+  `dismissed` is not an approval. When you answer in chat, the orchestrator
+  writes the notes file in your words.
+- `design-system` now generates color palettes from your seed colors with a
+  new `palette.py` script. It derives the light and dark color roles so that
+  text and UI boundaries meet their contrast targets, and `palette.py check`
+  proves it. The skill also writes a theme record beside `DESIGN.md`.
+- 3 web rules of the design skills are corrected. A modal built on a native
+  `<dialog>` gets no added `inert`, focus trap or Escape handler. Animation to
+  an intrinsic size follows current platform support. A decorative
+  scroll-linked effect uses a CSS scroll timeline first, and GSAP only for
+  what CSS cannot do. A new precedence rule settles conflicts: modern platform
+  guidance wins on platform API use and browser support, and `ui-taste` and
+  the direction contract win on look.
+- Fix: on the `hc` backend, `skill-intake` detects fleet mode, and a
+  controller pane in a sandbox can spawn its report workers. A failed spawn
+  now prints the whole error.
+- Fix: `horch ledger worktree new` removes the branch it made when the
+  worktree cannot be created.
+
 ## v0.5.3 - 2026-11-22
 
 - The video team grows from 7 to 10 seats, plus 1 Blender seat, so that a film

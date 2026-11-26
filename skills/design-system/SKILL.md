@@ -30,14 +30,14 @@ If product type, required modes, or the accessibility target is missing and chan
 1. **Audit what exists.** Search for token sources: `:root` custom properties, `@theme` blocks, `tailwind.config.*` theme keys, `components.json`, CSS-in-JS theme objects, `DESIGN.md`. Count raw values in components (see the grep in step 8).
    Check: a written list of every token source with its path, and a decision "extend X" or "create new". Never create a second token system beside an existing one.
 
-2. **Set the direction.** Choose a style, a palette, and a font pairing that fit the product. Start from brand inputs; otherwise use `references/styles.md`, `references/palettes.md`, and `references/font-pairings.md` as starting points, not as final answers.
-   Check: one paragraph that names the style, the 1 primary and at most 1 accent color, the heading and body fonts, the density, and the modes. Every choice has a one-line reason tied to the product.
+2. **Set the direction.** Choose a style, seed colors, and a font pairing that fit the product. Start from brand inputs; otherwise use `references/styles.md`, `references/palettes.md` (seed rows), and `references/font-pairings.md` as starting points, not as final answers.
+   Check: one paragraph that names the style, the seed colors (1 primary and at most 1 accent, plus a seed per status), the heading and body fonts, the density, and the modes. Every choice has a one-line reason tied to the product.
 
-3. **Define primitives** (layer 1): color ramps (50 to 950), font families, a type scale, a 4 px spacing scale, radii, shadows or elevation levels, motion durations and easings, a z-index scale. Load `references/tokens.md`.
-   Check: all raw values live in one primitives block or file. No primitive name carries meaning (`blue-600`, not `brand-blue`).
+3. **Generate the palette and define primitives** (layer 1). Run `python3 -I skills/design-system/scripts/palette.py ramp --seed accent=<hex> --seed danger=<hex> --seed success=<hex> --seed warning=<hex> --seed info=<hex> --json palette.json --css palette.css`. Read warnings and diagnostics (`references/palette-generation.md`). Then define font families, a type scale, a 4 px spacing scale, radii, elevation, motion, and a z-index scale. Load `references/tokens.md`.
+   Check: the script exits 0; every ramp is monotonic; the 2 closest families differ by `closest_delta_e` of about 15 or more; all raw values live in one primitives block or file; no primitive name carries meaning (`accent-50`, not `brand-blue`).
 
-4. **Define semantic tokens** (layer 2): `background`/`foreground` and a `-foreground` partner for every fill (`primary`, `secondary`, `muted`, `accent`, `destructive`, `card`, `popover`), plus `border`, `input`, `ring`, and status colors. Write the light set and, if needed, the dark set.
-   Check: a contrast table for every text pair and every UI boundary in every mode, computed with the formula in `references/tokens.md`. Normal text is at least 4.5:1, large text (24 px, or 18.66 px bold) and UI boundaries and focus rings at least 3:1.
+4. **Define semantic tokens** (layer 2). Take the derived roles from `palette.json` (`background`, `foreground`, a `-foreground` partner for every fill, `border`, `input`, `ring`, status roles). They keep the shadcn names. Edit a role only for a reason you can write down, such as a brand value. Write the light set and the dark set.
+   Check: `python3 -I skills/design-system/scripts/palette.py check palette.json` exits 0. It prints every text pair (4.5:1) and UI boundary (3:1) in each mode. After a hand edit, run it again on the edited file.
 
 5. **Spec components** (layer 3): for each component, list variants, sizes, states (default, hover, active, focus-visible, disabled, loading, error, selected where it applies), and anatomy. Load `references/components.md`.
    Check: a state matrix per component with no empty cell. Component tokens point at semantic tokens only.
@@ -46,18 +46,19 @@ If product type, required modes, or the accessibility target is missing and chan
    Check: the project builds; a utility such as `bg-primary text-primary-foreground` renders the token value; theme switching changes only semantic variables.
 
 7. **Dark mode.** Override semantic tokens only. Use lighter, less saturated tints on dark surfaces, not an inversion. Raise elevation with lighter surfaces, not darker shadows.
-   Check: the contrast table from step 4 also passes in dark mode; screenshots of the same screen in both modes, if a browser tool is available.
+   Check: `palette.py check` passes for the dark set; screenshots of the same screen in both modes, if a browser tool is available.
 
 8. **Verify the code obeys the system.** Run, adapting paths:
    `grep -rnE '#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(' src --include='*.tsx' --include='*.jsx' --include='*.vue' --include='*.svelte'`
    `grep -rnE '\b(p|m|gap|w|h|text|rounded)-\[[0-9.]+(px|rem)\]' src`
    Check: zero hits outside token files, or each remaining hit has a written reason. Tab through one screen: every interactive element shows a visible focus ring. With `prefers-reduced-motion: reduce`, no non-essential motion runs. At 375, 768, 1024, and 1440 px there is no horizontal scroll.
 
-9. **Write `DESIGN.md`** at the project root (or update it) from `references/design-md-template.md`. It records the decisions, the exact values, the component rules, and the banned patterns.
-   Check: every value in `DESIGN.md` matches the code; a reader can build a new screen from `DESIGN.md` alone.
+9. **Write `DESIGN.md`** at the project root (or update it) from `references/design-md-template.md`. It records the decisions, the exact values, the component rules, and the banned patterns. Write the theme record beside it from `references/theme-spec-template.md`: it stores the `receipt` of step 3, the output of `palette.py check` as contrast evidence, and the decision log.
+   Check: every value in `DESIGN.md` matches the code; a reader can build a new screen from `DESIGN.md` alone; the record names a test that can fail for each contract.
 
 ## Rules
 
+- One naming system per project: keep the current names (shadcn names in a shadcn project). The colour grammar in `references/tokens.md` maps to them.
 - Three layers: primitive, semantic, component. Components read semantic or component tokens, never primitives and never raw values.
 - Pair every fill with its foreground token. Name tokens by purpose (`destructive`), not by look (`red`).
 - One primary and at most one accent per product. Status colors (success, warning, error, info) are not accents.
@@ -76,23 +77,25 @@ If product type, required modes, or the accessibility target is missing and chan
 
 - [ ] One token source; no parallel system.
 - [ ] Primitive, semantic, and component layers exist and reference downward only.
-- [ ] Contrast table passes in every mode (text 4.5:1, large text and UI 3:1).
+- [ ] `palette.py check` exits 0 in every mode (text 4.5:1, large text and UI 3:1).
 - [ ] Every component has all applicable states, including focus-visible, disabled, loading, and error.
 - [ ] Raw-value grep returns zero unexplained hits.
 - [ ] Dark mode overrides semantic tokens only and was checked on its own.
 - [ ] Reduced motion, keyboard focus, and the 4 breakpoints were checked.
-- [ ] `DESIGN.md` exists, is complete, and matches the code.
+- [ ] `DESIGN.md` exists, is complete, and matches the code; the theme record exists and holds the palette receipt.
 
 ## References
 
-- `references/tokens.md`: load at steps 3 and 4. Layer model, naming, primitive scales, semantic set, dark mode, contrast formula, DTCG JSON.
+- `references/palette-generation.md`: load at steps 3 and 4. The `palette.py` commands, inputs, output, warnings.
+- `references/tokens.md`: load at steps 3 and 4. Layer model, naming and the colour grammar, primitive scales and formulas, semantic set, role derivation, theme inheritance, dark mode, contrast, DTCG JSON.
 - `references/components.md`: load at step 5. Variant, size, and state specs for button, input, card, badge, alert, dialog, table; state priority; ARIA states.
 - `references/shadcn-tailwind.md`: load at step 6. Tailwind v4 and v3 theme wiring, shadcn/ui variables and conventions, Radix behavior, dark-mode toggling.
 - `references/styles.md`: load at step 2. Style catalog with fit, misfit, token implications, and accessibility risk.
-- `references/palettes.md`: load at step 2. Contrast-checked palettes by product type and color-role rules.
+- `references/palettes.md`: load at step 2. Seed colors by product type and color-role rules.
 - `references/font-pairings.md`: load at step 2. Heading and body pairings by mood and product.
 - `references/ux-guidelines.md`: load at step 8 and for any UI review. Priority-ordered UX and accessibility rules with checks.
 - `references/design-md-template.md`: load at step 9. The `DESIGN.md` structure and a filled example.
+- `references/theme-spec-template.md`: load at step 9. The theme record that sits beside `DESIGN.md`.
 
 ## Worker coordination
 

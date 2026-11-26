@@ -28,7 +28,10 @@ Role prompts: `roles/<role>.md`.
    `intake verify` closes a scanner finding. Do not accept a role's claim
    that something is safe.
 4. Run `intake mode` once at the start and follow it. Never decide the mode
-   yourself. `fleet` uses role workers, and `plain` uses subagents.
+   yourself. `fleet` uses role workers, and `plain` uses subagents. `fleet`
+   needs `HORCH_ROLE`, `HORCH_RECORD_ID`, a pane variable (`HERDR_PANE_ID` on
+   the herdr backend, `HC_TERMINAL_ID` on the hc backend) and a working
+   `horch --version`.
 5. Write no role instructions by hand. A role gets only its brief file from
    `intake brief` or `intake spawn`, plus its role prompt.
 6. Never sleep, poll or call a wait tool.

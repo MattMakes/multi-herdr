@@ -243,6 +243,7 @@ or ticket map exists yet, do these 5 steps before any implementation task:
    answer under its question as "Decision: <answer> (orchestrator)" or
    "(operator)". When an answer changes the spec beyond that section, queue
    a new spec-writer task with the path of the decisions.
+   Then run the review gate on the spec.
 3. Tickets. Write ai_docs/plans/<slug>/tickets-brief.md: "Spec:
    docs/specs/<slug>.md. Write the tickets and MAP.md to
    docs/tickets/<slug>/." Queue it with horch ledger task "Write the
@@ -252,10 +253,20 @@ or ticket map exists yet, do these 5 steps before any implementation task:
    docs/tickets/<slug>/MAP.md. Give each problem it names to a new
    ticket-writer task. Resolve the open questions of MAP.md the same way as
    in step 2.
+   Then run the review gate on MAP.md.
 5. Schedule. Run horch ledger run new <slug> [--check "<command>"], then
    horch ledger add-map docs/tickets/<slug>/MAP.md. Then run horch ledger
    plan-workers and spawn what it names. The ledger starts each ticket when
    its blockers are done, and serializes tickets whose Own paths overlap.
+Review gate: ask the operator to review the file. The operator's notes go
+to ai_docs/plans/<slug>/review-<spec|map>-<n>.md (format: section 5.5b of
+docs/specs/task-ledger.md). Its Result line sets the next action:
+- approved: start the next step.
+- annotated: queue a revision task for the same writer with the path of
+  the notes file.
+- dismissed: this is not an approval. Ask the operator again, or stop.
+Record each result in ai_docs/plans/<slug>/decisions.md. When the operator
+answers in chat, write the notes file yourself, in the operator's words.
 Both writers run on Gemini 4 Argon (the google pool) and fall back to opus
 when that pool cannot serve them. horch spawn does the fallback; a
 SUBSTITUTED: line tells you it happened. If an Argon pane reports a quota or

@@ -23,6 +23,8 @@ Not for dashboards, app screens, multi-step forms or docs sites. Say so and appl
 - The stack: the project's framework and CSS approach. With no project, ship one self-contained `index.html` with CSS custom properties and no build step.
 - If facts are missing (price, real customer names, real numbers), use marked placeholders and list them. Ask the orchestrator only when a missing fact changes the page structure: `horch tell orchestrator "[<role>] QUESTION: ..."`. Continue with the rest while you wait.
 
+For precedence between skills, see the Precedence paragraph in `ui-taste`.
+
 ## Workflow
 
 1. **Write the brief read.** One line: "Page kind for audience; primary action; vibe; aesthetic family." Then list: the visitor's problem, the product's one differentiator, the top 3 objections, the proof you have. Check: every later decision traces to this read. If a related `art-direction` or `ui-taste` skill is available, use it here to pick the aesthetic family.

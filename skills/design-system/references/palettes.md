@@ -1,17 +1,16 @@
 # Palettes
 
-Starting palettes by product type, adapted and curated from a 192-palette dataset. Every row passes 4.5:1 for primary on its "on" color, accent on its "on" color, foreground on background, and muted text on background (measured with the formula in `tokens.md`). Brand colors override these rows; use a row as a base when no brand exists.
+Seed palettes by product type, adapted and curated from a 192-palette dataset. Each row is a set of seed colours, not a finished palette. Every row passes 4.5:1 for primary on its "on" color, accent on its "on" color, foreground on background, and muted text on background (measured with `palette.py contrast`). Brand colors override these rows; use a row as seeds when no brand exists. Feed primary and accent to `palette.py ramp` (`palette-generation.md`); the script makes the ramps and derives every role, in both modes.
 
 ## How to use a row
 
 1. Pick the row closest to the product and audience. Read its "Primary on bg" column:
    - 4.5 or more: primary works as text and link color on the background.
-   - 3.0 to 4.4: primary works for large text, icons, and control boundaries only. Use a darker step for links.
-   - under 3.0: primary is a fill or surface color. Use the accent for calls to action and a darker tint for links.
-2. Build an 11-step ramp around primary and accent (`tokens.md`), then map semantic tokens.
-3. Destructive: `#DC2626` with white text on light themes; `#EF4444` on dark themes (text on it: near-black `#0F172A`, 4.74:1; for white text use `#DC2626`, 4.83:1).
-4. Derive the dark theme from the same hues; do not reuse light-theme values. Measure again.
-5. Record the final pairs in the contrast table and in `DESIGN.md`.
+   - 3.0 to 4.4: primary works for large text, icons, and control boundaries only. The derived `primary-text` role gives the link color.
+   - under 3.0: primary is a fill or surface color. Use the accent for calls to action.
+2. Run `palette.py ramp --seed accent=<primary> ...`. Add `--seed danger=<red>`, `--seed success=<green>`, `--seed warning=<amber>` and `--seed info=<blue>` for status roles. Use a darker seed when the script warns that a fill is under 3:1.
+3. Take the dark theme from the same run. Do not reuse light-theme values and do not hand-edit stops without running `palette.py check`.
+4. Record the receipt in the theme record (`theme-spec-template.md`) and the final pairs in `DESIGN.md`.
 
 ### Software and SaaS
 
