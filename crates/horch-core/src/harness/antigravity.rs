@@ -17,6 +17,19 @@ pub(crate) fn conversations_cache(home: &Path) -> PathBuf {
     home.join(".gemini/antigravity-cli/cache/last_conversations.json")
 }
 
+pub(crate) fn transcript(home: &Path, conversation: &str) -> Option<PathBuf> {
+    let mut parts = Path::new(conversation).components();
+    let plain = matches!(
+        (parts.next(), parts.next()),
+        (Some(std::path::Component::Normal(_)), None)
+    );
+    let path = home
+        .join(".gemini/antigravity-cli/brain")
+        .join(conversation)
+        .join(".system_generated/logs/transcript.jsonl");
+    (plain && path.is_file()).then_some(path)
+}
+
 pub fn parse_last_conversations(json: &str, workdir: &Path) -> Option<String> {
     let map = serde_json::from_str::<serde_json::Value>(json).ok()?;
     let workdir = Workdir::new(workdir);
@@ -255,6 +268,23 @@ mod tests {
                 None,
                 "{bad}"
             );
+        }
+    }
+
+    #[test]
+    fn the_transcript_of_a_conversation_is_under_its_brain_folder() {
+        let home = tempfile::tempdir().unwrap();
+        let logs = home
+            .path()
+            .join(".gemini/antigravity-cli/brain/c-1/.system_generated/logs");
+        std::fs::create_dir_all(&logs).unwrap();
+        std::fs::write(logs.join("transcript.jsonl"), "{}\n").unwrap();
+        assert_eq!(
+            transcript(home.path(), "c-1"),
+            Some(logs.join("transcript.jsonl"))
+        );
+        for other in ["c-2", "", "..", "c-1/..", "/c-1"] {
+            assert_eq!(transcript(home.path(), other), None, "{other}");
         }
     }
 

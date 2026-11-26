@@ -66,6 +66,9 @@ pub fn read_current(
     let Some(sid) = session_id.filter(|s| !s.is_empty()) else {
         return Err(Unreadable::NoSessionId);
     };
+    if agent == "antigravity" {
+        return Err(Unreadable::NotRead(format!("no {agent} context reader")));
+    }
     match locate(loc, agent, sid)? {
         Located::Files(files) => files
             .into_iter()

@@ -4,6 +4,12 @@
 
 ## Unreleased
 
+- The watchdog sees the progress of an `antigravity` worker. horch finds the
+  transcript of its conversation under `~/.gemini/antigravity-cli/brain/`, so
+  a growing transcript is a proxy check-in, and `horch doctor` no longer warns
+  that the watchdog cannot see the harness. `horch cost` reads the token
+  counts of agy sessions from the same file.
+
 ## v0.5.3 - 2026-11-22
 
 - The video team grows from 7 to 10 seats, plus 1 Blender seat, so that a film
