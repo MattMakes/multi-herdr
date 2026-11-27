@@ -1,9 +1,4 @@
-"""Tests for skills/godot-hfr-hunt/scripts/hfr_bench.py (GRS-20, GRS-44). Run: python3 -m unittest discover -s scripts/godot/tests
-
-A fake export stands in for a Godot release export. It logs its arguments and
-writes the take file that the plan in HFR_FAKE_PLAN names for its --hfr-out
-path. A take that the plan does not name gets no take file. No Godot runs.
-"""
+"""Tests for skills/godot-hfr-hunt/scripts/hfr_bench.py (GRS-20, GRS-44). Run: python3 -m unittest discover -s scripts/godot/tests"""
 
 import json
 import os
