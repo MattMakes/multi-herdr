@@ -2,7 +2,9 @@ use std::fs;
 use std::path::Path;
 
 fn repo_path(rel: &str) -> std::path::PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(rel)
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(rel)
 }
 
 fn read_repo_file(rel: &str) -> String {
@@ -90,8 +92,14 @@ fn grs_19_hfr_hunt_references_have_one_file_per_angle_with_measure_evidence_and_
     for (reference, report) in ANGLES {
         let text = read_repo_file(reference);
         assert!(text.starts_with("# "), "{reference} lacks a title");
-        assert!(!text.contains("## Corrections"), "{reference} copies corrections");
-        assert!(text.contains("4.7.2"), "{reference} lacks the checked version");
+        assert!(
+            !text.contains("## Corrections"),
+            "{reference} copies corrections"
+        );
+        assert!(
+            text.contains("4.7.2"),
+            "{reference} lacks the checked version"
+        );
 
         let ours = ranked_techniques(&text);
         let report_text = read_repo_file(report);
@@ -113,9 +121,9 @@ fn grs_19_hfr_hunt_references_have_one_file_per_angle_with_measure_evidence_and_
             );
             let mut last = 0;
             for label in LABELS {
-                let at = technique.find(label).unwrap_or_else(|| {
-                    panic!("{reference} technique {} lacks {label}", index + 1)
-                });
+                let at = technique
+                    .find(label)
+                    .unwrap_or_else(|| panic!("{reference} technique {} lacks {label}", index + 1));
                 assert!(
                     at >= last,
                     "{reference} technique {} has {label} out of order",
@@ -137,5 +145,8 @@ fn grs_19_hfr_hunt_references_have_one_file_per_angle_with_measure_evidence_and_
     }
 
     let total = dir_bytes(&repo_path("skills/godot-hfr-hunt"));
-    assert!(total <= 160 * 1024, "skills/godot-hfr-hunt is {total} bytes");
+    assert!(
+        total <= 160 * 1024,
+        "skills/godot-hfr-hunt is {total} bytes"
+    );
 }
