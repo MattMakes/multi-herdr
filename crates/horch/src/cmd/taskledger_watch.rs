@@ -1297,7 +1297,7 @@ mod orchestrator_tests {
         store
             .conn()
             .execute(
-                "UPDATE workers SET harness = 'codex', model = 'gpt-5.6-sol' WHERE worker_id = ?1",
+                "UPDATE workers SET harness = 'codex', model = 'gpt-6.2-sol' WHERE worker_id = ?1",
                 [&old],
             )
             .unwrap();
@@ -1318,10 +1318,10 @@ mod orchestrator_tests {
         let new = current(&store, &run);
         assert_ne!(new.worker_id, old);
         assert_eq!(new.harness.as_deref(), Some("codex"));
-        assert_eq!(new.model.as_deref(), Some("gpt-5.6-sol"));
+        assert_eq!(new.model.as_deref(), Some("gpt-6.2-sol"));
         assert_eq!(
             seen.into_inner(),
-            Some((Some("codex".to_string()), Some("gpt-5.6-sol".to_string())))
+            Some((Some("codex".to_string()), Some("gpt-6.2-sol".to_string())))
         );
     }
 

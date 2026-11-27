@@ -566,7 +566,7 @@ fn build_request(args: &SpawnArgs, task: &str) -> Result<SpawnRequest> {
 
 fn spawn_context(ctx: &RuntimeContext) -> Result<SpawnContext> {
     let roster_dir = super::path_text(ctx.bins.roster_override.as_deref());
-    let roster = super::load_roster(ctx, roster_dir.as_deref())?;
+    let roster = super::load_resolved_roster(ctx, roster_dir.as_deref())?;
     let herdr = PaneHost::of(ctx);
     let mailbox = Mailbox::resolve_in(&herdr, ctx).context(
         "horch spawn needs HORCH_WORKSPACE_ID set, or to run inside a herdr pane or a Herdr app terminal (HERDR_PANE_ID and HC_TERMINAL_ID are unset)",
@@ -774,7 +774,12 @@ fn record_failed_start(
 
 fn spawned_line(out: &SpawnOutcome) -> String {
     let (launch, role, pane) = (&out.plan.launch, &out.plan.execution.role, &out.pane);
-    let what = format!("{} {}", launch.teammate.agent, launch.model);
+    let alias = launch
+        .model_alias
+        .as_deref()
+        .map(|alias| format!(" ({alias})"))
+        .unwrap_or_default();
+    let what = format!("{} {}{alias}", launch.teammate.agent, launch.model);
     match &launch.session {
         SessionMode::Resume(id) => {
             format!("spawned {role} (pane {pane}): {what}, RESUMING session {id}")

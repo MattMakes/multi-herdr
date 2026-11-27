@@ -211,7 +211,7 @@ part_a() {
   cat > "$(ledger_of "$a5/state" "$a5")" <<JSON
 [
  {"record_id":"a5-claude","session_id":"$csid","agent":"claude","tier":"live-a5","model":"haiku","role":"a5-claude","status":"working","task":"live A5","history":[],"created_at":"2026-10-06T00:00:00Z","updated_at":"2026-10-06T00:00:00Z","project":"$a5","workdir":"$a5"},
- {"record_id":"a5-codex","session_id":"${xsid:-}","agent":"codex","tier":"live-a5","model":"gpt-5.6-sol","role":"a5-codex","status":"working","task":"live A5","history":[],"created_at":"2026-10-06T00:00:00Z","updated_at":"2026-10-06T00:00:00Z","project":"$a5","workdir":"$a5"}
+ {"record_id":"a5-codex","session_id":"${xsid:-}","agent":"codex","tier":"live-a5","model":"gpt-6.2-sol","role":"a5-codex","status":"working","task":"live A5","history":[],"created_at":"2026-10-06T00:00:00Z","updated_at":"2026-10-06T00:00:00Z","project":"$a5","workdir":"$a5"}
 ]
 JSON
   HORCH_STATE_DIR=$a5/state HORCH_PROJECT_DIR=$a5 "$HORCH_BIN" context > "$a5/context.txt" 2>&1 || true

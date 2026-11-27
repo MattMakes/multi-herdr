@@ -7,8 +7,8 @@ local         5h -     7d -     BROKEN
 LIVE                            model    out  $     tok/min state
 multi-herdr orchestrator        opus-5.5 61k  21.40 4.1k    claude:exhausted
             sonnet-3            sonnet-5 22k  1.10  2.3k    claude:exhausted
-other       orchestrator        5.6-sol  15k  3.20  900     codex:exhausted
-            researcher-1>codex… 5.6-sol  4.0k 0.90  0       idle codex:exhausted
+other       orchestrator        6.2-sol  15k  3.20  900     codex:exhausted
+            researcher-1>codex… 6.2-sol  4.0k 0.90  0       idle codex:exhausted
 
 
 

@@ -4,7 +4,7 @@ brief_description: "Independent code review. fleet_write: project/.git writes + 
 base: fleet-worker
 agent: codex
 phase: validation
-model: gpt-5.6-sol
+model: sol
 # When this model's usage pool cannot serve a spawn (horch route codex-reviewer).
 fallbacks: [opus]
 # high, like the claude reviewers: a missed finding costs a review round

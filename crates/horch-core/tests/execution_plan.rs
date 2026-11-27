@@ -263,7 +263,7 @@ fn arc_15_plan_table() {
     no_session.session_id = None;
     let mut reserved = sonnet();
     reserved.model = "claude-fable-5".into();
-    let mut substituted = record("researcher", "codex", "gpt-5.6-sol");
+    let mut substituted = record("researcher", "codex", "gpt-6.2-sol");
     substituted.via = Some("codex-sol".into());
     substituted.effort = None;
     let effort = |mut r: SpawnRequest, e: &str| {

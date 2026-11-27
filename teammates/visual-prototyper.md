@@ -4,7 +4,7 @@ brief_description: "Visual prototypes. fleet_write: project/.git writes + networ
 base: fleet-worker
 agent: codex
 phase: implementation
-model: gpt-5.6-sol
+model: gpt-6.2-sol
 # When this model's usage pool cannot serve a spawn (horch route visual-prototyper).
 fallbacks: [opus]
 # Set explicitly: unset, the pane inherits ~/.codex/config.toml. medium is the

@@ -1,4 +1,5 @@
 pub(crate) mod effort;
+pub mod models;
 pub(crate) mod offer;
 pub(crate) mod operator;
 pub(crate) mod parser;

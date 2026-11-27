@@ -4,7 +4,7 @@ brief_description: "Swift review. fleet_write: project/.git writes + network; ot
 base: fleet-worker
 agent: codex
 phase: validation
-model: gpt-5.6-sol
+model: sol
 # Offered only on an Apple project (roster/offer.rs). `horch spawn` still
 # works anywhere. No `requires:`: it reads source and builds nothing.
 offer_when: ["*.xcodeproj", "*.xcworkspace", "Package.swift"]

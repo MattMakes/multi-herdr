@@ -29,7 +29,7 @@ Opus/Codex-Sol reader.
 - `reserved_tier` matches a model's name segments rather than the whole
   slug, because Claude and Codex name their models differently and both
   keep changing them. `fable`, `claude-fable-5-2` and `gpt-6-astra` are all
-  reserved, while `opus` and `gpt-5.6-sol` are not. A version bump stays
+  reserved, while `opus` and `gpt-6.2-sol` are not. A version bump stays
   reserved without a code edit.
 - `Roster::model_is_spawnable` (`crates/horch-core/src/roster/validation.rs`)
   applies the rule to the model a spawn is actually about to launch, not

@@ -55,7 +55,7 @@ fn harness_codex_rules_snapshot() {
                     skills: None,
                     compact_window: None,
                     teammate: roster.require("codex-sol").unwrap(),
-                    model: "gpt-5.6-sol",
+                    model: "gpt-6.2-sol",
                     workdir: tmp.path(),
                     shell_env: &[],
                 },

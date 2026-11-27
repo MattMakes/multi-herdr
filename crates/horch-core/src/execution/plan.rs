@@ -131,6 +131,7 @@ fn fresh_session(agent: HarnessKind, minted: &SessionId) -> SessionMode {
 struct Draft {
     teammate: Teammate,
     model: String,
+    model_alias: Option<String>,
     model_source: ModelSource,
     session: SessionMode,
     via: Option<String>,
@@ -233,8 +234,13 @@ fn draft_resume(key: &str, req: &SpawnRequest, inputs: &PlanInputs) -> Result<Dr
     let teammate = resume_teammate(record, req, inputs.roster)?;
     let routing = resume_routing(record, inputs.roster)?;
     let resumed = to_execution(record).map_err(|e| refusal(record, e.to_string()))?;
+    let alias_name = record.via.as_deref().unwrap_or(&record.tier);
     Ok(Draft {
         model: record.model.clone(),
+        model_alias: (!record.model_override)
+            .then(|| inputs.roster.model_alias(alias_name))
+            .flatten()
+            .map(str::to_string),
         model_source: if record.model_override {
             ModelSource::Operator
         } else {
@@ -273,6 +279,10 @@ fn draft_fresh(name: &str, req: &SpawnRequest, inputs: &PlanInputs) -> Result<Dr
     }
     Ok(Draft {
         model: teammate.model.clone().unwrap_or_default(),
+        model_alias: (model_source == ModelSource::Teammate)
+            .then(|| inputs.roster.model_alias(name))
+            .flatten()
+            .map(str::to_string),
         model_source,
         session: fresh_session(teammate.agent, &inputs.ids.session),
         teammate,
@@ -316,6 +326,7 @@ fn gate(
                     PlanError::UnknownTeammate(format!("fallback '{via}' vanished from the roster"))
                 })?;
             draft.model = merged.model.clone().unwrap_or_default();
+            draft.model_alias = roster.model_alias(via).map(str::to_string);
             draft.session = fresh_session(merged.agent, &inputs.ids.session);
             draft.teammate = merged;
             draft.via = Some(via.clone());
@@ -475,6 +486,7 @@ pub fn plan_launch(req: &SpawnRequest, inputs: &PlanInputs) -> Result<ExecutionP
         launch: LaunchPlan {
             teammate: draft.teammate,
             model: draft.model,
+            model_alias: draft.model_alias,
             session: draft.session,
             task: req.task.clone(),
         },

@@ -61,10 +61,10 @@ impl World {
         orchestrator["model"] = "opus".into();
         orchestrator["task"] = "(orchestrating)".into();
         let mut codex = record("rec-cdx", "codex-sol-1", "codex", "codex-sol", CODEX);
-        codex["model"] = "gpt-5.6-sol".into();
+        codex["model"] = "gpt-6.2-sol".into();
         codex["compact_window"] = serde_json::json!({
             "tokens": 200000, "source": "fleet",
-            "detail": "context-policy windows codex/gpt-5.6-sol", "applied": true
+            "detail": "context-policy windows codex/gpt-6.2-sol", "applied": true
         });
         let ledger = serde_json::json!([
             orchestrator,
@@ -103,7 +103,14 @@ impl World {
         let out = self.horch(args, env);
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(out.status.success(), "horch {args:?}: {stderr}");
-        assert_eq!(stderr, "", "horch {args:?} wrote to stderr");
+        assert!(
+            stderr.is_empty()
+                || stderr
+                    == "horch: NOTE: codex model catalog uses fallbacks: \
+                        astra=gpt-6.2-astra, luna=gpt-6-luna, sol=gpt-6.2-sol, \
+                        terra=gpt-6.1-terra\n",
+            "horch {args:?} wrote unexpected stderr: {stderr}"
+        );
         String::from_utf8(out.stdout).unwrap()
     }
 
@@ -614,7 +621,7 @@ fn ctx_24_json_has_every_key_and_nulls() {
     assert_eq!(codex["native_source"], "fleet");
     assert_eq!(
         codex["native_detail"],
-        "context-policy windows codex/gpt-5.6-sol"
+        "context-policy windows codex/gpt-6.2-sol"
     );
 }
 

@@ -25,6 +25,7 @@ pub struct Roster {
     teammate_origins: BTreeMap<String, PathBuf>,
     base_origins: BTreeMap<String, PathBuf>,
     pub(crate) defaults_set_in_file: BTreeSet<String>,
+    model_aliases: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -241,6 +242,38 @@ impl Roster {
                 self.names().join(", ")
             ),
         }
+    }
+
+    pub fn resolve_codex_models(&mut self, codex_bin: &Path) {
+        let mut logged_fallbacks = BTreeSet::new();
+        let mut fallbacks = Vec::new();
+        for (name, teammate) in &mut self.teammates {
+            if teammate.agent != HarnessKind::Codex {
+                continue;
+            }
+            let Some(model) = teammate.model.as_deref() else {
+                continue;
+            };
+            let resolved = super::models::resolve_codex_model_from_bin(model, codex_bin);
+            let Some(alias) = resolved.alias else {
+                continue;
+            };
+            if resolved.used_fallback && logged_fallbacks.insert(alias.clone()) {
+                fallbacks.push(format!("{alias}={}", resolved.slug));
+            }
+            self.model_aliases.insert(name.clone(), alias);
+            teammate.model = Some(resolved.slug);
+        }
+        if !fallbacks.is_empty() {
+            eprintln!(
+                "horch: NOTE: codex model catalog uses fallbacks: {}",
+                fallbacks.join(", ")
+            );
+        }
+    }
+
+    pub fn model_alias(&self, name: &str) -> Option<&str> {
+        self.model_aliases.get(name).map(String::as_str)
     }
 
     pub fn base(&self, name: &str) -> Option<&Base> {

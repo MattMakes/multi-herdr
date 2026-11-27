@@ -1132,10 +1132,14 @@ fn window_name_known(roster: &Roster, kind: HarnessKind, name: &str) -> bool {
     name.is_empty()
         || !lever
         || roster.get(name).is_some()
-        || roster
-            .teammates
-            .values()
-            .any(|t| t.agent == kind && t.model.as_deref() == Some(name))
+        || roster.teammates.values().any(|t| {
+            let model = t.model.as_deref().unwrap_or_default();
+            t.agent == kind
+                && (model == name
+                    || (kind == HarnessKind::Codex
+                        && super::models::resolve_codex_model(model, Err("validation fallback"))
+                            == name))
+        })
 }
 
 fn stale_builtin_warning(roster: &Roster) -> Option<String> {
@@ -1779,7 +1783,7 @@ w3-codex: sandbox is Claude only; agent codex cannot honour it";
         codex.name = "w3-codex".into();
         codex.hidden = false;
         codex.agent = HarnessKind::Codex;
-        codex.model = Some("gpt-5.6-sol".into());
+        codex.model = Some("gpt-6.2-sol".into());
         codex.effort = None;
         codex.sandbox = Some(Default::default());
         codex.permission_mode = Some(PermissionMode::AcceptEdits);
@@ -2030,7 +2034,7 @@ w3-codex: sandbox is Claude only; agent codex cannot honour it";
         for (agent, model, effort) in [
             (HarnessKind::Claude, "opus", "medium"),
             (HarnessKind::Claude, "sonnet", "max"),
-            (HarnessKind::Codex, "gpt-5.6-sol", "none"),
+            (HarnessKind::Codex, "gpt-6.2-sol", "none"),
             (HarnessKind::Codex, "gpt-6-astra", "xhigh"),
             (HarnessKind::OpenCode, "anthropic/claude-sonnet-5", "high"),
             (HarnessKind::Pi, "ollama/qwen3.8", "off"),
@@ -2056,10 +2060,10 @@ w3-codex: sandbox is Claude only; agent codex cannot honour it";
                 "low",
                 "no effort setting",
             ),
-            (HarnessKind::Codex, "gpt-5.6-sol", "minimal", "API error"),
+            (HarnessKind::Codex, "gpt-6.2-sol", "minimal", "API error"),
             (
                 HarnessKind::Codex,
-                "gpt-5.6-sol",
+                "gpt-6.2-sol",
                 "ultra",
                 "multiplies spend",
             ),
@@ -2132,7 +2136,7 @@ w3-codex: sandbox is Claude only; agent codex cannot honour it";
             effort_override_warnings(
                 Some(""),
                 Some(&serde_json::json!({"effortLevel": "high"})),
-                Some("model = \"gpt-5.6-sol\"\n[profiles.x]\nmodel_reasoning_effort = \"low\"\n"),
+                Some("model = \"gpt-6.2-sol\"\n[profiles.x]\nmodel_reasoning_effort = \"low\"\n"),
             )
             .is_empty(),
             "effortLevel loses to --effort, and a profile's key is not the default"
@@ -2917,7 +2921,7 @@ w3-codex: sandbox is Claude only; agent codex cannot honour it";
                 "{model} should point at {instead}: {err}"
             );
         }
-        for ok in ["opus", "sonnet", "gpt-5.6-sol", "gpt-5.6-terra"] {
+        for ok in ["opus", "sonnet", "gpt-6.2-sol", "gpt-5.6-terra"] {
             assert!(
                 Roster::model_is_spawnable(ok, "t", ModelSource::Teammate).is_ok(),
                 "{ok} must stay spawnable"

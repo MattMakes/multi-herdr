@@ -18,7 +18,7 @@ pub fn route(
     force: bool,
 ) -> Result<ExitCode> {
     let roster_dir = super::path_text(ctx.bins.roster_override.as_deref());
-    let roster = super::load_roster(ctx, roster_dir.as_deref())?;
+    let roster = super::load_resolved_roster(ctx, roster_dir.as_deref())?;
     let teammate = roster.require(name)?.clone();
     let root = ctx.paths.state_root.clone();
     let policy = super::quotacmd::load_policy(ctx, &root)?;
@@ -39,12 +39,27 @@ pub fn route(
 
     let pools = touched_pools(&teammate, &roster, &view);
     let refused = matches!(decision, Decision::Refuse { .. });
+    let selected = match &decision {
+        Decision::Substitute { via, .. } => via.as_str(),
+        _ => teammate.name.as_str(),
+    };
+    let model = roster.get(selected).map(|t| {
+        let alias = roster
+            .model_alias(selected)
+            .map(|alias| format!(" ({alias})"))
+            .unwrap_or_default();
+        format!(
+            "{} {}{alias}",
+            t.agent,
+            t.model.as_deref().unwrap_or_default()
+        )
+    });
     if json_out {
         let mode = policy.balance_mode.as_str();
-        let view = decision_json(&decision, &teammate.name, mode, &pools);
+        let view = decision_json(&decision, &teammate.name, mode, &pools, model.as_deref());
         output::println(&serde_json::to_string_pretty(&view)?);
     } else {
-        print_decision(&decision, &teammate.name, &pools);
+        print_decision(&decision, &teammate.name, &pools, model.as_deref());
     }
     Ok(if refused {
         ExitCode::from(horch::exit::REFUSED)
@@ -58,6 +73,7 @@ fn decision_json(
     teammate: &str,
     mode: &str,
     pools: &[PoolLine],
+    model: Option<&str>,
 ) -> serde_json::Value {
     let (kind, via, reason) = match decision {
         Decision::Spawn { note, .. } => ("spawn", None, note.clone()),
@@ -73,16 +89,19 @@ fn decision_json(
         "reason": reason,
         "line": decision.line(),
         "mode": mode,
+        "model": model,
         "pools": pools,
     })
 }
 
-fn print_decision(decision: &Decision, teammate: &str, pools: &[PoolLine]) {
-    output::println(
-        &decision
-            .line()
-            .unwrap_or_else(|| format!("SPAWN: {teammate} runs as itself.")),
-    );
+fn print_decision(decision: &Decision, teammate: &str, pools: &[PoolLine], model: Option<&str>) {
+    let line = match (decision.line(), model) {
+        (None, Some(model)) => format!("SPAWN: {teammate} runs as itself on {model}."),
+        (None, None) => format!("SPAWN: {teammate} runs as itself."),
+        (Some(line), Some(model)) => format!("{line} Model: {model}."),
+        (Some(line), None) => line,
+    };
+    output::println(&line);
     for p in pools {
         output::println(&format!("  {:<13} {:<10} {}", p.pool, p.state, p.detail));
     }
@@ -108,10 +127,11 @@ mod tests {
             note: Some("careful".into()),
         };
         assert_eq!(
-            decision_json(&spawn, "opus", "auto", &[pool()]),
+            decision_json(&spawn, "opus", "auto", &[pool()], Some("claude opus")),
             json!({
                 "decision": "spawn", "teammate": "opus", "via": null,
                 "reason": "careful", "line": "NOTE: careful", "mode": "auto",
+                "model": "claude opus",
                 "pools": [{"pool": "claude", "state": "ok", "detail": "plenty"}],
             })
         );
@@ -120,7 +140,7 @@ mod tests {
             via: "sonnet".into(),
             reason: "quota".into(),
         };
-        let view = decision_json(&substitute, "opus", "auto", &[]);
+        let view = decision_json(&substitute, "opus", "auto", &[], None);
         assert_eq!(
             (&view["decision"], &view["via"], &view["reason"]),
             (&json!("substitute"), &json!("sonnet"), &json!("quota"))
@@ -134,7 +154,7 @@ mod tests {
             reason: "empty".into(),
             pools: vec![],
         };
-        let view = decision_json(&refuse, "opus", "exact", &[]);
+        let view = decision_json(&refuse, "opus", "exact", &[], None);
         assert_eq!(
             (
                 &view["decision"],

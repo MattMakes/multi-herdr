@@ -43,6 +43,7 @@ records (a title that states the decision, 1 or 2 paragraphs, then
 
 ## Harness: Codex
 
+- [0195](0195-codex-teammates-name-a-model-family.md) Codex teammates name a model family; horch resolves the newest listed version
 - [0023](0023-codex-fleet-launches-override-config-with-c-pairs.md) Codex fleet launches override config with -c pairs
 - [0024](0024-codex-panes-get-a-private-codex-home.md) Codex panes get a private CODEX_HOME that holds only their rules
 - [0025](0025-codex-write-panes-run-in-the-fleet-write-permissions-profile.md) Codex write panes run in the fleet_write permissions profile

@@ -4,7 +4,7 @@ brief_description: "Review rounds 2 and 3 only. fleet_write: project/.git writes
 base: fleet-worker
 agent: codex
 phase: validation
-model: gpt-5.6-terra
+model: terra
 # When this model's usage pool cannot serve a spawn (horch route codex-reviewer-light).
 fallbacks: [opus]
 # medium: rounds 2 and 3 review only the change since the last round, and

@@ -35,9 +35,7 @@ fn model_effort_problem(agent: HarnessKind, model: &str) -> Option<String> {
 
 fn codex_effort_trap(model: &str, effort: &str) -> Option<String> {
     match effort {
-        "minimal" => {
-            Some("codex effort 'minimal' is an API error on the gpt-5.6 models; use low".into())
-        }
+        "minimal" => Some("codex effort 'minimal' is an API error on gpt-* models; use low".into()),
         "ultra" => Some(
             "codex effort 'ultra' fans out to parallel client-side agents and \
              multiplies spend; use max"
@@ -74,11 +72,11 @@ mod tests {
             )
         );
         assert_eq!(
-            effort_problem(HarnessKind::Codex, Some("gpt-5.6-sol"), "minimal").as_deref(),
-            Some("codex effort 'minimal' is an API error on the gpt-5.6 models; use low")
+            effort_problem(HarnessKind::Codex, Some("gpt-6.2-sol"), "minimal").as_deref(),
+            Some("codex effort 'minimal' is an API error on gpt-* models; use low")
         );
         assert_eq!(
-            effort_problem(HarnessKind::Codex, Some("gpt-5.6-sol"), "ultra").as_deref(),
+            effort_problem(HarnessKind::Codex, Some("gpt-6.2-sol"), "ultra").as_deref(),
             Some(
                 "codex effort 'ultra' fans out to parallel client-side agents and \
                  multiplies spend; use max"
@@ -99,7 +97,7 @@ mod tests {
             )
         );
         assert_eq!(
-            effort_problem(HarnessKind::Codex, Some("gpt-5.6-sol"), "none"),
+            effort_problem(HarnessKind::Codex, Some("gpt-6.2-sol"), "none"),
             None
         );
         assert!(effort_problem(HarnessKind::Claude, Some("haiku"), "bogus")

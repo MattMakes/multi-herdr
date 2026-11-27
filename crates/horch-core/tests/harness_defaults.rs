@@ -180,7 +180,7 @@ fn hdf_01_defaults_follow_the_final_harness() {
     assert_eq!(t.agent, HarnessKind::Claude);
     t.agent = HarnessKind::Codex;
     t.effort = None;
-    t.model = Some("gpt-5.6-sol".into());
+    t.model = Some("gpt-6.2-sol".into());
     t.env.clear();
     let cmd = build(&env, &t);
     let args = argv(&cmd);
@@ -259,7 +259,7 @@ fn hdf_02_codex_default_args_skip_a_key_the_teammate_sets() {
 #[test]
 fn hdf_02_codex_default_yields_to_operator_config_unless_forced() {
     let text = r##"
-model = "gpt-5.6-sol" # a comment
+model = "gpt-6.2-sol" # a comment
 model_auto_compact_token_limit = 200_000
 tui.theme = "dark"
 notify = ["say", "#not a comment"]
@@ -269,7 +269,7 @@ auto_recap = false
 "##;
     assert_eq!(
         codex_config_value(text, "model").as_deref(),
-        Some("gpt-5.6-sol")
+        Some("gpt-6.2-sol")
     );
     assert_eq!(
         codex_config_value(text, "model_auto_compact_token_limit").as_deref(),
@@ -593,7 +593,7 @@ fn hdf_04_migrated_launch_env_and_args_match_w2() {
         "check_for_update_on_startup=false",
         "default_permissions=\"fleet_write\"",
         "features.multi_agent=false",
-        "model=\"gpt-5.6-sol\"",
+        "model=\"gpt-6.2-sol\"",
         "model_reasoning_effort=\"medium\"",
         "notify=[]",
         "tui.auto_recap=false",

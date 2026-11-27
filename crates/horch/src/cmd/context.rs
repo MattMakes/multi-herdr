@@ -298,7 +298,8 @@ pub fn context_filtered(
         live,
         role,
     };
-    let roster = super::load_roster(ctx, None).or_else(|_| Roster::builtin())?;
+    let roster = super::load_resolved_roster(ctx, None)
+        .or_else(|_| Roster::builtin().map(|roster| super::resolve_roster(ctx, roster)))?;
     let out = if windows {
         Ok(windows_table(ctx, &roster, &ctx.paths.current_dir()?))
     } else {

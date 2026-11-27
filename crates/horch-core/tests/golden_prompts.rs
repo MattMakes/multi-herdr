@@ -329,7 +329,7 @@ fn the_orchestrator_briefing_differs_only_where_sanctioned() {
     );
     let old_fleet = "in your current directory. You start with four idle workers in a 2x2 grid\n\
                      beside you - sonnet-1, sonnet-2 (Claude Sonnet), opus-1 (Claude Opus),\n\
-                     codex-sol-1 (Codex, gpt-5.6-sol) - and you grow or shrink the fleet yourself\n\
+                     codex-sol-1 (Codex, gpt-6.2-sol) - and you grow or shrink the fleet yourself\n\
                      as the work demands.";
     let new_fleet =
         "in your current directory. You start ALONE - there are no workers yet. Break\n\

@@ -277,12 +277,14 @@ impl World {
     }
 
     fn roster(&self) -> Roster {
-        Roster::load_layered(
+        let mut roster = Roster::load_layered(
             Some(&self.home),
             None,
             Some(repo_teammates().to_str().unwrap()),
         )
-        .unwrap()
+        .unwrap();
+        roster.resolve_codex_models(&self.root.join("bin/codex"));
+        roster
     }
 }
 

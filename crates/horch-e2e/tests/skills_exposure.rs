@@ -132,7 +132,7 @@ fn skl_06_e2e_exposure_codex() {
         "skl06x",
         "skl-codex",
         "codex",
-        "gpt-5.6-sol",
+        "gpt-6.2-sol",
         &["tdd", "debug"],
     );
     let r = launch(&h, "skl-codex", || {});
@@ -506,7 +506,7 @@ fn operator_skills_e2e_exposure_codex() {
     if cfg!(windows) {
         return;
     }
-    let h = operator_world("opskx", "op-codex", "codex", "gpt-5.6-sol");
+    let h = operator_world("opskx", "op-codex", "codex", "gpt-6.2-sol");
     let r = launch(&h, "op-codex", || {});
     assert_eq!(strings(&r["skills"]), ["tdd", "test-modernizer"], "{r}");
     let files = strings(&r["files"]);

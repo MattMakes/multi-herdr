@@ -3002,7 +3002,7 @@ mod tests {
             .insert(LedgerRecordV1 {
                 record_id: "orch-1".into(),
                 agent: "codex".into(),
-                model: "gpt-5.6-sol".into(),
+                model: "gpt-6.2-sol".into(),
                 role: "orchestrator".into(),
                 kind: KIND_ORCHESTRATOR.into(),
                 ..LedgerRecordV1::default()
@@ -3027,7 +3027,7 @@ mod tests {
                 .unwrap();
             (w.harness, w.model)
         };
-        let own = (Some("codex".to_string()), Some("gpt-5.6-sol".to_string()));
+        let own = (Some("codex".to_string()), Some("gpt-6.2-sol".to_string()));
         assert_eq!(run(&mut store, &ctx, "a"), own);
         assert_eq!(run(&mut store, &env(None), "b"), own);
     }

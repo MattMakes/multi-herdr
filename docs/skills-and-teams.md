@@ -104,6 +104,11 @@ in any other file.
 
 The full rules are in [skills/README.md](../skills/README.md#copied-files).
 
+The `model:` field names the model a teammate uses. A Codex teammate may use
+the family alias `sol`, `astra`, `terra` or `luna`; horch resolves it to the
+newest numerically versioned model whose Codex catalog visibility is `list`.
+A full slug such as `gpt-6.1-sol` remains pinned and is used unchanged.
+
 ## Offering a domain team only where it fits
 
 A fleet orchestrator reads the roster in its briefing. A domain team (Unreal,

@@ -1117,7 +1117,7 @@ mod tests {
     fn quo_05_state_table() {
         for (fixture_name, agent, model, state) in [
             ("all-exhausted", "claude", "opus", State::Exhausted),
-            ("all-exhausted", "codex", "gpt-5.6-sol", State::Exhausted),
+            ("all-exhausted", "codex", "gpt-6.2-sol", State::Exhausted),
             ("all-exhausted", "pi", "ollama/qwen3.8", State::Broken),
             ("all-ok", "claude", "opus", State::Ok),
             ("all-ok", "opencode", "opencode/big-pickle", State::Ok),
@@ -1128,7 +1128,7 @@ mod tests {
             (
                 "codex-not-allowed",
                 "codex",
-                "gpt-5.6-sol",
+                "gpt-6.2-sol",
                 State::Exhausted,
             ),
             (
@@ -1427,7 +1427,7 @@ mod tests {
     #[test]
     fn pools_follow_agent_and_provider() {
         assert_eq!(pool_for("claude", "opus"), POOL_CLAUDE);
-        assert_eq!(pool_for("codex", "gpt-5.6-sol"), POOL_CODEX);
+        assert_eq!(pool_for("codex", "gpt-6.2-sol"), POOL_CODEX);
         assert_eq!(pool_for("opencode", "opencode/big-pickle"), POOL_ZEN);
         assert_eq!(pool_for("antigravity", "gemini-3.8-flash"), POOL_GOOGLE);
         assert_eq!(

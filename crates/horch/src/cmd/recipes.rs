@@ -531,7 +531,8 @@ fn orchestrator_start<'a>(
     options: &'a FleetOptions,
 ) -> Result<OrchestratorStart<'a>> {
     let kind = flavor.pane_kind();
-    let roster = super::load_roster(ctx, None)?.with_project_facts(project_facts(Path::new(cwd)));
+    let roster =
+        super::load_resolved_roster(ctx, None)?.with_project_facts(project_facts(Path::new(cwd)));
     let teammate = &roster.for_launch(roster.require(kind.teammate_file())?.clone());
     let session_id = match &options.resume {
         Some(id) => Some(SessionId::new(id.clone())?.as_str().to_string()),
@@ -1200,7 +1201,7 @@ fn launch_roster(
     kind: PaneKind,
     teammates_dir: Option<&str>,
 ) -> Result<Roster> {
-    let mut roster = super::load_roster(ctx, teammates_dir)?;
+    let mut roster = super::load_resolved_roster(ctx, teammates_dir)?;
     if kind.is_fleet() {
         if let Ok(project) = ctx.paths.project() {
             roster = roster.with_project_facts(project_facts(&project));

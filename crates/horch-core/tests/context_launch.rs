@@ -307,7 +307,7 @@ fn ctx_05_codex_operator_limit_from_profile_or_top_level() {
         let t = Teammate {
             name: "c".into(),
             agent: HarnessKind::Codex,
-            model: Some("gpt-5.6-sol".into()),
+            model: Some("gpt-6.2-sol".into()),
             args: args.iter().map(|a| a.to_string()).collect(),
             ..Teammate::default()
         };
@@ -322,7 +322,7 @@ fn ctx_05_codex_operator_limit_from_profile_or_top_level() {
             workdir: &w.workdir,
             process_window: None,
             teammate: &t,
-            model: "gpt-5.6-sol",
+            model: "gpt-6.2-sol",
         };
         let got = HarnessKind::Codex.adapter().operator_window(&inputs);
         if let Some(op) = &got {
@@ -419,14 +419,14 @@ fn ctx_05_codex_fleet_limit_flag_only_without_operator_value() {
     assert!(!d.applied);
 }
 
-const GOLDEN: &str = r#"{"tokens":200000,"source":"fleet","detail":"context-policy windows codex/gpt-5.6-sol","applied":true}"#;
+const GOLDEN: &str = r#"{"tokens":200000,"source":"fleet","detail":"context-policy windows codex/gpt-6.2-sol","applied":true}"#;
 
 #[test]
 fn ctx_05_launch_records_window_decision() {
     let golden = LedgerWindow {
         tokens: Some(200_000),
         source: LedgerWindowSource::Fleet,
-        detail: "context-policy windows codex/gpt-5.6-sol".into(),
+        detail: "context-policy windows codex/gpt-6.2-sol".into(),
         applied: true,
     };
     assert_eq!(serde_json::to_string(&golden).unwrap(), GOLDEN);
@@ -485,7 +485,7 @@ fn ctx_05_old_ledger_loads() {
 
     let later: Value = json!([{
         "record_id": "rec-later", "session_id": null, "agent": "codex",
-        "tier": "codex-sol", "model": "gpt-5.6-sol", "role": "codex-sol-1",
+        "tier": "codex-sol", "model": "gpt-6.2-sol", "role": "codex-sol-1",
         "status": "working", "task": "t", "history": [],
         "created_at": "2026-10-06T00:00:00Z", "updated_at": "2026-10-06T00:00:00Z",
         "compact_window": {"tokens": 1, "source": "later", "detail": "x", "applied": true}
