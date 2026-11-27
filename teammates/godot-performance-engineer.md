@@ -34,11 +34,11 @@ skills:
   - godot-gdscript-advanced
   - godot-debugging
   - godot-physics-system
-  - godot-assets-pipeline
   - godot-build-verify
   - godot-perf-measure
+  - godot-hfr-hunt
 # Named by name only: related skills.
-available_skills: [godot-gdextension, godot-shader-basics, godot-particles-vfx, godot-language-choice, godot-headless-runs]
+available_skills: [godot-gdextension, godot-shader-basics, godot-particles-vfx, godot-language-choice, godot-headless-runs, godot-assets-pipeline]
 # A C# project (a *.csproj next to project.godot) adds the C# skills to this
 # builder (GW11, roster/offer.rs project_skills). godot-csharp-engineer owns
 # interop, .NET builds and source-generator problems.

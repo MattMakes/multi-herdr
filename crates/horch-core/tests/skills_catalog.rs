@@ -460,6 +460,7 @@ const EXEMPT_FROM_TEXT_ONLY: &[&str] = &[
 const EXEMPT_FILES: &[&str] = &[
     "godot-build-verify/scripts/godot-check.sh",
     "godot-build-verify/scripts/godot-run.sh",
+    "godot-hfr-hunt/scripts/hfr_bench.py",
     "ui-prop-tester/scripts/ui-prop-tester",
 ];
 
@@ -951,7 +952,7 @@ fn skl_11_materialized_bundle_keeps_the_execute_bit() {
     let catalog = SkillCatalog::bundled().unwrap();
     let t = Teammate {
         name: "exec".into(),
-        available_skills: vec!["godot-build-verify".into()],
+        available_skills: vec!["godot-build-verify".into(), "godot-hfr-hunt".into()],
         phase: Some(Phase::Implementation),
         ..Teammate::default()
     };
@@ -960,17 +961,18 @@ fn skl_11_materialized_bundle_keeps_the_execute_bit() {
     let files = MaterializedSkills::materialize(&plan, &catalog, tmp.path(), "exec")
         .unwrap()
         .unwrap();
-    let dir = files.skills_dir().join("godot-build-verify");
     let mode = |rel: &str| {
-        std::fs::metadata(dir.join(rel))
+        std::fs::metadata(files.skills_dir().join(rel))
             .unwrap()
             .permissions()
             .mode()
             & 0o777
     };
-    assert_eq!(mode("scripts/godot-run.sh"), 0o755);
-    assert_eq!(mode("scripts/godot-check.sh"), 0o755);
-    assert_eq!(mode("SKILL.md") & 0o111, 0);
+    assert_eq!(mode("godot-build-verify/scripts/godot-run.sh"), 0o755);
+    assert_eq!(mode("godot-build-verify/scripts/godot-check.sh"), 0o755);
+    assert_eq!(mode("godot-build-verify/SKILL.md") & 0o111, 0);
+    assert_eq!(mode("godot-hfr-hunt/scripts/hfr_bench.py"), 0o755);
+    assert_eq!(mode("godot-hfr-hunt/SKILL.md") & 0o111, 0);
 }
 
 fn check_problems(t: Teammate, home: Option<&Path>) -> Vec<String> {
