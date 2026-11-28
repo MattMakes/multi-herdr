@@ -20,7 +20,7 @@ fn cargo_home_values(
                 skills: None,
                 compact_window: None,
                 teammate,
-                model: "gpt-5.6-sol",
+                model: "gpt-6.2-sol",
                 workdir,
                 shell_env,
             },
