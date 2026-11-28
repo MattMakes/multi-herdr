@@ -434,7 +434,7 @@ fn trf_30_review_modes_reviewer_limits_and_the_cheaper_rounds() {
     let mut w = World::new(Some(ReviewMode::Full));
     commit(
         &w.wt,
-        "lib.rs",
+        "lib.ts",
         "pub struct A;\nlet password = 1;\nfor x in y {}\npub fn f() {}\n",
     );
     w.finish();
