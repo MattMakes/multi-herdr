@@ -28,6 +28,7 @@ pub struct Tools {
     pub gh: PathBuf,
     pub node: PathBuf,
     pub complexity_cli: Option<PathBuf>,
+    pub gdcomplexity_cli: Option<PathBuf>,
     pub code_sweep_dir: Option<PathBuf>,
     pub evidence_root: PathBuf,
     pub shell: PathBuf,

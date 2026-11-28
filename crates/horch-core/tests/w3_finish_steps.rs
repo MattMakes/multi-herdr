@@ -106,6 +106,7 @@ impl World {
             gh: top.join("gh"),
             node: "/bin/sh".into(),
             complexity_cli: None,
+            gdcomplexity_cli: None,
             code_sweep_dir: None,
             evidence_root: top.join("evidence"),
             shell: "/bin/sh".into(),
@@ -578,7 +579,7 @@ fn complexity_sweep_skips_files_the_analyser_cannot_read() {
     assert_eq!(step(&r, "complexity-sweep").status, "not_applicable");
     assert_eq!(
         note(&r, "complexity-sweep"),
-        "no changed file is in a language that the analyser (TypeScript, JavaScript, Python) or clippy (Rust) reads"
+        "no changed file is in a language that the analyser (TypeScript, JavaScript, Python), clippy (Rust) or gdcomplexity (GDScript) reads"
     );
     assert!(step(&r, "complexity-sweep").judged_rev.is_some());
 }

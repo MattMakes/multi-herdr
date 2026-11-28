@@ -2407,13 +2407,15 @@ pub fn tools(ctx: &RuntimeContext) -> finish::Tools {
         ctx.paths.data_root.clone(),
     ];
     roots.extend(local_marketplaces(&ctx.paths.data_root));
+    let evidence_root = evidence_root(ctx);
     finish::Tools {
         git: Git::new(&ctx.bins.harness.git),
         gh: tool_bin("HORCH_GH_BIN", "gh"),
         node: tool_bin("HORCH_NODE_BIN", "node"),
         complexity_cli: complexity_cli(&roots),
+        gdcomplexity_cli: gdcomplexity_cli(&evidence_root),
         code_sweep_dir: code_sweep_dir(&roots),
-        evidence_root: evidence_root(ctx),
+        evidence_root,
         shell: PathBuf::from(if cfg!(unix) { "/bin/sh" } else { "sh" }),
         reviewers_down: Vec::new(),
         codex: finish::CodexSandbox {
@@ -2456,6 +2458,11 @@ fn complexity_cli(roots: &[PathBuf]) -> Option<PathBuf> {
         })
         .map(|d| d.join("code/cli/dist/index.js"))
     })
+}
+
+fn gdcomplexity_cli(evidence_root: &Path) -> Option<PathBuf> {
+    env_path("HORCH_GDCOMPLEXITY_CLI")
+        .or_else(|| finish::complexity::write_gdcomplexity(evidence_root).ok())
 }
 
 fn evidence_root(ctx: &RuntimeContext) -> PathBuf {

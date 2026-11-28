@@ -1137,6 +1137,7 @@ mod tests {
                 gh: top.join("gh"),
                 node: "/bin/sh".into(),
                 complexity_cli: None,
+                gdcomplexity_cli: None,
                 code_sweep_dir: None,
                 evidence_root: top.join("evidence"),
                 shell: "/bin/sh".into(),

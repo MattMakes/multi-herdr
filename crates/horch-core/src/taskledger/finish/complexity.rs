@@ -493,6 +493,159 @@ impl Analyser<'_> {
     }
 }
 
+pub const GDCOMPLEXITY_PY: &str = include_str!("../../../../../scripts/godot/gdcomplexity.py");
+
+pub const GDSCRIPT_INSTALL_HINT: &str =
+    "install uv, or run: uv tool install gdtoolkit==4.5.0 or pipx install \"gdtoolkit==4.*\"";
+
+pub fn write_gdcomplexity(evidence_root: &Path) -> std::io::Result<PathBuf> {
+    let path = evidence_root.join("bin").join("gdcomplexity.py");
+    if std::fs::read_to_string(&path).ok().as_deref() != Some(GDCOMPLEXITY_PY) {
+        std::fs::create_dir_all(evidence_root.join("bin"))?;
+        let part = path.with_extension(format!("py.{}", std::process::id()));
+        std::fs::write(&part, GDCOMPLEXITY_PY)?;
+        std::fs::rename(&part, &path)?;
+    }
+    Ok(path)
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum GdRunner {
+    Uv(PathBuf),
+    Python(PathBuf, &'static str),
+}
+
+fn succeeds(program: &Path, args: &[&str]) -> bool {
+    let mut cmd = Command::new(program);
+    cmd.args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    crate::runtime::process::scrub_child_env(&mut cmd);
+    cmd.status().is_ok_and(|s| s.success())
+}
+
+pub fn gdscript_runner(uv: &Path, python: &Path) -> Option<GdRunner> {
+    if succeeds(uv, &["--version"]) {
+        return Some(GdRunner::Uv(uv.to_path_buf()));
+    }
+    ["-I", "-B"]
+        .into_iter()
+        .find(|flag| succeeds(python, &[flag, "-c", "import gdtoolkit.parser"]))
+        .map(|flag| GdRunner::Python(python.to_path_buf(), flag))
+}
+
+impl GdRunner {
+    pub fn command(
+        &self,
+        cli: &Path,
+        files: &[String],
+        config: Option<&Path>,
+        dir: &Path,
+    ) -> Command {
+        let mut cmd = match self {
+            GdRunner::Uv(uv) => {
+                let mut c = Command::new(uv);
+                c.args([
+                    "run",
+                    "--quiet",
+                    "--no-project",
+                    "--with",
+                    "gdtoolkit==4.5.0",
+                    "python3",
+                    "-I",
+                ]);
+                c
+            }
+            GdRunner::Python(python, flag) => {
+                let mut c = Command::new(python);
+                c.arg(flag);
+                c
+            }
+        };
+        cmd.arg(cli).args(["--format", "json"]);
+        if let Some(config) = config {
+            cmd.arg("--config").arg(config);
+        }
+        cmd.args(files).current_dir(dir);
+        crate::runtime::process::scrub_child_env(&mut cmd);
+        cmd
+    }
+}
+
+pub fn no_gdscript_analyser() -> Outcome {
+    Outcome::fail(
+        "no gdscript analyser",
+        None,
+        &format!(
+            "changed .gd files need gdcomplexity, which runs through uv or python3 with gdtoolkit; {GDSCRIPT_INSTALL_HINT}, then run finish again"
+        ),
+    )
+}
+
+fn gd_sources(names: &str) -> Vec<String> {
+    names
+        .lines()
+        .filter(|f| f.ends_with(".gd"))
+        .map(str::to_string)
+        .collect()
+}
+
+fn gd_evidence(evidence_dir: &Path, seq: i64, i: usize) -> PathBuf {
+    evidence_dir.join(match i {
+        0 => format!("{seq}-gdcomplexity.json"),
+        n => format!("{seq}-gdcomplexity-{}.json", n + 1),
+    })
+}
+
+fn run_gdcomplexity(
+    mut cmd: Command,
+    evidence: &Path,
+) -> Result<std::result::Result<String, Outcome>> {
+    cmd.stdout(std::fs::File::create(evidence)?);
+    let out = cmd.output().context("running gdcomplexity")?;
+    let json = std::fs::read_to_string(evidence)?;
+    if out.status.success() && !json.trim().is_empty() {
+        return Ok(Ok(json));
+    }
+    Ok(Err(Outcome::fail(
+        "gdcomplexity failed",
+        Some(evidence.to_path_buf()),
+        &format!(
+            "gdcomplexity could not analyse the changed .gd files; fix the parse error, commit, then run finish again: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ),
+    )))
+}
+
+pub struct GdRoute<'a> {
+    pub runner: &'a GdRunner,
+    pub cli: &'a Path,
+    pub dir: &'a Path,
+}
+
+impl GdRoute<'_> {
+    pub fn reports(
+        &self,
+        files: &[String],
+        evidence_dir: &Path,
+        seq: i64,
+    ) -> Result<std::result::Result<Vec<(PathBuf, String)>, Outcome>> {
+        let mut reports = Vec::new();
+        for (i, (cfg, group)) in config::groups(self.dir, files).into_iter().enumerate() {
+            let path = gd_evidence(evidence_dir, seq, i);
+            let cmd = self
+                .runner
+                .command(self.cli, &group, cfg.as_deref(), self.dir);
+            match run_gdcomplexity(cmd, &path)? {
+                Ok(json) => reports.push((path, json)),
+                Err(failed) => return Ok(Err(failed)),
+            }
+        }
+        Ok(Ok(reports))
+    }
+}
+
 type RustFindings = (Vec<Violation>, Vec<PathBuf>);
 
 pub fn rust_violations(
@@ -518,6 +671,47 @@ pub fn rust_violations(
     Ok(Ok((found, evidence)))
 }
 
+pub const NOT_APPLICABLE: &str = "no changed file is in a language that the analyser (TypeScript, JavaScript, Python), clippy (Rust) or gdcomplexity (GDScript) reads";
+
+type Reports = std::result::Result<Vec<(PathBuf, String)>, Outcome>;
+
+fn analyser_reports(cx: &Ctx<'_>, files: &[String]) -> Result<Reports> {
+    if files.is_empty() {
+        return Ok(Ok(Vec::new()));
+    }
+    let Some(cli) = &cx.tools.complexity_cli else {
+        return Ok(Err(Outcome::fail(
+            "no analyser",
+            None,
+            "the complexity-sweep skill's analyser was not found. Install the code plugin's complexity-sweep skill (and run npm install in its code/core and code/cli), or set HORCH_COMPLEXITY_CLI to its code/cli/dist/index.js",
+        )));
+    };
+    let analyser = Analyser {
+        node: &cx.tools.node,
+        cli,
+        dir: &cx.dir,
+    };
+    analyser.run_groups(files, &cx.evidence_dir, cx.seq)
+}
+
+fn gd_reports(cx: &Ctx<'_>, gd: &[String]) -> Result<Reports> {
+    if gd.is_empty() {
+        return Ok(Ok(Vec::new()));
+    }
+    let (Some(cli), Some(runner)) = (
+        &cx.tools.gdcomplexity_cli,
+        gdscript_runner(Path::new("uv"), Path::new("python3")),
+    ) else {
+        return Ok(Err(no_gdscript_analyser()));
+    };
+    let route = GdRoute {
+        runner: &runner,
+        cli,
+        dir: &cx.dir,
+    };
+    route.reports(gd, &cx.evidence_dir, cx.seq)
+}
+
 pub fn step(cx: &Ctx<'_>) -> Result<Outcome> {
     let git = &cx.tools.git;
     let base = cx.diff_base()?;
@@ -532,41 +726,26 @@ pub fn step(cx: &Ctx<'_>) -> Result<Outcome> {
     )?;
     let files = sources(&names);
     let rust = rust_crates(&names, &cx.dir);
+    let gd = gd_sources(&names);
     let tree = git.tree(&cx.dir).ok();
-    if files.is_empty() && rust.is_empty() {
-        return Ok(
-            Outcome::not_applicable(
-                "no changed file is in a language that the analyser (TypeScript, JavaScript, Python) or clippy (Rust) reads",
-            )
-                .judged(tree),
-        );
+    if files.is_empty() && rust.is_empty() && gd.is_empty() {
+        return Ok(Outcome::not_applicable(NOT_APPLICABLE).judged(tree));
     }
-    let mut found = Vec::new();
-    let mut evidence = Vec::new();
-    let mut reports = Vec::new();
-    if !files.is_empty() {
-        let Some(cli) = &cx.tools.complexity_cli else {
-            return Ok(Outcome::fail(
-                "no analyser",
-                None,
-                "the complexity-sweep skill's analyser was not found. Install the code plugin's complexity-sweep skill (and run npm install in its code/core and code/cli), or set HORCH_COMPLEXITY_CLI to its code/cli/dist/index.js",
-            ));
-        };
-        let analyser = Analyser {
-            node: &cx.tools.node,
-            cli,
-            dir: &cx.dir,
-        };
-        match analyser.run_groups(&files, &cx.evidence_dir, cx.seq)? {
-            Ok(r) => reports = r,
-            Err(failed) => return Ok(failed),
-        }
-        if reports.is_empty() && rust.is_empty() {
-            return Ok(Outcome::not_applicable("no analysable source files").judged(tree));
-        }
+    let mut reports = match analyser_reports(cx, &files)? {
+        Ok(r) => r,
+        Err(failed) => return Ok(failed),
+    };
+    if !files.is_empty() && reports.is_empty() && rust.is_empty() && gd.is_empty() {
+        return Ok(Outcome::not_applicable("no analysable source files").judged(tree));
+    }
+    match gd_reports(cx, &gd)? {
+        Ok(r) => reports.extend(r),
+        Err(failed) => return Ok(failed),
     }
     let diff = git.run(&cx.dir, &["diff", "-U0", &format!("{base}...HEAD"), "--"])?;
     let changed = changed_lines(&diff);
+    let mut found = Vec::new();
+    let mut evidence = Vec::new();
     for (path, json) in reports {
         found.extend(in_changed_functions(&json, &changed, &cx.dir)?);
         evidence.push(path);
@@ -583,7 +762,7 @@ pub fn step(cx: &Ctx<'_>) -> Result<Outcome> {
         Outcome::pass(
             "0 violations",
             evidence.first().cloned(),
-            &format!("{} files analysed", files.len() + rust_files),
+            &format!("{} files analysed", files.len() + rust_files + gd.len()),
         )
     } else {
         violations(&found, &evidence)

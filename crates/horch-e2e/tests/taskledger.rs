@@ -2548,12 +2548,107 @@ fn a_rust_only_change_is_not_sent_to_the_complexity_analyser() {
         .as_bytes(),
     );
     h.set("HORCH_COMPLEXITY_CLI", cli.to_string_lossy());
-    let (w, path) = claimed_with_commit(&h, "complexity-sweep", None, "lib.rs");
-    commit_file(&h, &path, "node.gd");
+    let (w, _) = claimed_with_commit(&h, "complexity-sweep", None, "lib.rs");
     let (code, r) = finish_json(&h, &w);
     assert_eq!(code, Some(0), "{r}");
     assert_eq!(step_of(&r, "complexity-sweep").0, "not_applicable", "{r}");
     assert!(!called.exists(), "the analyser parses TypeScript only");
+}
+
+const FAKE_UV: &str = r#"#!/bin/sh
+if [ "$1" = warm ]; then exit 0; fi
+if [ "$1" = --version ]; then exit 0; fi
+echo "$PWD $*" >> "$FAKE_UV_CALLS"
+while [ "$#" -gt 0 ] && [ "$1" != -I ]; do shift; done
+shift
+exec /bin/sh "$@"
+"#;
+
+const FAKE_GDCOMPLEXITY: &str = r#"#!/bin/sh
+if [ "$1" = warm ]; then exit 0; fi
+f=
+for a in "$@"; do f="$a"; done
+printf '{"files":[{"filePath":"%s","functions":[{"name":"old_tangled","line":1},{"name":"new_tangled","line":4},{"name":"","line":7}]}],' "$f"
+printf '"violations":[{"functionName":"old_tangled","filePath":"%s","line":1,"metric":"cyclomaticComplexity","value":12,"threshold":10},' "$f"
+printf '{"functionName":"new_tangled","filePath":"%s","line":4,"metric":"cyclomaticComplexity","value":11,"threshold":10}]}\n' "$f"
+"#;
+
+fn gd_world(h: &mut Harness) -> PathBuf {
+    let calls = h.root.join("uv-calls");
+    h.write_warmed("uv", FAKE_UV.as_bytes());
+    h.set("FAKE_UV_CALLS", calls.to_string_lossy());
+    let cli = h.write_warmed("fake-gdcomplexity.py", FAKE_GDCOMPLEXITY.as_bytes());
+    h.set("HORCH_GDCOMPLEXITY_CLI", cli.to_string_lossy());
+    calls
+}
+
+#[test]
+fn grs_03_finish_fails_a_changed_gdscript_function_at_its_line() {
+    let mut h = finish_world("tl-complexity-gd");
+    let calls = gd_world(&mut h);
+    let project = h.project.clone();
+    std::fs::write(
+        project.join("player.gd"),
+        "func old_tangled():\n\tpass\n\nfunc new_tangled():\n\tpass\n\nvar after = 1\n",
+    )
+    .unwrap();
+    git_in(&h, &project, &["add", "player.gd"]);
+    git_in(
+        &h,
+        &project,
+        &["commit", "--quiet", "--no-gpg-sign", "-m", "gd"],
+    );
+    git_in(&h, &project, &["push", "--quiet", "origin", "main"]);
+    let (w, path) = claimed_with_commit(&h, "complexity-sweep", None, "notes.md");
+    std::fs::write(
+        path.join("player.gd"),
+        "func old_tangled():\n\tpass\n\nfunc new_tangled():\n\treturn\n\nvar after = 2\n",
+    )
+    .unwrap();
+    git_in(
+        &h,
+        &path,
+        &["commit", "--quiet", "--no-gpg-sign", "-am", "gd 2"],
+    );
+    let (code, r) = finish_json(&h, &w);
+    assert_eq!(code, Some(1), "{r}");
+    let (status, verdict) = step_of(&r, "complexity-sweep");
+    assert_eq!(
+        (status.as_str(), verdict.as_str()),
+        ("failed", "1 violations"),
+        "{r}"
+    );
+    let report = r.to_string();
+    assert!(
+        report.contains("player.gd:4 new_tangled cyclomaticComplexity=11 (max 10)"),
+        "{r}"
+    );
+    assert!(!report.contains("old_tangled"), "untouched function: {r}");
+    let calls = std::fs::read_to_string(&calls).unwrap();
+    assert_eq!(calls.lines().count(), 1, "{calls}");
+    for arg in [
+        "run --quiet --no-project --with gdtoolkit==4.5.0 python3 -I",
+        "--format json player.gd",
+    ] {
+        assert!(calls.contains(arg), "{arg}: {calls}");
+    }
+}
+
+#[test]
+fn grs_03_finish_without_uv_or_gdtoolkit_fails_with_install_hint() {
+    let h = finish_world("tl-complexity-gd-none");
+    let (w, _) = claimed_with_commit(&h, "complexity-sweep", None, "player.gd");
+    let (code, r) = finish_json(&h, &w);
+    assert_eq!(code, Some(1), "{r}");
+    let (status, verdict) = step_of(&r, "complexity-sweep");
+    assert_eq!(
+        (status.as_str(), verdict.as_str()),
+        ("failed", "no gdscript analyser"),
+        "{r}"
+    );
+    let report = r.to_string();
+    assert!(report.contains("uv tool install gdtoolkit==4.5.0"), "{r}");
+    assert!(report.contains("pipx install"), "{r}");
 }
 
 const GDEXT_LIB: &str = "use godot::prelude::*;\n\n#[godot_api]\nimpl Player {\npub fn tangled(v: &[u32]) -> u32 {\n    v.len() as u32\n}\n}\n";
