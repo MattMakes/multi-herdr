@@ -3070,7 +3070,8 @@ mod tests {
         branch: Option<&str>,
         shape: impl FnOnce(&mut NewTask),
     ) -> (RuntimeContext, Store, Claimed) {
-        let ctx = RuntimeContext::from_env(&MapEnv::new(dir)).unwrap();
+        let ctx = RuntimeContext::from_env(&MapEnv::new(dir).with("HOME", &dir.to_string_lossy()))
+            .unwrap();
         let mut store = Store::open(&dir.join("ledger.sqlite3")).unwrap();
         let new_run = NewRun {
             slug: "r1".into(),
@@ -3231,7 +3232,10 @@ mod tests {
         }
         let dir = tempfile::tempdir().unwrap();
         let root = project(dir.path(), false);
-        let ctx = RuntimeContext::from_env(&MapEnv::new(dir.path())).unwrap();
+        let ctx = RuntimeContext::from_env(
+            &MapEnv::new(dir.path()).with("HOME", &dir.path().to_string_lossy()),
+        )
+        .unwrap();
         let mut store = Store::open(&dir.path().join("ledger.sqlite3")).unwrap();
         for (slug, check, want) in [
             ("r1", Some("cargo test"), Some("cargo test")),
@@ -3358,7 +3362,8 @@ mod tests {
             std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
         let _ = std::process::Command::new(&gh).output();
-        let ctx = RuntimeContext::from_env(&MapEnv::new(dir)).unwrap();
+        let ctx = RuntimeContext::from_env(&MapEnv::new(dir).with("HOME", &dir.to_string_lossy()))
+            .unwrap();
         let mut t = tools(&ctx);
         t.git = Git::new("git");
         t.gh = gh;
@@ -3612,7 +3617,9 @@ mod tests {
     }
 
     fn task_world(dir: &Path, root: &Path, workspace: Option<&str>) -> (RuntimeContext, Store) {
-        let mut env = MapEnv::new(root).with("HORCH_PROJECT_DIR", root.to_str().unwrap());
+        let mut env = MapEnv::new(root)
+            .with("HOME", &dir.to_string_lossy())
+            .with("HORCH_PROJECT_DIR", root.to_str().unwrap());
         if let Some(ws) = workspace {
             env = env.with("HORCH_WORKSPACE_ID", ws);
         }
