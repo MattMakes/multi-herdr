@@ -530,7 +530,7 @@ pub fn gdscript_runner(uv: &Path, python: &Path) -> Option<GdRunner> {
 }
 
 impl GdRunner {
-    pub fn command(
+    pub fn gdcomplexity_command(
         &self,
         cli: &Path,
         files: &[String],
@@ -630,7 +630,7 @@ impl GdRoute<'_> {
             let path = gd_evidence(evidence_dir, seq, i);
             let cmd = self
                 .runner
-                .command(self.cli, &group, cfg.as_deref(), self.dir);
+                .gdcomplexity_command(self.cli, &group, cfg.as_deref(), self.dir);
             match run_gdcomplexity(cmd, &path)? {
                 Ok(json) => reports.push((path, json)),
                 Err(failed) => return Ok(Err(failed)),
