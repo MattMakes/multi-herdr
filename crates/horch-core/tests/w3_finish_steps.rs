@@ -655,7 +655,7 @@ fn complexity_sweep_fails_on_a_violation_in_a_changed_function() {
     assert_eq!(
         note(&r, "complexity-sweep"),
         format!(
-            "reduce the complexity of the functions you changed, commit, then run finish again: lib.ts:1 f cyclomaticComplexity=12 (max 10). Full analysis: {}",
+            "reduce the complexity of every function you changed, commit, then run finish again: lib.ts:1 f cyclomaticComplexity=12 (max 10). Run horch ledger complexity for the full list. Full analysis: {}",
             evidence.display()
         )
     );
