@@ -1595,7 +1595,7 @@ fn work_and_finish(h: &Harness, w: &str, name: &str) -> Value {
     let wt = ok_as(h, w, &["ledger", "worktree", "new", name]);
     let path = PathBuf::from(wt.lines().find_map(|l| l.strip_prefix("path: ")).unwrap());
     std::fs::write(
-        path.join(format!("{name}.rs")),
+        path.join(format!("{name}.ts")),
         format!("fn {name}() {{}}\n"),
     )
     .unwrap();
