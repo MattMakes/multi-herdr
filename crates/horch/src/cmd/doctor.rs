@@ -1094,8 +1094,7 @@ mod tests {
         let empty = tempfile::tempdir().unwrap();
         let path = Some(empty.path().as_os_str());
         let facts = |names: [&str; 1]| {
-            Roster::builtin()
-                .unwrap()
+            roster_without_rust_seats()
                 .with_project_facts(horch_core::roster::ProjectFacts::from_names(names))
         };
         assert!(requirement_problems(
@@ -1367,8 +1366,7 @@ mod tests {
         let empty = tempfile::tempdir().unwrap();
         let path = Some(empty.path().as_os_str());
         let facts = |names: [&str; 1]| {
-            Roster::builtin()
-                .unwrap()
+            roster_without_rust_seats()
                 .with_project_facts(horch_core::roster::ProjectFacts::from_names(names))
         };
         assert!(requirement_problems(
@@ -1655,6 +1653,23 @@ mod tests {
         r
     }
 
+    fn roster_without_rust_seats() -> Roster {
+        let mut r = Roster::builtin().unwrap();
+        let seats: Vec<Teammate> = r
+            .offered()
+            .into_iter()
+            .filter(|t| t.requires.contains(&Requirement::Rust))
+            .cloned()
+            .collect();
+        for seat in seats {
+            r.insert_for_test(Teammate {
+                hidden: true,
+                ..seat
+            });
+        }
+        r
+    }
+
     fn fake_tools(clippy_code: i32, names: &[&str]) -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         for name in names {
@@ -1678,7 +1693,10 @@ mod tests {
     fn grs_05_doctor_checks_finish_step_tools_from_project_facts() {
         let empty = tempfile::tempdir().unwrap();
         let none = Some(empty.path().as_os_str());
-        let both = with_facts(Roster::builtin().unwrap(), &["Cargo.toml", "project.godot"]);
+        let both = with_facts(
+            roster_without_rust_seats(),
+            &["Cargo.toml", "project.godot"],
+        );
         let problems = project_fact_problems(&both, none, None);
         assert_eq!(problems.len(), 3, "{problems:?}");
         assert!(problems[0].contains("cargo not found"), "{}", problems[0]);
@@ -1687,7 +1705,7 @@ mod tests {
         assert!(problems[2].contains("complexity-sweep"), "{}", problems[2]);
         assert!(problems[2].contains("gdtoolkit==4.5.0"), "{}", problems[2]);
 
-        let rust_only = with_facts(Roster::builtin().unwrap(), &["Cargo.toml"]);
+        let rust_only = with_facts(roster_without_rust_seats(), &["Cargo.toml"]);
         assert_eq!(project_fact_problems(&rust_only, none, None).len(), 2);
 
         let plain = with_facts(Roster::builtin().unwrap(), &["README.md"]);
