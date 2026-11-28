@@ -1452,7 +1452,7 @@ mod tests {
         assert_eq!(human(88_000_000), "88M");
         assert_eq!(human(950), "950");
         assert_eq!(short_model("claude-opus-5-5"), "opus-5.5");
-        assert_eq!(short_model("gpt-5.6-sol"), "5.6-sol");
+        assert_eq!(short_model("gpt-6.2-sol"), "6.2-sol");
         assert_eq!(
             clip("golden-prompts-whitespace", 20),
             "golden-prompts-whit…"

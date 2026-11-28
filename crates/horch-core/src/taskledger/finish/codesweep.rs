@@ -105,6 +105,13 @@ fn contracts(s: &Signals<'_>) -> bool {
         "alter table",
         "schema",
         "#[derive(serialize",
+        "class_name ",
+        "signal ",
+        "@export",
+        "public class ",
+        "public struct ",
+        "public interface ",
+        "#[godot_api]",
     ])
 }
 
@@ -125,6 +132,11 @@ fn touches_dependencies(s: &Signals<'_>) -> bool {
         "requirements.txt",
         "go.mod",
         "Cargo.lock",
+        ".csproj",
+        "Directory.Packages.props",
+        "project.godot",
+        ".gdextension",
+        "plugin.cfg",
     ])
 }
 
@@ -140,7 +152,9 @@ fn loose_rules(s: &Signals<'_>) -> bool {
 }
 
 fn touches_ui(s: &Signals<'_>) -> bool {
-    const UI: &[&str] = &["html", "css", "scss", "tsx", "jsx", "vue", "svelte"];
+    const UI: &[&str] = &[
+        "html", "css", "scss", "tsx", "jsx", "vue", "svelte", "tscn", "tres",
+    ];
     s.files.iter().any(|f| {
         Path::new(f)
             .extension()
@@ -172,6 +186,38 @@ pub fn triage(diff: &str, files: &[String]) -> Vec<&'static str> {
             .filter(|(_, picks)| picks(&signals))
             .map(|(code, _)| *code),
     );
+    out
+}
+
+const DOMAIN_REVIEWERS: &[(&str, &[&str])] = &[
+    (
+        "godot-code-reviewer",
+        &[".gd", ".tscn", ".tres", ".gdextension", "project.godot"],
+    ),
+    ("rust-reviewer", &[".rs", "Cargo.toml"]),
+    ("swift-reviewer", &[".swift", "Package.swift"]),
+];
+
+pub fn domain_reviewer(files: &[String]) -> Option<&'static str> {
+    DOMAIN_REVIEWERS
+        .iter()
+        .find(|(_, ends)| files.iter().any(|f| ends.iter().any(|e| f.ends_with(e))))
+        .map(|(persona, _)| *persona)
+}
+
+pub fn slot_reviewers<'a>(
+    domain: Option<&'a str>,
+    round: u32,
+    persona: &'a str,
+    fallback: &'a str,
+    down: &[(String, String)],
+    slots: usize,
+) -> Vec<(&'a str, &'a str)> {
+    let mut out = vec![(persona, fallback); slots];
+    let usable = domain.filter(|d| round == 1 && !down.iter().any(|(p, _)| p == d));
+    if let (Some(d), Some(first)) = (usable, out.first_mut()) {
+        *first = (d, persona);
+    }
     out
 }
 
@@ -515,6 +561,7 @@ struct Earlier {
 struct RoundPlan<'a> {
     sweep: &'a Path,
     diff: &'a RoundDiff,
+    round: u32,
     persona: &'a str,
     fallback: &'a str,
     limit: usize,
@@ -545,8 +592,20 @@ fn plan_round(cx: &Ctx<'_>, plan: &RoundPlan<'_>) -> Result<Vec<Planned>> {
     } else {
         ""
     };
+    let codes: Vec<&str> = triage(&d.diff, &d.files)
+        .into_iter()
+        .take(plan.limit)
+        .collect();
+    let slots = slot_reviewers(
+        domain_reviewer(&d.files),
+        plan.round,
+        plan.persona,
+        plan.fallback,
+        &cx.tools.reviewers_down,
+        codes.len(),
+    );
     let mut out = Vec::new();
-    for code in triage(&d.diff, &d.files).into_iter().take(plan.limit) {
+    for (code, (persona, fallback)) in codes.into_iter().zip(slots) {
         let (_, name, focus) = REVIEWERS
             .iter()
             .find(|(c, _, _)| *c == code)
@@ -584,7 +643,7 @@ fn plan_round(cx: &Ctx<'_>, plan: &RoundPlan<'_>) -> Result<Vec<Planned>> {
         )?;
         out.push(Planned {
             code: code.to_string(),
-            task: review_task(cx, name, &ticket, &findings, plan.persona, plan.fallback),
+            task: review_task(cx, name, &ticket, &findings, persona, fallback),
             findings: findings.to_string_lossy().into_owned(),
         });
     }
@@ -769,6 +828,7 @@ fn queue_round(
         &RoundPlan {
             sweep,
             diff: &d,
+            round,
             persona,
             fallback,
             limit: max_reviewers(review_mode(cx.task)),

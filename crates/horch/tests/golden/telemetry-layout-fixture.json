@@ -290,7 +290,7 @@
    "via": null,
    "kind": "worker",
    "agent": "claude",
-   "model": "gpt-5.6-sol",
+   "model": "gpt-6.2-sol",
    "effort": "xhigh",
    "phase": "validation",
    "plan": null,

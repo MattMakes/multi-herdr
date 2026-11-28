@@ -228,6 +228,7 @@ sequenceDiagram
     W->>L: supervisor + agent PIDs, checkin every 30 s
     W->>L: ledger claim (BEGIN IMMEDIATE; prints the ticket snapshot)
     W->>L: ledger progress
+    W->>L: ledger complexity (every complexity-sweep finding, writes nothing)
     D->>L: every 30 s: reconcile, drain the outbox to durable mail
     D->>L: every 10 min: 1 check row per working worker
     D->>W: dead: ledger stop by recorded PID, requeue

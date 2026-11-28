@@ -94,7 +94,7 @@ fn ctx_07_native_trigger_per_rule() {
         native(HarnessKind::Claude, "claude-haiku-4-5", None, None),
         Some(167_000)
     );
-    let codex = |limit, window| native(HarnessKind::Codex, "gpt-5.6-sol", limit, window);
+    let codex = |limit, window| native(HarnessKind::Codex, "gpt-6.2-sol", limit, window);
     assert_eq!(codex(Some(200_000), Some(258_400)), Some(200_000));
     assert_eq!(codex(None, Some(258_400)), Some(244_800));
     assert_eq!(codex(None, None), None);

@@ -104,6 +104,11 @@ in any other file.
 
 The full rules are in [skills/README.md](../skills/README.md#copied-files).
 
+The `model:` field names the model a teammate uses. A Codex teammate may use
+the family alias `sol`, `astra`, `terra` or `luna`; horch resolves it to the
+newest numerically versioned model whose Codex catalog visibility is `list`.
+A full slug such as `gpt-6.1-sol` remains pinned and is used unchanged.
+
 ## Offering a domain team only where it fits
 
 A fleet orchestrator reads the roster in its briefing. A domain team (Unreal,
@@ -196,6 +201,7 @@ each team.
 |---|---|---|---|
 | Unreal Engine (11 `ue-*`) | `*.uproject` | 31 copied `ue-*` skills, plus 2 house skills, `ue-build-verify` and `ue-editor-scripting` | read `.agents/ue-project-context.md` first; never write asset bytes; check the engine headers; 1 build at a time; a `DONE:` that names target, configuration and filter; the Git LFS lock rules |
 | Godot (20 `godot-*`) | `project.godot` | 82 `godot-*` skills: renamed copied skills, combined skills with own-text references, and own skills such as `godot-build-verify` and `godot-scene-files`; `godot-library`, a reference library of advanced techniques whose shelves each seat names at the top of its briefing; a `*.csproj` adds the 2 C# skills to each builder | read `.agents/godot-project-context.md` first; never touch `.godot/` or `.import`, commit `.uid` sidecars; check APIs with `godot --doctool`; headless only, 1 import at a time; a `DONE:` that names the Godot version, the parse check and the tests; addon skills only at the pinned addon version |
+| Rust (3 `rust-*`) | `Cargo.toml` | 7 own-text `rust-*` skills: `rust-unsafe-review`, `rust-async`, `rust-cargo-workspace`, `rust-perf`, `rust-fuzz`, `rust-testing`, `rust-error-handling` | run `cargo check`, `cargo clippy` and `cargo test` and name the results in `DONE:`; a `// SAFETY:` comment on every `unsafe` block; `rust-reviewer` never edits |
 | Swift and Apple (7) | `*.xcodeproj`, `*.xcworkspace` or `Package.swift` | 28 Swift and Apple skills | check the toolchain first; the builders carry `mobilebuildmcp` |
 | Design (6 new, 2 changed) | no gate: always offered | 8 design skills | brand inputs override the palettes and font pairings in the skills |
 | Blender (`blender-artist`) | `*.blend` or `*.uproject` | `blender-ue-pipeline`, `blender-modeling`, `blender-rigging`, `blender-baking` | Blender Lab MCP server; hands FBX exports to the Unreal team |

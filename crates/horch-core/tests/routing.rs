@@ -25,6 +25,7 @@ fn core_dir() -> &'static Path {
 fn roster() -> Roster {
     let mut r = Roster::builtin().unwrap();
     r.overlay(&core_dir().join("../../teammates")).unwrap();
+    r.resolve_codex_models(&core_dir().join("tests/fixtures/missing-codex"));
     r
 }
 
@@ -344,7 +345,7 @@ fn arc_14_legacy_record_resumes_with_provenance() {
         "researcher",
         Some("codex-sol"),
         "codex",
-        "gpt-5.6-sol",
+        "gpt-6.2-sol",
         Some("claude 7d 100%"),
         Some(researcher),
     )

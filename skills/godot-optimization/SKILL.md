@@ -95,15 +95,15 @@ GD.Print($"FPS: {fps:F0} | Draw calls: {drawCalls:F0} | VRAM: {videoRam / 1_048_
 
 ## 2. Draw Call Optimization
 
-Every distinct mesh, sprite, or canvas item that cannot be batched with its neighbours costs one draw call. Reducing draw calls is one of the highest-leverage optimisations, especially on mobile — wrap 2D groups sharing a texture in `CanvasGroup`, keep unique-material count low, atlas sprites, and cull off-screen work.
+Every distinct mesh, sprite, or canvas item that cannot be batched with its neighbours costs one draw call. Reducing draw calls is one of the highest-leverage optimisations, especially on mobile. Godot 4.7 batches compatible 2D work automatically in every renderer, so keep compatible sprites consecutive and sharing a texture. `CanvasGroup` is a backbuffer-compositing node, not a batcher, and can add cost. Keep unique-material count low, atlas sprites, and cull off-screen work.
 
-> See [references/draw-calls.md](references/draw-calls.md) for the full recipes (CanvasGroup batching constraints, shared shader-parameter materials, texture atlases, `VisibleOnScreenNotifier2D/3D` culling, and 3D LOD swapping).
+> See [references/draw-calls.md](references/draw-calls.md) for the full recipes (automatic 2D batching, instance-uniform materials, texture atlases, `VisibleOnScreenNotifier2D/3D` culling, and 3D mesh LOD with visibility ranges).
 
 ---
 
 ## 3. Physics Optimization
 
-Physics tuning hinges on minimising broadphase work and avoiding mesh colliders on moving bodies. Trim collision masks to only the layers each body actually needs, replace `ConcavePolygonShape3D` with primitives on anything that moves, and prefer `Area2D/3D` over per-frame raycasts for overlap detection.
+Physics tuning hinges on minimising broadphase work and avoiding mesh colliders on moving bodies. Trim collision masks to only the layers each body actually needs, replace `ConcavePolygonShape3D` with primitives on anything that moves, and use `Area2D/3D` for continuous enter/exit tracking but a bounded direct query for sparse or on-demand checks, measured at the real entity count.
 
 > See [references/physics-tuning.md](references/physics-tuning.md) for the full recipes (layer/mask bit examples, collision-shape cost table, `Engine.physics_ticks_per_second` tuning, Area-vs-raycast patterns).
 
@@ -129,8 +129,8 @@ Watch `Performance.MEMORY_STATIC` and `OBJECT_COUNT` across scene reloads — st
 
 | Problem | Diagnosis tool | Fix |
 |---|---|---|
-| Too many draw calls | Debugger > Monitors `Render > Total Draw Calls`; Viewport > Debug > Draw Calls overlay | Use `CanvasGroup` for 2D batching; merge meshes for 3D; use texture atlases; reduce unique materials |
-| Heavy GDScript in `_process` | Profiler > Self column shows script functions at top | Move logic to `_physics_process` (runs less often), cache queries, avoid per-frame allocations, consider C# for tight loops |
+| Too many draw calls | Debugger > Monitors `Render > Total Draw Calls`; Viewport > Debug > Draw Calls overlay | Keep compatible 2D items consecutive (Godot 4.7 batches compatible 2D work automatically in every renderer); merge meshes for 3D; use texture atlases; reduce unique materials |
+| Heavy GDScript in `_process` | Profiler > Self column shows script functions at top | Keep simulation in `_physics_process`; give delay-tolerant work an explicit cadence or budget, scheduled on accumulated `delta` or a `Timer`, not on a frame count; cache queries, avoid per-frame allocations, consider C# for tight loops |
 | Excessive signal connections | Profiler shows signal dispatch overhead; manually audit `get_signal_connection_list()` | Remove redundant connections; prefer polling over per-frame signals for high-frequency data; use `CONNECT_ONE_SHOT` for fire-and-forget |
 | Unoptimised TileMap | Profiler shows `TileMap._process` or high draw call count | Split into fewer layers; use a single atlas texture per layer; disable `use_parent_material` if not needed; use `TileMapLayer` (Godot 4.3+) instead of legacy TileMap |
 | Large uncompressed textures | Monitors `Render > Video RAM` is high; check Import dock for texture settings | Enable texture compression (VRAM Compressed) in the Import dock; use mipmaps; halve resolution of assets not viewed up-close |
@@ -142,7 +142,7 @@ Watch `Performance.MEMORY_STATIC` and `OBJECT_COUNT` across scene reloads — st
 
 ## 7. Top Anti-Patterns
 
-- **Allocating in `_process`** — new Arrays, Dictionaries, Strings, or Vector constructors per frame. Cache the container, mutate fields in place. See [references/cpu-bottlenecks.md](references/cpu-bottlenecks.md).
+- **Allocating in `_process`** — new Arrays, Dictionaries, or Strings per frame. Cache the container, mutate it in place. Small vectors are stored inline in `Variant` and do not allocate. See [references/cpu-bottlenecks.md](references/cpu-bottlenecks.md).
 - **Mesh colliders on moving bodies** — `ConcavePolygonShape3D` on a `CharacterBody3D` or `RigidBody3D`. Use a capsule, box, or convex hull instead. See [references/physics-tuning.md](references/physics-tuning.md).
 - **Unique materials per instance** — `material_override = SomeMaterial.new()` in `_ready()` breaks batching. Share one material; vary via shader parameters. See [references/draw-calls.md](references/draw-calls.md).
 - **`load()` in hot paths** — calling `load("res://...")` from `_process` or `_physics_process`. Use `const X := preload(...)` at class scope. See [references/cpu-bottlenecks.md](references/cpu-bottlenecks.md).
@@ -161,7 +161,7 @@ Work through this list before shipping or when investigating a performance compl
 
 **Draw Calls**
 - [ ] Draw call count is within target (≤500 mobile, ≤2 000 desktop).
-- [ ] 2D sprite groups that share a texture are wrapped in `CanvasGroup`.
+- [ ] 2D sprites that share a texture are drawn consecutively, and `CanvasGroup` is used only for compositing.
 - [ ] Textures are atlas-packed where possible; duplicate materials are eliminated.
 - [ ] Off-screen nodes use `VisibleOnScreenNotifier2D/3D` to pause processing.
 - [ ] 3D meshes have LOD enabled via import settings or manual swap logic.

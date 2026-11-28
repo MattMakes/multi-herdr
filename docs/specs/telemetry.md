@@ -940,7 +940,7 @@ Codex rollout lines:
 
 ```json
 {"timestamp":"2026-09-27T20:44:04Z","type":"session_meta","payload":{"id":"01a0e61c-d73e-74a3-837c-b5aade8b1c38","cwd":"/work/alpha","cli_version":"0.157.1"}}
-{"timestamp":"2026-09-27T20:44:05Z","type":"turn_context","payload":{"model":"gpt-5.6-sol","effort":"medium"}}
+{"timestamp":"2026-09-27T20:44:05Z","type":"turn_context","payload":{"model":"gpt-6.2-sol","effort":"medium"}}
 {"timestamp":"2026-09-27T20:45:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":800,"cache_write_input_tokens":0,"output_tokens":200,"reasoning_output_tokens":50,"total_tokens":1200},"last_token_usage":{"input_tokens":1000,"cached_input_tokens":800,"cache_write_input_tokens":0,"output_tokens":200,"reasoning_output_tokens":50,"total_tokens":1200},"model_context_window":400000},"rate_limits":{"limit_id":"codex","primary":{"used_percent":99.0,"window_minutes":10080,"resets_at":1791054949},"secondary":null,"plan_type":"prolite"}}}
 {"timestamp":"2026-09-27T20:46:00Z","type":"token_usage_record","payload":{"session_id":"01a0e61c-d73e-74a3-837c-b5aade8b1c38","turn_id":"t2","response_id":"resp_2","usage":{"input_tokens":500,"cached_input_tokens":400,"cache_write_input_tokens":0,"output_tokens":100,"reasoning_output_tokens":20,"total_tokens":600},"thread_token_usage":{"total_tokens":1800}}}
 {"timestamp":"2026-09-27T20:47:00Z","type":"event_msg","payload":{"type":"task_complete","error":{"message":"You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Oct 3rd, 2026 7:15 PM.","codex_error_info":"usage_limit_exceeded"}}}

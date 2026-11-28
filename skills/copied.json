@@ -956,6 +956,11 @@
       "verbatim": false
     },
     {
+      "name": "godot-hfr-hunt",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
       "name": "godot-hud-system",
       "copied_files": [
         "SKILL.md",
@@ -1554,6 +1559,41 @@
       "copied_files": [
         "SKILL.md"
       ],
+      "verbatim": false
+    },
+    {
+      "name": "rust-async",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "rust-cargo-workspace",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "rust-error-handling",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "rust-fuzz",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "rust-perf",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "rust-testing",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "rust-unsafe-review",
+      "copied_files": [],
       "verbatim": false
     },
     {

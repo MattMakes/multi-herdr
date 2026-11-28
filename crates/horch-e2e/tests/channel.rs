@@ -16,6 +16,7 @@ use tempfile::TempDir;
 
 const WORKSPACE: &str = "e2e";
 const THREAD_ID: &str = "thread-e2e";
+const SOCKET_PATH_LIMIT_WITH_MARGIN: usize = 96;
 const INSTRUCTIONS: &str =
     "Events from this server are worker reports from a horch fleet. Each event is\n\
 1 line: \"[<role> #<id>] <keyword> <text>\". <id> is the 8-character mail id.\n\
@@ -79,12 +80,22 @@ impl std::ops::DerefMut for World {
     }
 }
 
+fn short_state_dir() -> TempDir {
+    let mut builder = tempfile::Builder::new();
+    builder.prefix("hc-");
+    let preferred = builder.tempdir().expect("creating state directory");
+    let socket = channel::socket_path(preferred.path(), WORKSPACE);
+    if socket.as_os_str().len() < SOCKET_PATH_LIMIT_WITH_MARGIN {
+        return preferred;
+    }
+    builder
+        .tempdir_in("/tmp")
+        .expect("creating short state directory")
+}
+
 fn world(name: &str) -> World {
     let mut h = Harness::new(name);
-    let short_state = tempfile::Builder::new()
-        .prefix("hc-")
-        .tempdir_in("/tmp")
-        .expect("creating short state directory");
+    let short_state = short_state_dir();
     h.state = short_state.path().to_path_buf();
     h.set("HORCH_WORKSPACE_ID", WORKSPACE);
     h.set("HORCH_ROLE", "sonnet-1");

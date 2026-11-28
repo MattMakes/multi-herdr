@@ -1595,7 +1595,7 @@ fn work_and_finish(h: &Harness, w: &str, name: &str) -> Value {
     let wt = ok_as(h, w, &["ledger", "worktree", "new", name]);
     let path = PathBuf::from(wt.lines().find_map(|l| l.strip_prefix("path: ")).unwrap());
     std::fs::write(
-        path.join(format!("{name}.rs")),
+        path.join(format!("{name}.ts")),
         format!("fn {name}() {{}}\n"),
     )
     .unwrap();
@@ -2548,12 +2548,175 @@ fn a_rust_only_change_is_not_sent_to_the_complexity_analyser() {
         .as_bytes(),
     );
     h.set("HORCH_COMPLEXITY_CLI", cli.to_string_lossy());
-    let (w, path) = claimed_with_commit(&h, "complexity-sweep", None, "lib.rs");
-    commit_file(&h, &path, "node.gd");
+    let (w, _) = claimed_with_commit(&h, "complexity-sweep", None, "lib.rs");
     let (code, r) = finish_json(&h, &w);
     assert_eq!(code, Some(0), "{r}");
     assert_eq!(step_of(&r, "complexity-sweep").0, "not_applicable", "{r}");
     assert!(!called.exists(), "the analyser parses TypeScript only");
+}
+
+const FAKE_UV: &str = r#"#!/bin/sh
+if [ "$1" = warm ]; then exit 0; fi
+if [ "$1" = --version ]; then exit 0; fi
+echo "$PWD $*" >> "$FAKE_UV_CALLS"
+while [ "$#" -gt 0 ] && [ "$1" != -I ]; do shift; done
+shift
+exec /bin/sh "$@"
+"#;
+
+const FAKE_GDCOMPLEXITY: &str = r#"#!/bin/sh
+if [ "$1" = warm ]; then exit 0; fi
+f=
+for a in "$@"; do f="$a"; done
+printf '{"files":[{"filePath":"%s","functions":[{"name":"old_tangled","line":1},{"name":"new_tangled","line":4},{"name":"","line":7}]}],' "$f"
+printf '"violations":[{"functionName":"old_tangled","filePath":"%s","line":1,"metric":"cyclomaticComplexity","value":12,"threshold":10},' "$f"
+printf '{"functionName":"new_tangled","filePath":"%s","line":4,"metric":"cyclomaticComplexity","value":11,"threshold":10}]}\n' "$f"
+"#;
+
+fn gd_world(h: &mut Harness) -> PathBuf {
+    let calls = h.root.join("uv-calls");
+    h.write_warmed("uv", FAKE_UV.as_bytes());
+    h.set("FAKE_UV_CALLS", calls.to_string_lossy());
+    let cli = h.write_warmed("fake-gdcomplexity.py", FAKE_GDCOMPLEXITY.as_bytes());
+    h.set("HORCH_GDCOMPLEXITY_CLI", cli.to_string_lossy());
+    calls
+}
+
+#[test]
+fn grs_03_finish_fails_a_changed_gdscript_function_at_its_line() {
+    let mut h = finish_world("tl-complexity-gd");
+    let calls = gd_world(&mut h);
+    let project = h.project.clone();
+    std::fs::write(
+        project.join("player.gd"),
+        "func old_tangled():\n\tpass\n\nfunc new_tangled():\n\tpass\n\nvar after = 1\n",
+    )
+    .unwrap();
+    git_in(&h, &project, &["add", "player.gd"]);
+    git_in(
+        &h,
+        &project,
+        &["commit", "--quiet", "--no-gpg-sign", "-m", "gd"],
+    );
+    git_in(&h, &project, &["push", "--quiet", "origin", "main"]);
+    let (w, path) = claimed_with_commit(&h, "complexity-sweep", None, "notes.md");
+    std::fs::write(
+        path.join("player.gd"),
+        "func old_tangled():\n\tpass\n\nfunc new_tangled():\n\treturn\n\nvar after = 2\n",
+    )
+    .unwrap();
+    git_in(
+        &h,
+        &path,
+        &["commit", "--quiet", "--no-gpg-sign", "-am", "gd 2"],
+    );
+    let (code, r) = finish_json(&h, &w);
+    assert_eq!(code, Some(1), "{r}");
+    let (status, verdict) = step_of(&r, "complexity-sweep");
+    assert_eq!(
+        (status.as_str(), verdict.as_str()),
+        ("failed", "1 violations"),
+        "{r}"
+    );
+    let report = r.to_string();
+    assert!(
+        report.contains("player.gd:4 new_tangled cyclomaticComplexity=11 (max 10)"),
+        "{r}"
+    );
+    assert!(!report.contains("old_tangled"), "untouched function: {r}");
+    let calls = std::fs::read_to_string(&calls).unwrap();
+    assert_eq!(calls.lines().count(), 1, "{calls}");
+    for arg in [
+        "run --quiet --no-project --with gdtoolkit==4.5.0 python3 -I",
+        "--format json player.gd",
+    ] {
+        assert!(calls.contains(arg), "{arg}: {calls}");
+    }
+}
+
+#[test]
+fn grs_03_finish_without_uv_or_gdtoolkit_fails_with_install_hint() {
+    let h = finish_world("tl-complexity-gd-none");
+    let (w, _) = claimed_with_commit(&h, "complexity-sweep", None, "player.gd");
+    let (code, r) = finish_json(&h, &w);
+    assert_eq!(code, Some(1), "{r}");
+    let (status, verdict) = step_of(&r, "complexity-sweep");
+    assert_eq!(
+        (status.as_str(), verdict.as_str()),
+        ("failed", "no gdscript analyser"),
+        "{r}"
+    );
+    let report = r.to_string();
+    assert!(report.contains("uv tool install gdtoolkit==4.5.0"), "{r}");
+    assert!(report.contains("pipx install"), "{r}");
+}
+
+const GDEXT_LIB: &str = "use godot::prelude::*;\n\n#[godot_api]\nimpl Player {\npub fn tangled(v: &[u32]) -> u32 {\n    v.len() as u32\n}\n}\n";
+
+const FAKE_CARGO: &str = r#"#!/bin/sh
+if [ "$1" = warm ]; then exit 0; fi
+if [ "$1" = metadata ]; then printf '{"workspace_root":"%s"}\n' "$PWD"; exit 0; fi
+echo "$PWD $*" >> "$FAKE_CARGO_CALLS"
+cc='{"reason":"compiler-message","message":{"message":"the function has a cognitive complexity of (30/25)","code":{"code":"clippy::cognitive_complexity"},"spans":[{"file_name":"src/lib.rs","line_start":5,"is_primary":true,"column_start":8,"column_end":15,"text":[{"text":"pub fn tangled(v: &[u32]) -> u32 {"}]}]}}'
+tl='{"reason":"compiler-message","message":{"message":"this function has too many lines (120/100)","code":{"code":"clippy::too_many_lines"},"spans":[{"file_name":"src/lib.rs","line_start":5,"is_primary":true,"column_start":1,"column_end":2,"text":[{"text":"pub fn tangled(v: &[u32]) -> u32 {"},{"text":"}"}]}]}}'
+echo "$cc"
+echo "$tl"
+echo "$cc"
+echo '{"reason":"build-finished","success":true}'
+"#;
+
+#[test]
+fn grs_01_finish_analyses_nested_gdext_rust_crate() {
+    let mut h = finish_world("tl-complexity-gdext");
+    let calls = h.root.join("cargo-calls");
+    h.write_warmed("cargo", FAKE_CARGO.as_bytes());
+    h.set("FAKE_CARGO_CALLS", calls.to_string_lossy());
+    let (w, path) = claimed_with_commit(&h, "complexity-sweep", None, "notes.md");
+    std::fs::create_dir_all(path.join("rust/src")).unwrap();
+    std::fs::write(
+        path.join("rust/Cargo.toml"),
+        "[package]\nname = \"game\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    std::fs::write(path.join("rust/src/lib.rs"), GDEXT_LIB).unwrap();
+    git_in(&h, &path, &["add", "rust"]);
+    git_in(
+        &h,
+        &path,
+        &["commit", "--quiet", "--no-gpg-sign", "-m", "gdext crate"],
+    );
+    let (code, r) = finish_json(&h, &w);
+    assert_eq!(code, Some(1), "{r}");
+    let (status, verdict) = step_of(&r, "complexity-sweep");
+    assert_eq!(
+        (status.as_str(), verdict.as_str()),
+        ("failed", "2 violations"),
+        "{r}"
+    );
+    let report = r.to_string();
+    assert!(
+        report.contains("rust/src/lib.rs:5 tangled cognitiveComplexity=30 (max 25)"),
+        "{r}"
+    );
+    assert!(
+        report.contains("rust/src/lib.rs:5 tangled functionLength=120 (max 100)"),
+        "{r}"
+    );
+    let calls = std::fs::read_to_string(&calls).unwrap();
+    assert_eq!(calls.lines().count(), 1, "{calls}");
+    assert!(
+        calls.contains("/rust clippy "),
+        "clippy runs in the crate: {calls}"
+    );
+    for lint in [
+        "-A clippy::all",
+        "-W clippy::cognitive_complexity",
+        "-W clippy::too_many_lines",
+        "-W clippy::too_many_arguments",
+        "--cap-lints warn",
+    ] {
+        assert!(calls.contains(lint), "{lint}: {calls}");
+    }
 }
 
 #[test]
@@ -2598,6 +2761,62 @@ fn finish_finds_the_complexity_analyser_in_a_local_marketplace_of_the_store() {
     assert_eq!(code, Some(0), "{r}");
     assert_eq!(step_of(&r, "complexity-sweep").0, "passed", "{r}");
     assert!(called.exists(), "the marketplace analyser ran");
+}
+
+fn ledger_complexity(h: &Harness, worker: &str) -> (Option<i32>, String) {
+    let mut cmd = h.horch(&["ledger", "complexity"]);
+    cmd.env("HORCH_WORKER_ID", worker);
+    let o = cmd.output().unwrap();
+    (o.status.code(), text(&o))
+}
+
+#[test]
+fn ledger_complexity_prints_every_finding_past_10_and_exits_1() {
+    let mut h = finish_world("tl-complexity-cmd-many");
+    let violations: Vec<String> = (0..12)
+        .map(|i| format!("{{\"functionName\":\"f{i}\",\"filePath\":\"a.ts\",\"line\":1,\"metric\":\"cyclomaticComplexity\",\"value\":{},\"threshold\":10}}", 20 + i))
+        .collect();
+    let report = format!(
+        "{{\"files\":[{{\"filePath\":\"a.ts\",\"functions\":[{{\"line\":1}}]}}],\"violations\":[{}]}}",
+        violations.join(",")
+    );
+    let cli = h.write_warmed(
+        "many-complexity",
+        format!("#!/bin/sh\necho '{report}'\n").as_bytes(),
+    );
+    h.set("HORCH_COMPLEXITY_CLI", cli.to_string_lossy());
+    let (w, _) = claimed_with_commit(&h, "complexity-sweep", None, "a.ts");
+    let (code, out) = ledger_complexity(&h, &w);
+    assert_eq!(code, Some(1), "{out}");
+    for i in 0..12 {
+        let line = format!("a.ts:1 f{i} cyclomaticComplexity={} (max 10)", 20 + i);
+        assert!(out.contains(&line), "missing {line}: {out}");
+    }
+    let r = ok_as(&h, &w, &["ledger", "steps", "--json"]);
+    assert!(
+        !r.contains("violations"),
+        "ledger complexity writes no step state: {r}"
+    );
+}
+
+#[test]
+fn ledger_complexity_exits_0_on_a_clean_change() {
+    let h = finish_world("tl-complexity-cmd-clean");
+    let (w, _) = claimed_with_commit(&h, "complexity-sweep", None, "a.ts");
+    let (code, out) = ledger_complexity(&h, &w);
+    assert_eq!(code, Some(0), "{out}");
+}
+
+#[test]
+fn ledger_complexity_exits_2_when_no_changed_file_is_analysable() {
+    let h = finish_world("tl-complexity-cmd-md");
+    let (w, _) = claimed_with_commit(&h, "complexity-sweep", None, "notes.md");
+    let (code, out) = ledger_complexity(&h, &w);
+    assert_eq!(code, Some(2), "{out}");
+    assert!(
+        out.contains(horch_core::taskledger::finish::complexity::NOT_APPLICABLE),
+        "{out}"
+    );
 }
 
 #[test]

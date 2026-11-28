@@ -125,7 +125,7 @@ by name, not by phase, so `--phase` never hands them to another teammate.
 | `landing-page-builder` | implementation | claude, opus, medium | playwright, chrome-devtools, context7 | landing and marketing pages |
 | `design-system-engineer` | implementation | claude, sonnet, medium | playwright, context7 | tokens, themes, components, brand kit |
 | `motion-engineer` | implementation | claude, opus, medium | playwright, chrome-devtools, context7 | GSAP scroll scenes and transitions |
-| `visual-prototyper` | implementation | codex, gpt-5.6-sol, medium | none | generated images and a static prototype |
+| `visual-prototyper` | implementation | codex, gpt-6.2-sol, medium | none | generated images and a static prototype |
 | `one-page-design` | research | claude, opus, medium | none | one printable one-page design sheet (HTML) of a game or feature design, picture first |
 
 `design-critic` denies `Edit` and `NotebookEdit` but keeps `Write` for its one
@@ -441,6 +441,25 @@ Every intake teammate denies `Agent`, `WebFetch`, `WebSearch` and
 `NotebookEdit`, and has no fallback. `skill-importer` also denies Read on
 `contaminated/*/quarantine/**`.
 
+## The Rust team
+
+Three specialists staff Rust work. Each sets `offer_when: ["Cargo.toml"]` and
+`requires: [rust]`, so `horch teammates` offers them in a Cargo project and
+`horch doctor` checks `cargo`, `rustc` and `cargo clippy`. Each falls back to
+`codex-sol`.
+
+| teammate | phase | agent, model, effort | use for |
+|---|---|---|---|
+| `rust-developer` | implementation | claude, opus, medium | crates and workspaces, ownership, async, `unsafe`, error types, test-first builds |
+| `rust-reviewer` | validation | claude, opus, high | ownership, `unsafe` soundness, async cancellation, API contracts; never edits |
+| `rust-qa-engineer` | validation | claude, sonnet, high | failing unit, integration and property tests first; `cargo test`, fuzz and Miri runs |
+
+`rust-reviewer` denies `Edit`, `Write` and `NotebookEdit`, the same as
+`godot-code-reviewer`. The 7 own-text skills are `rust-unsafe-review`,
+`rust-async`, `rust-cargo-workspace`, `rust-perf`, `rust-fuzz`,
+`rust-testing` and `rust-error-handling`. Each is expected or available on at
+least 1 Rust seat (`docs/specs/godot-rust-support.md`, GRS-06 and GRS-07).
+
 ## The Swift and Apple team
 
 Seven specialists staff Swift and Apple-platform work. Each sets
@@ -457,7 +476,7 @@ orchestrator is offered them only on an Apple project. All except
 | `swift-qa-engineer` | validation | claude, sonnet, high | none | Swift Testing, XCTest migration, simulator repros |
 | `apple-accessibility-auditor` | validation | claude, sonnet, high | `codex-terra` | VoiceOver, Dynamic Type, Voice Control, UI copy; never edits |
 | `app-release-preparer` | implementation | claude, sonnet, medium | none | archive, export, readiness audit, notes; writes the upload command for a human; never uploads or submits |
-| `codex-swift-reviewer` | validation | codex, gpt-5.6-sol, high | `opus` | cross-vendor Swift review of Claude-built changes |
+| `codex-swift-reviewer` | validation | codex, gpt-6.2-sol, high | `opus` | cross-vendor Swift review of Claude-built changes |
 
 Every persona's first move is a toolchain check (`xcodebuild -version`,
 `swift --version`, `xcrun simctl list devices available`). A builder or QA
@@ -697,7 +716,7 @@ The native window, first match wins:
 
 The values in the files are the thresholds of 2026-10-07 on the operator's
 machine: 300000 for Claude (the operator's 500000 window), 160000 for Codex
-`gpt-5.6-sol`, 120000 for `gpt-5.6-terra`, and the computed value for pi,
+`gpt-6.2-sol`, 120000 for `gpt-6.1-terra`, and the computed value for pi,
 Prime and opencode. `horch context --windows` shows each teammate's
 `compact_at` and its source (`teammate` or `fleet base`) beside the
 threshold.

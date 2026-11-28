@@ -102,6 +102,7 @@ impl World {
             gh: top.join("gh"),
             node: "/bin/sh".into(),
             complexity_cli: None,
+            gdcomplexity_cli: None,
             code_sweep_dir: Some(sweep),
             evidence_root: top.join("evidence"),
             shell: "/bin/sh".into(),
@@ -433,7 +434,7 @@ fn trf_30_review_modes_reviewer_limits_and_the_cheaper_rounds() {
     let mut w = World::new(Some(ReviewMode::Full));
     commit(
         &w.wt,
-        "lib.rs",
+        "lib.ts",
         "pub struct A;\nlet password = 1;\nfor x in y {}\npub fn f() {}\n",
     );
     w.finish();

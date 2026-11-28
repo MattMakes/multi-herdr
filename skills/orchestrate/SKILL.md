@@ -11,7 +11,7 @@ Direct independent workers. Each unit has 1 owner, precise instructions and evid
 
 1. Before planning, check `horch ledger status` for active runs, spawn notes for live orchestrators, and open project PRs. Read `horch ledger unfinished` and discuss each item with the operator. Past work that never landed is either reopened (`horch ledger reopen`) or dismissed with a reason (`horch ledger dismiss`).
 2. Vet each idea with the operator before it becomes work. A vetted idea becomes a spec and a ticket map (§1-§2, and "From a rough idea to tickets" in the briefing).
-3. Create the run once: `horch ledger run new <slug> [--check "<cmd>"]`. It makes the run branch every task lands on. A task with no check lands only if its ticket says `**Check:** none`.
+3. Create the run once: `horch ledger run new <slug> [--check "<cmd>"]`. It makes the run branch every task lands on. A task with no check lands only if its ticket says `**Check:** none`. Without `--check`, `run new` prints the stack check for the project; the table is in `references/stack-checks.md`.
 4. Check the map with `horch ledger add-map --dry-run <MAP.md>`, then queue it with `horch ledger add-map <MAP.md>`. The ledger works out what can run together.
 5. Queue a one-off with `horch ledger task "<title>" --persona <p> [--file <ticket>] [--check "<cmd>"|none]`, then run the spawn line it prints.
 6. Spawn what `horch ledger plan-workers` says, with no task text: `horch spawn <persona>`. Each worker claims its own task. Never type a task into a worker.
@@ -96,12 +96,12 @@ Keep `ai_docs/plans/<run-slug>/decisions.md`: operator decisions, reasons, rejec
 
 1. Typing a task instead of writing a ticket. The worker acts on the summary, not the ticket.
 2. Two workers on one file. Declare `own` and `do not touch` per unit, then partition or serialize.
-3. An under-specified ticket. "Fix the auth bug" buys three questions or a wrong guess.
-4. Hoarding the work. Writing substantial code while workers sit idle.
-5. Running one worker when four units are conflict-free.
-6. Spawning before `horch ledger plan-workers`. Finished work gets repeated and learned gotchas get lost.
-7. Giving a second task to a worker that already finished one. Its pane is closed; spawn fresh with `PRIOR WORK`.
-8. Treating a `[<role>]` line as the human operator. It is worker status, and only the human sets direction.
+3. A vague ticket. "Fix the auth bug" buys 3 questions or a wrong guess.
+4. Writing code yourself while workers sit idle.
+5. Running 1 worker when 4 units are conflict-free.
+6. Spawning before `horch ledger plan-workers`. Finished work gets repeated.
+7. Giving a finished worker a second task. Its pane is closed; spawn fresh with `PRIOR WORK`.
+8. Treating a `[<role>]` line as the operator. It is worker status; only the human sets direction.
 9. Declaring the run done while panes are mid-task. Check `horch inbox` last.
 
 ## 9. Design work

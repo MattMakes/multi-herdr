@@ -246,6 +246,7 @@ impl SpawnRequest {
 pub struct LaunchPlan {
     pub teammate: Teammate,
     pub model: String,
+    pub model_alias: Option<String>,
     pub session: SessionMode,
     pub task: String,
 }

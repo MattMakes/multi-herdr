@@ -109,6 +109,9 @@ const SKIP_NEW_TEAMMATES: &[&str] = &[
     "opus-creative",
     "pixel-vfx-artist",
     "root-cause-auditor",
+    "rust-developer",
+    "rust-qa-engineer",
+    "rust-reviewer",
     "skill-importer",
     "sound-engineer",
     "spec-writer",
@@ -274,12 +277,14 @@ impl World {
     }
 
     fn roster(&self) -> Roster {
-        Roster::load_layered(
+        let mut roster = Roster::load_layered(
             Some(&self.home),
             None,
             Some(repo_teammates().to_str().unwrap()),
         )
-        .unwrap()
+        .unwrap();
+        roster.resolve_codex_models(&self.root.join("bin/codex"));
+        roster
     }
 }
 

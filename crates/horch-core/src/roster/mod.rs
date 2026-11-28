@@ -1,10 +1,12 @@
 pub(crate) mod effort;
+pub mod models;
 pub(crate) mod offer;
 pub(crate) mod operator;
 pub(crate) mod parser;
 pub(crate) mod permission;
 pub(crate) mod phase;
 pub(crate) mod repository;
+pub(crate) mod stack_check;
 pub(crate) mod teammate;
 pub mod validation;
 
@@ -16,6 +18,7 @@ pub(crate) use operator::{expand_home, operator_enabled_plugins, operator_status
 pub use permission::PermissionMode;
 pub use phase::Phase;
 pub use repository::{Roster, TEMPLATE};
+pub use stack_check::suggested_check;
 pub use teammate::{
     reserved_tier, Base, ExecDecision, ExecRule, HarnessDefault, HorchAccess, ModelSource,
     OperatorSkills, Teammate,

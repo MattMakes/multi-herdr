@@ -153,17 +153,17 @@ fn fleet_window_takes_teammate_then_model_key() {
         Some((150_000, "context-policy windows claude/sonnet".into()))
     );
     assert_eq!(
-        window("codex-sol", "gpt-5.6-sol"),
-        Some((200_000, "context-policy windows codex/gpt-5.6-sol".into()))
+        window("codex-sol", "gpt-6.2-sol"),
+        Some((200_000, "context-policy windows codex/gpt-6.2-sol".into()))
     );
-    assert_eq!(window("codex-luna", "gpt-5.6-luna"), None);
+    assert_eq!(window("codex-luna", "gpt-6-luna"), None);
 
     for (name, model) in [
         ("orchestrator", "fable"),
         ("opus", "opus"),
         ("sonnet-bugfix", "sonnet"),
-        ("codex-sol", "gpt-5.6-sol"),
-        ("codex-terra", "gpt-5.6-terra"),
+        ("codex-sol", "gpt-6.2-sol"),
+        ("codex-terra", "gpt-6.1-terra"),
     ] {
         let own = roster
             .fleet_window(roster.get(name).unwrap(), model)
@@ -761,10 +761,10 @@ fn check_accepts_inline_settings_json() {
 fn sol_orchestrator_takes_its_model_window() {
     let roster = builtin();
     let mut orchestrator = roster.get("orchestrator-codex").unwrap().clone();
-    orchestrator.model = Some("gpt-5.6-sol".into());
+    orchestrator.model = Some("gpt-6.2-sol".into());
     assert_eq!(
-        roster.fleet_window(&orchestrator, "gpt-5.6-sol"),
-        Some((200_000, "context-policy windows codex/gpt-5.6-sol".into()))
+        roster.fleet_window(&orchestrator, "gpt-6.2-sol"),
+        Some((200_000, "context-policy windows codex/gpt-6.2-sol".into()))
     );
 }
 

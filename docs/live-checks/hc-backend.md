@@ -148,7 +148,7 @@ hc run --bg --json --keep --no-parent --cwd /Users/MASCOTT/projects/multi-herdr 
 
 # codex (--no-daemon):
 hc run --bg --json --keep --no-parent --cwd /Users/MASCOTT/projects/multi-herdr -- \
-  codex --no-daemon -c 'model="gpt-5.6-sol"' -c check_for_update_on_startup=false \
+  codex --no-daemon -c 'model="gpt-6.2-sol"' -c check_for_update_on_startup=false \
   -c 'tui.resume_cwd="current"' --dangerously-bypass-hook-trust -s read-only -a never \
   --search -c 'model_reasoning_effort="low"' -c tui.auto_recap=false -c 'notify=[]' \
   -c features.multi_agent=false

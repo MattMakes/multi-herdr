@@ -11,6 +11,7 @@ pub enum Requirement {
     Docker,
     Blender,
     Godot,
+    Rust,
     #[serde(rename = "git-lfs")]
     GitLfs,
 }
@@ -22,6 +23,7 @@ impl Requirement {
             Requirement::Docker => "docker",
             Requirement::Blender => "blender",
             Requirement::Godot => "godot",
+            Requirement::Rust => "rust",
             Requirement::GitLfs => "git-lfs",
         }
     }

@@ -152,6 +152,7 @@ fn host_warnings(ctx: &RuntimeContext, roster: &Roster) -> (Vec<String>, Vec<Str
         ctx.paths.project().ok().as_deref(),
     )
     .into_iter()
+    .chain(project_fact_problems(roster, path, pathext))
     .chain(antigravity_problem(
         roster,
         path,
@@ -424,6 +425,7 @@ pub(crate) fn requirement_problems(
         Requirement::Xcode,
         Requirement::Blender,
         Requirement::Godot,
+        Requirement::Rust,
         Requirement::GitLfs,
         Requirement::Docker,
     ]
@@ -466,16 +468,110 @@ fn problems_for(
         Requirement::Godot => {
             godot_problem(path, pathext, tools.godot_path, GODOT_APP.map(Path::new))
         }
+        Requirement::Rust => return rust_problems(path, pathext),
         Requirement::GitLfs => {
             git_lfs_problem(path, pathext, git).or_else(|| project.and_then(lfs_rule_problem))
         }
     };
+    let lfs = (requirement == Requirement::Godot && project.is_some_and(godot_lfs_rules))
+        .then(|| git_lfs_problem(path, pathext, git))
+        .flatten();
     let csharp = (requirement == Requirement::Godot && project.is_some_and(csharp_project))
         .then(|| godot_csharp_problems(path, pathext, tools.godot_mono_path, tools.godot_mono_app));
     problem
         .into_iter()
+        .chain(lfs)
         .chain(csharp.into_iter().flatten())
         .collect()
+}
+
+fn godot_lfs_rules(project: &Path) -> bool {
+    std::fs::read_to_string(project.join(".gitattributes"))
+        .is_ok_and(|text| text.contains("filter=lfs"))
+}
+
+fn rust_tool_problem(
+    path: Option<&OsStr>,
+    pathext: Option<&str>,
+    tool: &str,
+    args: &[&str],
+    fix: &str,
+) -> Option<String> {
+    let Some(bin) = process::which(path, pathext, tool) else {
+        return Some(format!("{tool} not found on PATH. {fix}"));
+    };
+    match Command::new(&bin).args(args).output() {
+        Ok(out) if out.status.success() => None,
+        Ok(out) => Some(format!(
+            "`{tool} {}` failed ({}). {fix}{}",
+            args.join(" "),
+            out.status,
+            said(tool, &String::from_utf8_lossy(&out.stderr))
+        )),
+        Err(e) => Some(format!("could not run {}: {e}. {fix}", bin.display())),
+    }
+}
+
+fn rust_problems(path: Option<&OsStr>, pathext: Option<&str>) -> Vec<String> {
+    const RUSTUP: &str = "Install Rust from https://rustup.rs.";
+    let cargo = rust_tool_problem(path, pathext, "cargo", &["--version"], RUSTUP);
+    let rustc = rust_tool_problem(path, pathext, "rustc", &["--version"], RUSTUP);
+    let clippy = cargo.is_none().then(|| {
+        rust_tool_problem(
+            path,
+            pathext,
+            "cargo",
+            &["clippy", "--version"],
+            "Run `rustup component add clippy`.",
+        )
+    });
+    cargo
+        .into_iter()
+        .chain(rustc)
+        .chain(clippy.flatten())
+        .collect()
+}
+
+const GDTOOLKIT_FIX: &str = "complexity-sweep reads GDScript through gdcomplexity, which needs \
+     `uv` on PATH or `python3` with gdtoolkit. Install it with `uv tool install gdtoolkit==4.5.0` \
+     or `pipx install \"gdtoolkit==4.*\"`.";
+
+fn gdscript_analyser_problem(path: Option<&OsStr>, pathext: Option<&str>) -> Option<String> {
+    if process::which(path, pathext, "uv").is_some() {
+        return None;
+    }
+    let importable = process::which(path, pathext, "python3").is_some_and(|python| {
+        Command::new(python)
+            .args(["-c", "import gdtoolkit.parser"])
+            .output()
+            .is_ok_and(|out| out.status.success())
+    });
+    (!importable).then(|| format!("gdscript analyser not found. {GDTOOLKIT_FIX}"))
+}
+
+pub(crate) fn project_fact_problems(
+    roster: &Roster,
+    path: Option<&OsStr>,
+    pathext: Option<&str>,
+) -> Vec<String> {
+    let Some(facts) = roster.project_facts() else {
+        return Vec::new();
+    };
+    let rust_seated = roster
+        .offered()
+        .iter()
+        .any(|t| t.requires.contains(&Requirement::Rust));
+    let rust = (facts.has_match("Cargo.toml") && !rust_seated)
+        .then(|| rust_problems(path, pathext))
+        .into_iter()
+        .flatten()
+        .map(|p| format!("rust (project has Cargo.toml): {p}"));
+    let gdscript = facts
+        .has_match("project.godot")
+        .then(|| gdscript_analyser_problem(path, pathext))
+        .flatten()
+        .map(|p| format!("godot (project has project.godot): {p}"));
+    rust.chain(gdscript).collect()
 }
 
 const AGY_INSTALL: &str = "curl -fsSL https://antigravity.google/cli/install.sh | bash";
@@ -998,8 +1094,7 @@ mod tests {
         let empty = tempfile::tempdir().unwrap();
         let path = Some(empty.path().as_os_str());
         let facts = |names: [&str; 1]| {
-            Roster::builtin()
-                .unwrap()
+            roster_without_rust_seats()
                 .with_project_facts(horch_core::roster::ProjectFacts::from_names(names))
         };
         assert!(requirement_problems(
@@ -1271,8 +1366,7 @@ mod tests {
         let empty = tempfile::tempdir().unwrap();
         let path = Some(empty.path().as_os_str());
         let facts = |names: [&str; 1]| {
-            Roster::builtin()
-                .unwrap()
+            roster_without_rust_seats()
                 .with_project_facts(horch_core::roster::ProjectFacts::from_names(names))
         };
         assert!(requirement_problems(
@@ -1546,6 +1640,160 @@ mod tests {
         assert_eq!(godot_version("warning: x\n5.0.dev1.custom\n"), Some((5, 0)));
         assert_eq!(godot_version("3.6.stable\n"), Some((3, 6)));
         assert_eq!(godot_version("Godot Engine\n"), None);
+    }
+
+    fn roster_requiring_rust() -> Roster {
+        let mut r = Roster::builtin().unwrap();
+        r.insert_for_test(Teammate {
+            name: "rust-test".into(),
+            brief_description: "Rust".into(),
+            requires: vec![Requirement::Rust],
+            ..Teammate::default()
+        });
+        r
+    }
+
+    fn roster_without_rust_seats() -> Roster {
+        let mut r = Roster::builtin().unwrap();
+        let seats: Vec<Teammate> = r
+            .offered()
+            .into_iter()
+            .filter(|t| t.requires.contains(&Requirement::Rust))
+            .cloned()
+            .collect();
+        for seat in seats {
+            r.insert_for_test(Teammate {
+                hidden: true,
+                ..seat
+            });
+        }
+        r
+    }
+
+    fn fake_tools(clippy_code: i32, names: &[&str]) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        for name in names {
+            let script = format!(
+                "#!/bin/sh\nif [ \"$1\" = warm ]; then exit 0; fi\n\
+                 if [ \"$1\" = clippy ]; then exit {clippy_code}; fi\nexit 0\n"
+            );
+            let out = crate::test_support::write_warmed(&dir.path().join(name), &script, &["warm"]);
+            assert!(out.status.success());
+        }
+        dir
+    }
+
+    fn with_facts(roster: Roster, names: &[&str]) -> Roster {
+        roster.with_project_facts(horch_core::roster::ProjectFacts::from_names(
+            names.iter().copied(),
+        ))
+    }
+
+    #[test]
+    fn grs_05_doctor_checks_finish_step_tools_from_project_facts() {
+        let empty = tempfile::tempdir().unwrap();
+        let none = Some(empty.path().as_os_str());
+        let both = with_facts(
+            roster_without_rust_seats(),
+            &["Cargo.toml", "project.godot"],
+        );
+        let problems = project_fact_problems(&both, none, None);
+        assert_eq!(problems.len(), 3, "{problems:?}");
+        assert!(problems[0].contains("cargo not found"), "{}", problems[0]);
+        assert!(problems[1].contains("rustc not found"), "{}", problems[1]);
+        assert!(problems[0].contains("https://rustup.rs"), "{}", problems[0]);
+        assert!(problems[2].contains("complexity-sweep"), "{}", problems[2]);
+        assert!(problems[2].contains("gdtoolkit==4.5.0"), "{}", problems[2]);
+
+        let rust_only = with_facts(roster_without_rust_seats(), &["Cargo.toml"]);
+        assert_eq!(project_fact_problems(&rust_only, none, None).len(), 2);
+
+        let plain = with_facts(Roster::builtin().unwrap(), &["README.md"]);
+        assert!(project_fact_problems(&plain, none, None).is_empty());
+        assert!(project_fact_problems(&Roster::builtin().unwrap(), none, None).is_empty());
+
+        let ok = fake_tools(0, &["cargo", "rustc", "uv"]);
+        assert!(project_fact_problems(&both, Some(ok.path().as_os_str()), None).is_empty());
+
+        let py = fake_tools(0, &["cargo", "rustc", "python3"]);
+        assert!(project_fact_problems(&both, Some(py.path().as_os_str()), None).is_empty());
+
+        let seated = with_facts(roster_requiring_rust(), &["Cargo.toml"]);
+        assert!(project_fact_problems(&seated, none, None).is_empty());
+    }
+
+    #[test]
+    fn grs_08_rust_requirement_is_spelled_rust_and_checked_by_doctor() {
+        assert_eq!(Requirement::Rust.as_str(), "rust");
+        assert_eq!(
+            serde_json::to_string(&Requirement::Rust).unwrap(),
+            "\"rust\""
+        );
+        let rust_problems = |path: &Path| -> Vec<String> {
+            requirement_problems(
+                &roster_requiring_rust(),
+                Some(path.as_os_str()),
+                None,
+                HostTools::default(),
+                Path::new("git"),
+                None,
+            )
+            .into_iter()
+            .filter(|p| p.starts_with("rust "))
+            .collect()
+        };
+
+        let empty = tempfile::tempdir().unwrap();
+        let problems = rust_problems(empty.path());
+        assert_eq!(problems.len(), 2, "{problems:?}");
+        assert!(problems[0].contains("rust-test"), "{}", problems[0]);
+        assert!(problems[0].contains("https://rustup.rs"), "{}", problems[0]);
+
+        let fine = fake_tools(0, &["cargo", "rustc"]);
+        assert!(rust_problems(fine.path()).is_empty());
+
+        let no_clippy = fake_tools(101, &["cargo", "rustc"]);
+        let problems = rust_problems(no_clippy.path());
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(
+            problems[0].contains("rustup component add clippy"),
+            "{}",
+            problems[0]
+        );
+    }
+
+    #[test]
+    fn grs_16_doctor_checks_git_lfs_on_godot_project_with_lfs_rules() {
+        let empty = tempfile::tempdir().unwrap();
+        let broken = fake_git(1);
+        let working = fake_git(0);
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(project.path().join("project.godot"), "").unwrap();
+        let lfs_problems = |git: &Path| -> Vec<String> {
+            requirement_problems(
+                &roster_requiring_godot(),
+                Some(empty.path().as_os_str()),
+                None,
+                HostTools::default(),
+                git,
+                Some(project.path()),
+            )
+            .into_iter()
+            .filter(|p| p.starts_with("godot ") && p.contains("lfs version"))
+            .collect()
+        };
+
+        assert!(lfs_problems(&broken.path().join("git")).is_empty());
+
+        std::fs::write(
+            project.path().join(".gitattributes"),
+            "*.png filter=lfs diff=lfs merge=lfs -text\n",
+        )
+        .unwrap();
+        let problems = lfs_problems(&broken.path().join("git"));
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains("godot-test"), "{}", problems[0]);
+        assert!(lfs_problems(&working.path().join("git")).is_empty());
     }
 
     fn roster_requiring_git_lfs() -> Roster {

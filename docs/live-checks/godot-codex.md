@@ -191,3 +191,40 @@ Host: macOS 26.5.1 (arm64), Codex CLI 0.160.0 with
 | `--path . --import` | wrapper with `CODEX_SANDBOX` unset | 3 | 1 | PASS | Printed E3 and `godot-run: SANDBOX: 1 line(s)`; the wrapper detected the sandbox error. |
 
 Verdict: `godot-run.sh` makes all 5 Godot commands pass in a real Codex pane and rejects the control import with exit 3.
+
+## Codex pane rerun (2026-11-25)
+
+Host: macOS (arm64), Codex with `CODEX_SANDBOX=seatbelt`, Godot
+4.7.2.stable.official.ed1daf0bf. Running `scripts/live/godot-codex.sh`
+directly in the pane produced this acceptance output:
+
+```text
+PASS sandbox-context CODEX_SANDBOX=seatbelt
+PASS B-version exit=0
+PASS B-import exit=0
+PASS B-parse exit=0
+PASS B-run exit=0
+PASS B-doctool exit=0
+PASS B-fixed-version exit=0
+PASS B-fixed-import exit=0
+PASS B-fixed-parse exit=0
+PASS B-fixed-run exit=0
+PASS B-fixed-doctool exit=0
+PASS health-task import=0 parse=0 test=0; 7 of 7 assertions passed
+```
+
+The script exited 1 as designed because its unwrapped mode A reproduced 4
+workspace-write failures outside the project. After the script created its
+trial project, direct calls through the adopted wrapper all exited 0:
+
+| Command | Output evidence |
+|---------|-----------------|
+| `godot-run.sh --version` | `4.7.2.stable.official.ed1daf0bf` |
+| `godot-run.sh --import` | Import completed with no `ERROR:` line. |
+| `godot-run.sh --script .home/parse_check.gd` | `PARSE_CHECK checked=4 failed=0` |
+| `godot-run.sh --script res://test_health.gd` | `HEALTH_TEST passed=7 failed=0` |
+| `godot-run.sh --quit-after 60` | `GODOT_CODEX_MAIN_READY` |
+
+This rerun closes the pending real-Codex proof: the wrapper keeps all Godot
+user files inside the project and applies the 2 TLS settings in the active
+Codex sandbox.

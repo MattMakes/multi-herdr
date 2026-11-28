@@ -89,6 +89,10 @@ pub fn builtin_prices() -> BTreeMap<String, Price> {
     m.insert("claude-sonnet-5".into(), Price::new(2.0, 10.0, 0.20));
     m.insert("claude-haiku-4-5".into(), Price::new(1.0, 5.0, 0.10));
     m.insert("gpt-6-astra".into(), Price::new(10.0, 50.0, 1.0));
+    m.insert("gpt-6.2-astra".into(), Price::new(10.0, 50.0, 1.0));
+    m.insert("gpt-6.2-sol".into(), Price::new(4.0, 20.0, 0.40));
+    m.insert("gpt-6.1-terra".into(), Price::new(2.0, 12.0, 0.20));
+    m.insert("gpt-6-luna".into(), Price::new(0.20, 1.20, 0.02));
     m.insert("gpt-5.6-sol".into(), Price::new(4.0, 20.0, 0.40));
     m.insert("gpt-5.6-terra".into(), Price::new(2.0, 12.0, 0.20));
     m.insert("gpt-5.6-luna".into(), Price::new(0.20, 1.20, 0.02));
@@ -152,11 +156,15 @@ pub(crate) fn canonical_model(model: &str) -> String {
     alias.map_or(m, |(_, key)| key).to_string()
 }
 
-const MODEL_ALIASES: [(&str, &str); 4] = [
+const MODEL_ALIASES: [(&str, &str); 8] = [
     ("fable", "claude-fable-5-2"),
     ("opus", "claude-opus-5-5"),
     ("sonnet", "claude-sonnet-5-5"),
     ("haiku", "claude-haiku-4-5"),
+    ("sol", "gpt-6.2-sol"),
+    ("astra", "gpt-6.2-astra"),
+    ("terra", "gpt-6.1-terra"),
+    ("luna", "gpt-6-luna"),
 ];
 
 fn strip_model_noise(m: &str) -> &str {

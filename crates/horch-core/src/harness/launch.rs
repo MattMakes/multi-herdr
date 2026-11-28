@@ -1436,7 +1436,7 @@ mod tests {
         let a = argv(&cmd);
         assert_eq!(a[0], "resume");
         assert_eq!(a[1], "-c");
-        assert_eq!(a[2], r#"model="gpt-5.6-sol""#);
+        assert_eq!(a[2], r#"model="gpt-6.2-sol""#);
         assert_eq!(a.last().unwrap(), "p");
         assert!(a.contains(&"rid".to_string()));
     }
@@ -1512,7 +1512,7 @@ mod tests {
                 &t,
                 Session::Unmanaged,
                 "p",
-                Some("gpt-5.6-sol"),
+                Some("gpt-6.2-sol"),
             )
             .unwrap(),
         );

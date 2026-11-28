@@ -63,7 +63,7 @@ base: fleet-worker
 agent: claude
 
 # claude:   a family alias (sonnet | opus) so it tracks the latest.
-# codex:    a literal slug (gpt-5.6-sol | gpt-5.6-terra); no alias mechanism.
+# codex:    a family alias (sol | terra | luna | astra), or a pinned gpt-* slug.
 # opencode: provider/model, e.g. opencode/big-pickle. `opencode models` lists
 #           them; the `opencode/...` provider is the free tier.
 # pi/prime: provider/model too, e.g. ollama/qwen3.8 or anthropic/claude-opus-5-5.

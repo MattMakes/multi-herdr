@@ -151,7 +151,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "high",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.2-sol",
         "name": "architect-reviewer"
       },
       "route_json": {
@@ -251,7 +251,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "high",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.2-sol",
         "name": "architect-reviewer"
       },
       "route_json": {
@@ -457,7 +457,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "medium",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.2-sol",
         "name": "backend-developer"
       },
       "route_json": {
@@ -557,7 +557,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "medium",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.2-sol",
         "name": "backend-developer"
       },
       "route_json": {
@@ -623,7 +623,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "low",
-        "model": "gpt-5.6-luna",
+        "model": "gpt-6-luna",
         "name": "codex-luna"
       },
       "route_json": {
@@ -661,7 +661,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "low",
-        "model": "gpt-5.6-luna",
+        "model": "gpt-6-luna",
         "name": "codex-luna"
       },
       "route_json": {
@@ -699,7 +699,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "low",
-        "model": "gpt-5.6-luna",
+        "model": "gpt-6-luna",
         "name": "codex-luna"
       },
       "route_json": {
@@ -737,7 +737,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "low",
-        "model": "gpt-5.6-luna",
+        "model": "gpt-6-luna",
         "name": "codex-luna"
       },
       "route_json": {
@@ -775,7 +775,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "low",
-        "model": "gpt-5.6-luna",
+        "model": "gpt-6-luna",
         "name": "codex-luna"
       },
       "route_json": {
@@ -813,7 +813,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "low",
-        "model": "gpt-5.6-luna",
+        "model": "gpt-6-luna",
         "name": "codex-luna"
       },
       "route_json": {
@@ -851,7 +851,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "low",
-        "model": "gpt-5.6-luna",
+        "model": "gpt-6-luna",
         "name": "codex-luna"
       },
       "route_json": {
@@ -889,7 +889,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "low",
-        "model": "gpt-5.6-luna",
+        "model": "gpt-6-luna",
         "name": "codex-luna"
       },
       "route_json": {
@@ -927,7 +927,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "low",
-        "model": "gpt-5.6-luna",
+        "model": "gpt-6-luna",
         "name": "codex-luna"
       },
       "route_json": {
@@ -965,7 +965,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "medium",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.2-sol",
         "name": "codex-network"
       },
       "route_json": {
@@ -998,7 +998,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "medium",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.2-sol",
         "name": "codex-network"
       },
       "route_json": {
@@ -1031,7 +1031,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "medium",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.2-sol",
         "name": "codex-network"
       },
       "route_json": {
@@ -1064,7 +1064,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "medium",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.2-sol",
         "name": "codex-network"
       },
       "route_json": {
@@ -1097,7 +1097,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "medium",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.2-sol",
         "name": "codex-network"
       },
       "route_json": {
@@ -1130,7 +1130,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "medium",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.2-sol",
         "name": "codex-network"
       },
       "route_json": {
@@ -1163,7 +1163,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "medium",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.2-sol",
         "name": "codex-network"
       },
       "route_json": {
@@ -1196,7 +1196,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "medium",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.2-sol",
         "name": "codex-network"
       },
       "route_json": {
@@ -1229,7 +1229,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "medium",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.2-sol",
         "name": "codex-network"
       },
       "route_json": {
@@ -1262,7 +1262,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "high",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.2-sol",
         "name": "codex-reviewer"
       },
       "route_json": {
@@ -1295,7 +1295,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "high",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.2-sol",
         "name": "codex-reviewer"
       },
       "route_json": {
@@ -1328,7 +1328,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "high",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.2-sol",
         "name": "codex-reviewer"
       },
       "route_json": {
@@ -1361,7 +1361,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "high",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.2-sol",
         "name": "codex-reviewer"
       },
       "route_json": {
@@ -1394,7 +1394,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "high",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.2-sol",
         "name": "codex-reviewer"
       },
       "route_json": {
@@ -1427,7 +1427,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "high",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.2-sol",
         "name": "codex-reviewer"
       },
       "route_json": {
@@ -1460,7 +1460,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "high",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.2-sol",
         "name": "codex-reviewer"
       },
       "route_json": {
@@ -1493,7 +1493,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "high",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.2-sol",
         "name": "codex-reviewer"
       },
       "route_json": {
@@ -1526,7 +1526,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "high",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.2-sol",
         "name": "codex-reviewer"
       },
       "route_json": {
@@ -1559,7 +1559,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "medium",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.2-sol",
         "name": "codex-sol"
       },
       "route_json": {
@@ -1592,7 +1592,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "medium",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.2-sol",
         "name": "codex-sol"
       },
       "route_json": {
@@ -1625,7 +1625,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "medium",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.2-sol",
         "name": "codex-sol"
       },
       "route_json": {
@@ -1658,7 +1658,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "medium",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.2-sol",
         "name": "codex-sol"
       },
       "route_json": {
@@ -1691,7 +1691,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "medium",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.2-sol",
         "name": "codex-sol"
       },
       "route_json": {
@@ -1724,7 +1724,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "medium",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.2-sol",
         "name": "codex-sol"
       },
       "route_json": {
@@ -1757,7 +1757,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "medium",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.2-sol",
         "name": "codex-sol"
       },
       "route_json": {
@@ -1790,7 +1790,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "medium",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.2-sol",
         "name": "codex-sol"
       },
       "route_json": {
@@ -1823,7 +1823,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "medium",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.2-sol",
         "name": "codex-sol"
       },
       "route_json": {
@@ -1856,7 +1856,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "low",
-        "model": "gpt-5.6-terra",
+        "model": "gpt-6.1-terra",
         "name": "codex-terra"
       },
       "route_json": {
@@ -1889,7 +1889,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "low",
-        "model": "gpt-5.6-terra",
+        "model": "gpt-6.1-terra",
         "name": "codex-terra"
       },
       "route_json": {
@@ -1922,7 +1922,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "low",
-        "model": "gpt-5.6-terra",
+        "model": "gpt-6.1-terra",
         "name": "codex-terra"
       },
       "route_json": {
@@ -1955,7 +1955,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "low",
-        "model": "gpt-5.6-terra",
+        "model": "gpt-6.1-terra",
         "name": "codex-terra"
       },
       "route_json": {
@@ -1988,7 +1988,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "low",
-        "model": "gpt-5.6-terra",
+        "model": "gpt-6.1-terra",
         "name": "codex-terra"
       },
       "route_json": {
@@ -2021,7 +2021,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "low",
-        "model": "gpt-5.6-terra",
+        "model": "gpt-6.1-terra",
         "name": "codex-terra"
       },
       "route_json": {
@@ -2054,7 +2054,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "low",
-        "model": "gpt-5.6-terra",
+        "model": "gpt-6.1-terra",
         "name": "codex-terra"
       },
       "route_json": {
@@ -2087,7 +2087,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "low",
-        "model": "gpt-5.6-terra",
+        "model": "gpt-6.1-terra",
         "name": "codex-terra"
       },
       "route_json": {
@@ -2120,7 +2120,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "low",
-        "model": "gpt-5.6-terra",
+        "model": "gpt-6.1-terra",
         "name": "codex-terra"
       },
       "route_json": {
@@ -2293,7 +2293,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "medium",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.2-sol",
         "name": "designer"
       },
       "route_json": {
@@ -2393,7 +2393,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "medium",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.2-sol",
         "name": "designer"
       },
       "route_json": {
@@ -2599,7 +2599,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "medium",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.2-sol",
         "name": "frontend-developer"
       },
       "route_json": {
@@ -2699,7 +2699,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "medium",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.2-sol",
         "name": "frontend-developer"
       },
       "route_json": {
@@ -3661,7 +3661,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "low",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.2-sol",
         "name": "opus-architect"
       },
       "route_json": {
@@ -3761,7 +3761,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "low",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.2-sol",
         "name": "opus-architect"
       },
       "route_json": {
@@ -3967,7 +3967,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "medium",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.2-sol",
         "name": "opus-domain"
       },
       "route_json": {
@@ -4067,7 +4067,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "medium",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.2-sol",
         "name": "opus-domain"
       },
       "route_json": {
@@ -4273,7 +4273,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "high",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.2-sol",
         "name": "opus-hardening"
       },
       "route_json": {
@@ -4373,7 +4373,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "high",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.2-sol",
         "name": "opus-hardening"
       },
       "route_json": {
@@ -4579,7 +4579,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "max",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.2-sol",
         "name": "opus-verify"
       },
       "route_json": {
@@ -4679,7 +4679,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "max",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.2-sol",
         "name": "opus-verify"
       },
       "route_json": {
@@ -4885,7 +4885,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "medium",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.2-sol",
         "name": "opus"
       },
       "route_json": {
@@ -4985,7 +4985,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "medium",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.2-sol",
         "name": "opus"
       },
       "route_json": {
@@ -6463,7 +6463,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "medium",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.2-sol",
         "name": "prime"
       },
       "route_json": {
@@ -6563,7 +6563,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "medium",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.2-sol",
         "name": "prime"
       },
       "route_json": {
@@ -6769,7 +6769,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "high",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.2-sol",
         "name": "product-lead"
       },
       "route_json": {
@@ -6869,7 +6869,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "high",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.2-sol",
         "name": "product-lead"
       },
       "route_json": {
@@ -7075,7 +7075,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "high",
-        "model": "gpt-5.6-terra",
+        "model": "gpt-6.1-terra",
         "name": "qa-engineer"
       },
       "route_json": {
@@ -7175,7 +7175,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "high",
-        "model": "gpt-5.6-terra",
+        "model": "gpt-6.1-terra",
         "name": "qa-engineer"
       },
       "route_json": {
@@ -7381,7 +7381,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "medium",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.2-sol",
         "name": "researcher"
       },
       "route_json": {
@@ -7481,7 +7481,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "medium",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.2-sol",
         "name": "researcher"
       },
       "route_json": {
@@ -7939,7 +7939,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "high",
-        "model": "gpt-5.6-terra",
+        "model": "gpt-6.1-terra",
         "name": "sonnet-bugfix"
       },
       "route_json": {
@@ -8039,7 +8039,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "high",
-        "model": "gpt-5.6-terra",
+        "model": "gpt-6.1-terra",
         "name": "sonnet-bugfix"
       },
       "route_json": {
@@ -8245,7 +8245,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "medium",
-        "model": "gpt-5.6-terra",
+        "model": "gpt-6.1-terra",
         "name": "sonnet-feature"
       },
       "route_json": {
@@ -8345,7 +8345,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "medium",
-        "model": "gpt-5.6-terra",
+        "model": "gpt-6.1-terra",
         "name": "sonnet-feature"
       },
       "route_json": {
@@ -8551,7 +8551,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "low",
-        "model": "gpt-5.6-terra",
+        "model": "gpt-6.1-terra",
         "name": "sonnet-sketch"
       },
       "route_json": {
@@ -8651,7 +8651,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "low",
-        "model": "gpt-5.6-terra",
+        "model": "gpt-6.1-terra",
         "name": "sonnet-sketch"
       },
       "route_json": {
@@ -8857,7 +8857,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "max",
-        "model": "gpt-5.6-terra",
+        "model": "gpt-6.1-terra",
         "name": "sonnet-sweep"
       },
       "route_json": {
@@ -8957,7 +8957,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "max",
-        "model": "gpt-5.6-terra",
+        "model": "gpt-6.1-terra",
         "name": "sonnet-sweep"
       },
       "route_json": {
@@ -9163,7 +9163,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "medium",
-        "model": "gpt-5.6-terra",
+        "model": "gpt-6.1-terra",
         "name": "sonnet"
       },
       "route_json": {
@@ -9263,7 +9263,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "medium",
-        "model": "gpt-5.6-terra",
+        "model": "gpt-6.1-terra",
         "name": "sonnet"
       },
       "route_json": {
@@ -9469,7 +9469,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "high",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.2-sol",
         "name": "staff-engineer"
       },
       "route_json": {
@@ -9569,7 +9569,7 @@
       "resolved": {
         "agent": "codex",
         "effort": "high",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6.2-sol",
         "name": "staff-engineer"
       },
       "route_json": {

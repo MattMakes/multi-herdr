@@ -413,7 +413,7 @@ fn reads_a_ledger_written_by_the_bash_version() {
         l.path(),
         r#"[
           {"record_id":"3f2b","session_id":null,"agent":"codex","tier":"codex-sol",
-           "model":"gpt-5.6-sol","role":"codex-sol-1","status":"working",
+           "model":"gpt-6.2-sol","role":"codex-sol-1","status":"working",
            "task":"(idle - awaiting assignment)",
            "history":[{"at":"2026-07-08T10:00:00Z","event":"spawned",
                        "text":"spawned idle as codex-sol-1"}],

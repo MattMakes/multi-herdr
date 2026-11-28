@@ -38,7 +38,12 @@ Keep a comment only when it is one of these 6:
 3. A directive that tells the formatter to leave a region alone.
 4. A lint suppression for a rule that is defective, nitpicking or purely a
    matter of style.
-5. A doc comment that states the contract of a public interface.
+5. A doc comment that states the contract of a public interface. This
+   includes Rust `///` and `//!` doc comments on public items, and GDScript
+   `##` doc comments on classes, signals, properties and functions. Rust
+   `// SAFETY:` comments that say why an `unsafe` block or `unsafe impl`
+   upholds its invariants are always kept: `clippy::undocumented_unsafe_blocks`
+   requires them.
 6. A link to a ticket or design note about a constraint that code has no way
    to state.
 

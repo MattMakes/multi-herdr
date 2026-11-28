@@ -22,6 +22,7 @@ pub mod skillscmd;
 pub mod smoke;
 pub mod spawn;
 pub mod taskledger;
+pub mod taskledger_complexity;
 pub mod taskledger_finish;
 pub mod taskledger_spawn;
 pub mod taskledger_wake;
@@ -59,6 +60,26 @@ pub fn load_roster_unwarned(ctx: &RuntimeContext, explicit: Option<&str>) -> Res
         Ok(catalog) => r.with_skill_catalog(catalog),
         Err(_) => r,
     })
+}
+
+pub fn load_resolved_roster(ctx: &RuntimeContext, explicit: Option<&str>) -> Result<Roster> {
+    let roster = load_resolved_roster_unwarned(ctx, explicit)?;
+    for w in roster.load_warnings() {
+        eprintln!("warning: {w}");
+    }
+    Ok(roster)
+}
+
+pub fn load_resolved_roster_unwarned(
+    ctx: &RuntimeContext,
+    explicit: Option<&str>,
+) -> Result<Roster> {
+    load_roster_unwarned(ctx, explicit).map(|roster| resolve_roster(ctx, roster))
+}
+
+pub fn resolve_roster(ctx: &RuntimeContext, mut roster: Roster) -> Roster {
+    roster.resolve_codex_models(&ctx.bins.harness.codex);
+    roster
 }
 
 pub fn path_text(path: Option<&Path>) -> Option<String> {

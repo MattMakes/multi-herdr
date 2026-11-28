@@ -5,7 +5,10 @@ use std::process::Command;
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
-use super::{Ctx, Outcome};
+use rusqlite::Connection;
+
+use super::{held_task, require_worktree, work_dir, worktree_of, Ctx, Outcome, Tools};
+use crate::taskledger::runs;
 
 mod config;
 
@@ -33,7 +36,7 @@ struct Function {
     line: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, serde::Serialize)]
 pub struct Violation {
     #[serde(rename = "functionName")]
     pub function_name: String,
@@ -119,7 +122,11 @@ pub fn in_changed_functions(
     Ok(keep_changed(found, &starts, changed))
 }
 
-const CLIPPY_LINT: &str = "clippy::cognitive_complexity";
+const CLIPPY_LINTS: &[(&str, &str)] = &[
+    ("clippy::cognitive_complexity", "cognitiveComplexity"),
+    ("clippy::too_many_lines", "functionLength"),
+    ("clippy::too_many_arguments", "parameterCount"),
+];
 
 #[derive(Debug, Deserialize)]
 struct CargoLine {
@@ -157,39 +164,72 @@ struct SpanText {
     text: String,
 }
 
-pub fn clippy_violations(json: &str, root: &Path) -> Vec<Violation> {
+fn metric(d: &Diagnostic) -> Option<&'static str> {
+    let code = d.code.as_ref()?.code.as_str();
+    CLIPPY_LINTS
+        .iter()
+        .find(|(lint, _)| *lint == code)
+        .map(|(_, m)| *m)
+}
+
+fn work_rel(file: &str, root: &Path, dir: &Path) -> String {
+    let joined = root.join(file);
+    let full = joined.canonicalize().unwrap_or_else(|_| joined.clone());
+    let base = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+    full.strip_prefix(&base)
+        .or_else(|_| joined.strip_prefix(dir))
+        .map(|r| r.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| file.trim_start_matches("./").to_string())
+}
+
+#[derive(Debug, Deserialize)]
+struct Metadata {
+    workspace_root: PathBuf,
+}
+
+fn workspace_root(krate: &Path) -> Result<std::result::Result<PathBuf, String>> {
+    let mut cmd = Command::new("cargo");
+    cmd.args(["metadata", "--no-deps", "--format-version", "1"])
+        .current_dir(krate);
+    crate::runtime::process::scrub_child_env(&mut cmd);
+    let out = cmd.output().context("running cargo metadata")?;
+    if !out.status.success() {
+        return Ok(Err(String::from_utf8_lossy(&out.stderr).trim().to_string()));
+    }
+    let m: Metadata =
+        serde_json::from_slice(&out.stdout).context("reading the cargo metadata JSON")?;
+    Ok(Ok(m.workspace_root))
+}
+
+fn push_new(out: &mut Vec<Violation>, v: Violation) {
+    if !out
+        .iter()
+        .any(|o| o.file_path == v.file_path && o.line == v.line && o.metric == v.metric)
+    {
+        out.push(v);
+    }
+}
+
+fn clippy_violation(line: &str, root: &Path, dir: &Path) -> Option<Violation> {
+    let CargoLine { reason, message } = serde_json::from_str::<CargoLine>(line).ok()?;
+    let d = message.filter(|_| reason == "compiler-message")?;
+    let metric = metric(&d)?;
+    let span = d.spans.iter().find(|s| s.is_primary)?;
+    let (value, threshold) = score(&d.message).unwrap_or((0.0, 0.0));
+    Some(Violation {
+        function_name: name(span),
+        file_path: work_rel(&span.file_name, root, dir),
+        line: span.line_start,
+        metric: metric.to_string(),
+        value,
+        threshold,
+    })
+}
+
+pub fn clippy_violations(json: &str, root: &Path, dir: &Path) -> Vec<Violation> {
     let mut out: Vec<Violation> = Vec::new();
-    for line in json.lines() {
-        let Ok(CargoLine {
-            reason,
-            message: Some(d),
-        }) = serde_json::from_str::<CargoLine>(line)
-        else {
-            continue;
-        };
-        if reason != "compiler-message"
-            || d.code.as_ref().map(|c| c.code.as_str()) != Some(CLIPPY_LINT)
-        {
-            continue;
-        }
-        let Some(span) = d.spans.iter().find(|s| s.is_primary) else {
-            continue;
-        };
-        let (value, threshold) = score(&d.message).unwrap_or((0.0, 0.0));
-        let v = Violation {
-            function_name: name(span),
-            file_path: rel(&span.file_name, root),
-            line: span.line_start,
-            metric: "cognitiveComplexity".to_string(),
-            value,
-            threshold,
-        };
-        if !out
-            .iter()
-            .any(|o| o.file_path == v.file_path && o.line == v.line)
-        {
-            out.push(v);
-        }
+    for v in json.lines().filter_map(|l| clippy_violation(l, root, dir)) {
+        push_new(&mut out, v);
     }
     out
 }
@@ -204,11 +244,21 @@ fn name(span: &Span) -> String {
     let Some(t) = span.text.first() else {
         return String::new();
     };
-    t.text
-        .chars()
-        .skip(span.column_start.saturating_sub(1))
-        .take(span.column_end.saturating_sub(span.column_start))
-        .collect()
+    let tail = t.text.chars().skip(span.column_start.saturating_sub(1));
+    let slice: String = if span.text.len() == 1 {
+        tail.take(span.column_end.saturating_sub(span.column_start))
+            .collect()
+    } else {
+        tail.collect()
+    };
+    signature_name(&slice).unwrap_or(slice)
+}
+
+fn signature_name(slice: &str) -> Option<String> {
+    let mut words = slice.split_whitespace();
+    words.find(|w| *w == "fn")?;
+    let ident = words.next()?.split(['<', '(']).next()?;
+    Some(ident.to_string())
 }
 
 fn fn_starts(source: &str) -> Vec<u64> {
@@ -233,18 +283,36 @@ fn starts_fn(line: &str) -> bool {
     false
 }
 
-fn rust_sources(names: &str, dir: &Path) -> Vec<String> {
-    if !dir.join("Cargo.toml").is_file() {
-        return Vec::new();
+fn nearest_crate(dir: &Path, file: &str) -> Option<PathBuf> {
+    let mut folder = dir.join(file).parent()?.to_path_buf();
+    loop {
+        if folder.join("Cargo.toml").is_file() {
+            return Some(folder);
+        }
+        if folder == dir || !folder.pop() || !folder.starts_with(dir) {
+            return None;
+        }
     }
-    names
-        .lines()
-        .filter(|f| f.ends_with(".rs"))
-        .map(|s| s.to_string())
-        .collect()
 }
 
-fn clippy(dir: &Path) -> Command {
+fn rust_crates(names: &str, dir: &Path) -> BTreeMap<PathBuf, Vec<String>> {
+    let mut by: BTreeMap<PathBuf, Vec<String>> = BTreeMap::new();
+    for f in names.lines().filter(|f| f.ends_with(".rs")) {
+        if let Some(krate) = nearest_crate(dir, f) {
+            by.entry(krate).or_default().push(f.to_string());
+        }
+    }
+    by
+}
+
+fn clippy_evidence(evidence_dir: &Path, seq: i64, i: usize) -> PathBuf {
+    evidence_dir.join(match i {
+        0 => format!("{seq}-clippy.json"),
+        n => format!("{seq}-clippy-{}.json", n + 1),
+    })
+}
+
+fn clippy(krate: &Path) -> Command {
     let mut cmd = Command::new("cargo");
     cmd.args([
         "clippy",
@@ -255,21 +323,34 @@ fn clippy(dir: &Path) -> Command {
         "--",
         "-A",
         "clippy::all",
-        "-W",
-        CLIPPY_LINT,
-        "--cap-lints",
-        "warn",
-    ])
-    .current_dir(dir);
+    ]);
+    for (lint, _) in CLIPPY_LINTS {
+        cmd.args(["-W", lint]);
+    }
+    cmd.args(["--cap-lints", "warn"]).current_dir(krate);
     crate::runtime::process::scrub_child_env(&mut cmd);
     cmd
 }
 
 fn analyse_rust(
+    krate: &Path,
     dir: &Path,
     evidence: &Path,
 ) -> Result<std::result::Result<Vec<Violation>, Outcome>> {
-    let mut cmd = clippy(dir);
+    let root = match workspace_root(krate)? {
+        Ok(root) => root,
+        Err(stderr) => {
+            return Ok(Err(Outcome::fail(
+                "cargo metadata failed",
+                None,
+                &format!(
+                    "cargo metadata failed in {}; fix the crate, commit, then run finish again: {stderr}",
+                    krate.display()
+                ),
+            )))
+        }
+    };
+    let mut cmd = clippy(krate);
     cmd.stdout(std::fs::File::create(evidence)?);
     let out = cmd.output().context("running cargo clippy")?;
     if !out.status.success() {
@@ -287,7 +368,7 @@ fn analyse_rust(
         )));
     }
     let json = std::fs::read_to_string(evidence)?;
-    Ok(Ok(clippy_violations(&json, dir)))
+    Ok(Ok(clippy_violations(&json, &root, dir)))
 }
 
 fn rust_starts(dir: &Path, files: &[String]) -> BTreeMap<String, Vec<u64>> {
@@ -341,22 +422,13 @@ impl Analyser<'_> {
 }
 
 fn violations(found: &[Violation], evidence: &[PathBuf]) -> Outcome {
-    let list: Vec<String> = found
-        .iter()
-        .take(10)
-        .map(|v| {
-            format!(
-                "{}:{} {} {}={} (max {})",
-                v.file_path, v.line, v.function_name, v.metric, v.value, v.threshold
-            )
-        })
-        .collect();
+    let list: Vec<String> = found.iter().take(10).map(finding_line).collect();
     let paths: Vec<String> = evidence.iter().map(|p| p.display().to_string()).collect();
     Outcome::fail(
         &format!("{} violations", found.len()),
         evidence.first().cloned(),
         &format!(
-            "reduce the complexity of the functions you changed, commit, then run finish again: {}. Full analysis: {}",
+            "reduce the complexity of every function you changed, commit, then run finish again: {}. Run horch ledger complexity for the full list. Full analysis: {}",
             list.join("; "),
             paths.join(", ")
         ),
@@ -415,87 +487,351 @@ impl Analyser<'_> {
     }
 }
 
+pub const GDCOMPLEXITY_PY: &str = include_str!("../../../../../scripts/godot/gdcomplexity.py");
+
+pub const GDSCRIPT_INSTALL_HINT: &str =
+    "install uv, or run: uv tool install gdtoolkit==4.5.0 or pipx install \"gdtoolkit==4.*\"";
+
+pub fn write_gdcomplexity(evidence_root: &Path) -> std::io::Result<PathBuf> {
+    let path = evidence_root.join("bin").join("gdcomplexity.py");
+    if std::fs::read_to_string(&path).ok().as_deref() != Some(GDCOMPLEXITY_PY) {
+        std::fs::create_dir_all(evidence_root.join("bin"))?;
+        let part = path.with_extension(format!("py.{}", std::process::id()));
+        std::fs::write(&part, GDCOMPLEXITY_PY)?;
+        std::fs::rename(&part, &path)?;
+    }
+    Ok(path)
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum GdRunner {
+    Uv(PathBuf),
+    Python(PathBuf, &'static str),
+}
+
+fn succeeds(program: &Path, args: &[&str]) -> bool {
+    let mut cmd = Command::new(program);
+    cmd.args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    crate::runtime::process::scrub_child_env(&mut cmd);
+    cmd.status().is_ok_and(|s| s.success())
+}
+
+pub fn gdscript_runner(uv: &Path, python: &Path) -> Option<GdRunner> {
+    if succeeds(uv, &["--version"]) {
+        return Some(GdRunner::Uv(uv.to_path_buf()));
+    }
+    ["-I", "-B"]
+        .into_iter()
+        .find(|flag| succeeds(python, &[flag, "-c", "import gdtoolkit.parser"]))
+        .map(|flag| GdRunner::Python(python.to_path_buf(), flag))
+}
+
+impl GdRunner {
+    pub fn gdcomplexity_command(
+        &self,
+        cli: &Path,
+        files: &[String],
+        config: Option<&Path>,
+        dir: &Path,
+    ) -> Command {
+        let mut cmd = match self {
+            GdRunner::Uv(uv) => {
+                let mut c = Command::new(uv);
+                c.args([
+                    "run",
+                    "--quiet",
+                    "--no-project",
+                    "--with",
+                    "gdtoolkit==4.5.0",
+                    "python3",
+                    "-I",
+                ]);
+                c
+            }
+            GdRunner::Python(python, flag) => {
+                let mut c = Command::new(python);
+                c.arg(flag);
+                c
+            }
+        };
+        cmd.arg(cli).args(["--format", "json"]);
+        if let Some(config) = config {
+            cmd.arg("--config").arg(config);
+        }
+        cmd.args(files).current_dir(dir);
+        crate::runtime::process::scrub_child_env(&mut cmd);
+        cmd
+    }
+}
+
+pub fn no_gdscript_analyser() -> Outcome {
+    Outcome::fail(
+        "no gdscript analyser",
+        None,
+        &format!(
+            "changed .gd files need gdcomplexity, which runs through uv or python3 with gdtoolkit; {GDSCRIPT_INSTALL_HINT}, then run finish again"
+        ),
+    )
+}
+
+fn gd_sources(names: &str) -> Vec<String> {
+    names
+        .lines()
+        .filter(|f| f.ends_with(".gd"))
+        .map(str::to_string)
+        .collect()
+}
+
+fn gd_evidence(evidence_dir: &Path, seq: i64, i: usize) -> PathBuf {
+    evidence_dir.join(match i {
+        0 => format!("{seq}-gdcomplexity.json"),
+        n => format!("{seq}-gdcomplexity-{}.json", n + 1),
+    })
+}
+
+fn run_gdcomplexity(
+    mut cmd: Command,
+    evidence: &Path,
+) -> Result<std::result::Result<String, Outcome>> {
+    cmd.stdout(std::fs::File::create(evidence)?);
+    let out = cmd.output().context("running gdcomplexity")?;
+    let json = std::fs::read_to_string(evidence)?;
+    if out.status.success() && !json.trim().is_empty() {
+        return Ok(Ok(json));
+    }
+    Ok(Err(Outcome::fail(
+        "gdcomplexity failed",
+        Some(evidence.to_path_buf()),
+        &format!(
+            "gdcomplexity could not analyse the changed .gd files; fix the parse error, commit, then run finish again: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ),
+    )))
+}
+
+pub struct GdRoute<'a> {
+    pub runner: &'a GdRunner,
+    pub cli: &'a Path,
+    pub dir: &'a Path,
+}
+
+impl GdRoute<'_> {
+    pub fn reports(
+        &self,
+        files: &[String],
+        evidence_dir: &Path,
+        seq: i64,
+    ) -> Result<std::result::Result<Vec<(PathBuf, String)>, Outcome>> {
+        let mut reports = Vec::new();
+        for (i, (cfg, group)) in config::groups(self.dir, files).into_iter().enumerate() {
+            let path = gd_evidence(evidence_dir, seq, i);
+            let cmd = self
+                .runner
+                .gdcomplexity_command(self.cli, &group, cfg.as_deref(), self.dir);
+            match run_gdcomplexity(cmd, &path)? {
+                Ok(json) => reports.push((path, json)),
+                Err(failed) => return Ok(Err(failed)),
+            }
+        }
+        Ok(Ok(reports))
+    }
+}
+
+type RustFindings = (Vec<Violation>, Vec<PathBuf>);
+
 pub fn rust_violations(
     dir: &Path,
-    files: &[String],
+    crates: &BTreeMap<PathBuf, Vec<String>>,
     changed: &BTreeMap<String, Vec<(u64, u64)>>,
-    evidence: &Path,
-) -> Result<std::result::Result<Vec<Violation>, Outcome>> {
-    Ok(analyse_rust(dir, evidence)?
-        .map(|found| keep_changed(found, &rust_starts(dir, files), changed)))
+    evidence_dir: &Path,
+    seq: i64,
+) -> Result<std::result::Result<RustFindings, Outcome>> {
+    let mut found = Vec::new();
+    let mut evidence = Vec::new();
+    for (i, (krate, files)) in crates.iter().enumerate() {
+        let path = clippy_evidence(evidence_dir, seq, i);
+        let group = match analyse_rust(krate, dir, &path)? {
+            Ok(group) => group,
+            Err(failed) => return Ok(Err(failed)),
+        };
+        for v in keep_changed(group, &rust_starts(dir, files), changed) {
+            push_new(&mut found, v);
+        }
+        evidence.push(path);
+    }
+    Ok(Ok((found, evidence)))
+}
+
+pub const NOT_APPLICABLE: &str = "no changed file is in a language that the analyser (TypeScript, JavaScript, Python), clippy (Rust) or gdcomplexity (GDScript) reads";
+
+type Reports = std::result::Result<Vec<(PathBuf, String)>, Outcome>;
+
+pub struct Scope<'a> {
+    pub tools: &'a Tools,
+    pub dir: &'a Path,
+    pub base: &'a str,
+    pub evidence_dir: &'a Path,
+    pub seq: i64,
+}
+
+pub enum Judged {
+    NotApplicable(&'static str),
+    Failed(Outcome),
+    Found {
+        found: Vec<Violation>,
+        evidence: Vec<PathBuf>,
+        files: usize,
+    },
+}
+
+fn analyser_reports(s: &Scope<'_>, files: &[String]) -> Result<Reports> {
+    if files.is_empty() {
+        return Ok(Ok(Vec::new()));
+    }
+    let Some(cli) = &s.tools.complexity_cli else {
+        return Ok(Err(Outcome::fail(
+            "no analyser",
+            None,
+            "the complexity-sweep skill's analyser was not found. Install the code plugin's complexity-sweep skill (and run npm install in its code/core and code/cli), or set HORCH_COMPLEXITY_CLI to its code/cli/dist/index.js",
+        )));
+    };
+    let analyser = Analyser {
+        node: &s.tools.node,
+        cli,
+        dir: s.dir,
+    };
+    analyser.run_groups(files, s.evidence_dir, s.seq)
+}
+
+fn gd_reports(s: &Scope<'_>, gd: &[String]) -> Result<Reports> {
+    if gd.is_empty() {
+        return Ok(Ok(Vec::new()));
+    }
+    let (Some(cli), Some(runner)) = (
+        &s.tools.gdcomplexity_cli,
+        gdscript_runner(Path::new("uv"), Path::new("python3")),
+    ) else {
+        return Ok(Err(no_gdscript_analyser()));
+    };
+    let route = GdRoute {
+        runner: &runner,
+        cli,
+        dir: s.dir,
+    };
+    route.reports(gd, s.evidence_dir, s.seq)
+}
+
+pub fn judge(s: &Scope<'_>) -> Result<Judged> {
+    let git = &s.tools.git;
+    let range = format!("{}...HEAD", s.base);
+    let names = git.run(s.dir, &["diff", "--name-only", "--diff-filter=AMR", &range])?;
+    let files = sources(&names);
+    let rust = rust_crates(&names, s.dir);
+    let gd = gd_sources(&names);
+    if files.is_empty() && rust.is_empty() && gd.is_empty() {
+        return Ok(Judged::NotApplicable(NOT_APPLICABLE));
+    }
+    let mut reports = match analyser_reports(s, &files)? {
+        Ok(r) => r,
+        Err(failed) => return Ok(Judged::Failed(failed)),
+    };
+    if !files.is_empty() && reports.is_empty() && rust.is_empty() && gd.is_empty() {
+        return Ok(Judged::NotApplicable(NO_ANALYSABLE));
+    }
+    match gd_reports(s, &gd)? {
+        Ok(r) => reports.extend(r),
+        Err(failed) => return Ok(Judged::Failed(failed)),
+    }
+    let diff = git.run(s.dir, &["diff", "-U0", &range, "--"])?;
+    let changed = changed_lines(&diff);
+    let mut found = Vec::new();
+    let mut evidence = Vec::new();
+    for (path, json) in reports {
+        found.extend(in_changed_functions(&json, &changed, s.dir)?);
+        evidence.push(path);
+    }
+    match rust_violations(s.dir, &rust, &changed, s.evidence_dir, s.seq)? {
+        Ok((v, paths)) => {
+            found.extend(v);
+            evidence.extend(paths);
+        }
+        Err(failed) => return Ok(Judged::Failed(failed)),
+    }
+    let rust_files: usize = rust.values().map(Vec::len).sum();
+    Ok(Judged::Found {
+        found,
+        evidence,
+        files: files.len() + rust_files + gd.len(),
+    })
+}
+
+pub const NO_ANALYSABLE: &str = "no analysable source files";
+
+pub fn finding_line(v: &Violation) -> String {
+    format!(
+        "{}:{} {} {}={} (max {})",
+        v.file_path, v.line, v.function_name, v.metric, v.value, v.threshold
+    )
 }
 
 pub fn step(cx: &Ctx<'_>) -> Result<Outcome> {
-    let git = &cx.tools.git;
     let base = cx.diff_base()?;
-    let names = git.run(
-        &cx.dir,
-        &[
-            "diff",
-            "--name-only",
-            "--diff-filter=AMR",
-            &format!("{base}...HEAD"),
-        ],
-    )?;
-    let files = sources(&names);
-    let rust = rust_sources(&names, &cx.dir);
-    let tree = git.tree(&cx.dir).ok();
-    if files.is_empty() && rust.is_empty() {
-        return Ok(
-            Outcome::not_applicable(
-                "no changed file is in a language that the analyser (TypeScript, JavaScript, Python) or clippy (Rust) reads",
-            )
-                .judged(tree),
-        );
-    }
-    let mut found = Vec::new();
-    let mut evidence = Vec::new();
-    let mut reports = Vec::new();
-    if !files.is_empty() {
-        let Some(cli) = &cx.tools.complexity_cli else {
-            return Ok(Outcome::fail(
-                "no analyser",
-                None,
-                "the complexity-sweep skill's analyser was not found. Install the code plugin's complexity-sweep skill (and run npm install in its code/core and code/cli), or set HORCH_COMPLEXITY_CLI to its code/cli/dist/index.js",
-            ));
-        };
-        let analyser = Analyser {
-            node: &cx.tools.node,
-            cli,
-            dir: &cx.dir,
-        };
-        match analyser.run_groups(&files, &cx.evidence_dir, cx.seq)? {
-            Ok(r) => reports = r,
-            Err(failed) => return Ok(failed),
-        }
-        if reports.is_empty() && rust.is_empty() {
-            return Ok(Outcome::not_applicable("no analysable source files").judged(tree));
-        }
-    }
-    let diff = git.run(&cx.dir, &["diff", "-U0", &format!("{base}...HEAD"), "--"])?;
-    let changed = changed_lines(&diff);
-    for (path, json) in reports {
-        found.extend(in_changed_functions(&json, &changed, &cx.dir)?);
-        evidence.push(path);
-    }
-    if !rust.is_empty() {
-        let path = cx.evidence_dir.join(format!("{}-clippy.json", cx.seq));
-        match rust_violations(&cx.dir, &rust, &changed, &path)? {
-            Ok(v) => found.extend(v),
-            Err(failed) => return Ok(failed),
-        }
-        evidence.push(path);
-    }
-    let outcome = if found.is_empty() {
-        Outcome::pass(
+    let scope = Scope {
+        tools: cx.tools,
+        dir: &cx.dir,
+        base: &base,
+        evidence_dir: &cx.evidence_dir,
+        seq: cx.seq,
+    };
+    let judged = judge(&scope)?;
+    let tree = cx.tools.git.tree(&cx.dir).ok();
+    let outcome = match judged {
+        Judged::NotApplicable(note) => Outcome::not_applicable(note),
+        Judged::Failed(failed) => return Ok(failed),
+        Judged::Found {
+            found,
+            evidence,
+            files,
+        } if found.is_empty() => Outcome::pass(
             "0 violations",
             evidence.first().cloned(),
-            &format!("{} files analysed", files.len() + rust.len()),
-        )
-    } else {
-        violations(&found, &evidence)
+            &format!("{files} files analysed"),
+        ),
+        Judged::Found {
+            found, evidence, ..
+        } => violations(&found, &evidence),
     };
     Ok(outcome.judged(tree))
+}
+
+pub fn claimed_scope(
+    conn: &Connection,
+    tools: &Tools,
+    worker_id: &str,
+) -> Result<(PathBuf, String)> {
+    let (w, task) = held_task(conn, worker_id)?;
+    let run = runs::get(conn, &task.run_id)?;
+    let root = PathBuf::from(&run.project_root);
+    let wt = worktree_of(conn, &task.task_id)?;
+    require_worktree(&task, wt.as_ref())?;
+    let dir = work_dir(wt.as_ref(), &root);
+    let cx = Ctx {
+        tools,
+        run: &run,
+        task: &task,
+        worker: &w,
+        worktree: wt,
+        dir: dir.clone(),
+        root,
+        evidence_dir: PathBuf::new(),
+        seq: 0,
+        default_check: None,
+    };
+    let base = cx.diff_base()?;
+    Ok((dir, base))
 }
 
 #[cfg(test)]
@@ -534,7 +870,7 @@ mod tests {
         let line = r#"{"reason":"compiler-message","message":{"message":"the function has a cognitive complexity of (5/2)","code":{"code":"clippy::cognitive_complexity","explanation":null},"spans":[{"file_name":"src/lib.rs","line_start":5,"is_primary":true,"column_start":8,"column_end":15,"text":[{"text":"pub fn tangled(v: &[u32]) -> u32 {"}]}]}}"#;
         let other = r#"{"reason":"compiler-message","message":{"message":"unused variable","code":{"code":"unused_variables"},"spans":[]}}"#;
         let json = format!("{line}\n{line}\n{other}\n{{\"reason\":\"build-finished\",\"success\":true}}\nnot json\n");
-        let v = clippy_violations(&json, Path::new("/repo"));
+        let v = clippy_violations(&json, Path::new("/repo"), Path::new("/repo"));
         assert_eq!(v.len(), 1, "{v:?}");
         assert_eq!(v[0].function_name, "tangled");
         assert_eq!(v[0].file_path, "src/lib.rs");
@@ -615,13 +951,17 @@ pub fn tangled(v: &[u32]) -> u32 {
                 &["diff", "--name-only", "--diff-filter=AMR", "base...HEAD"],
             )
             .unwrap();
-        let files = rust_sources(&names, d);
-        assert_eq!(files, vec!["src/lib.rs".to_string()]);
+        let crates = rust_crates(&names, d);
+        assert_eq!(
+            crates,
+            BTreeMap::from([(d.to_path_buf(), vec!["src/lib.rs".to_string()])])
+        );
         let diff = git.run(d, &["diff", "-U0", "base...HEAD", "--"]).unwrap();
-        let evidence = d.join("clippy.json");
-        rust_violations(d, &files, &changed_lines(&diff), &evidence)
+        let (found, evidence) = rust_violations(d, &crates, &changed_lines(&diff), d, 0)
             .unwrap()
-            .expect("clippy runs")
+            .expect("clippy runs");
+        assert_eq!(evidence, vec![d.join("0-clippy.json")]);
+        found
     }
 
     #[test]
@@ -645,7 +985,7 @@ pub fn tangled(v: &[u32]) -> u32 {
         assert_eq!(v[0].file_path, "src/lib.rs");
         assert_eq!(v[0].line, 5);
         assert_eq!(v[0].threshold, 2.0);
-        let out = violations(&v, &[d.join("clippy.json")]);
+        let out = violations(&v, &[d.join("0-clippy.json")]);
         assert!(
             out.note
                 .contains("src/lib.rs:5 tangled cognitiveComplexity=5 (max 2)"),
@@ -762,11 +1102,88 @@ printf ']}\n'
     #[test]
     fn trf_07_rust_files_outside_a_cargo_project_are_not_sent_to_clippy() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(rust_sources("a.rs\nb.ts\n", dir.path()).is_empty());
+        assert!(rust_crates("a.rs\nb.ts\n", dir.path()).is_empty());
         std::fs::write(dir.path().join("Cargo.toml"), "").unwrap();
         assert_eq!(
-            rust_sources("a.rs\nb.ts\n", dir.path()),
-            vec!["a.rs".to_string()]
+            rust_crates("a.rs\nb.ts\n", dir.path()),
+            BTreeMap::from([(dir.path().to_path_buf(), vec!["a.rs".to_string()])])
         );
+    }
+
+    fn touch(path: &Path) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "").unwrap();
+    }
+
+    fn primary(file: &str) -> String {
+        format!(
+            r#"{{"reason":"compiler-message","message":{{"message":"the function has a cognitive complexity of (5/2)","code":{{"code":"clippy::cognitive_complexity"}},"spans":[{{"file_name":"{file}","line_start":3,"is_primary":true,"column_start":4,"column_end":5,"text":[{{"text":"fn f() {{"}}]}}]}}}}"#
+        )
+    }
+
+    #[test]
+    fn grs_01_nested_cargo_crates_are_grouped_and_paths_prefixed() {
+        let top = tempfile::tempdir().unwrap();
+        let dir = top.path().join("work");
+        touch(&top.path().join("Cargo.toml"));
+        touch(&dir.join("rust/Cargo.toml"));
+        touch(&dir.join("game/native/Cargo.toml"));
+        let names =
+            "rust/src/lib.rs\nscripts/x.rs\nrust/src/a/b.rs\ngame/native/src/lib.rs\na.ts\n";
+        assert_eq!(
+            rust_crates(names, &dir),
+            BTreeMap::from([
+                (
+                    dir.join("game/native"),
+                    vec!["game/native/src/lib.rs".to_string()]
+                ),
+                (
+                    dir.join("rust"),
+                    vec!["rust/src/lib.rs".to_string(), "rust/src/a/b.rs".to_string()]
+                ),
+            ])
+        );
+
+        let rust = dir.join("rust");
+        let paths = |file: &str, root: &Path| -> Vec<String> {
+            clippy_violations(&primary(file), root, &dir)
+                .into_iter()
+                .map(|v| v.file_path)
+                .collect()
+        };
+        assert_eq!(paths("src/lib.rs", &rust), vec!["rust/src/lib.rs"]);
+        let absolute = rust.join("src/lib.rs");
+        assert_eq!(
+            paths(&absolute.to_string_lossy(), &rust),
+            vec!["rust/src/lib.rs"]
+        );
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/core\"]\nresolver = \"2\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.join("crates/core/src")).unwrap();
+        std::fs::write(
+            dir.join("crates/core/Cargo.toml"),
+            "[package]\nname = \"core\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        touch(&dir.join("crates/core/src/lib.rs"));
+        let root = workspace_root(&dir.join("crates/core"))
+            .unwrap()
+            .expect("cargo metadata runs");
+        assert_eq!(root, dir.canonicalize().unwrap());
+        assert_eq!(
+            paths("crates/core/src/lib.rs", &root),
+            vec!["crates/core/src/lib.rs"],
+            "a workspace member reports paths from the workspace root"
+        );
+    }
+
+    #[test]
+    fn grs_01_each_crate_writes_its_own_clippy_evidence() {
+        let dir = Path::new("/e");
+        assert_eq!(clippy_evidence(dir, 4, 0), dir.join("4-clippy.json"));
+        assert_eq!(clippy_evidence(dir, 4, 1), dir.join("4-clippy-2.json"));
     }
 }

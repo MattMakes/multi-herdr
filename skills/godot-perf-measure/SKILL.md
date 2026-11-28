@@ -47,16 +47,19 @@ The main procedure is an A/B measure. Every other section feeds it or ends in it
 
 1. **Measure milliseconds per part, not FPS.** Record process time, physics time, render CPU and
    GPU time, draw calls, primitives and static memory. FPS hides where the time goes and caps at
-   the display rate. Check: your log has one column per part.
+   the display rate. `Performance.TIME_PROCESS` and `TIME_PHYSICS_PROCESS` are 1-second peak
+   values, not per-frame samples. Take per-frame rows from callback-to-callback
+   `Time.get_ticks_usec()` wall time. Check: your log has one column per part.
 2. **Sum every viewport.** Turn on render-time measurement for the root viewport and for each
    SubViewport, and add them. A root-only number can miss most of the 3D cost. Check: the summed
    render time is larger than or equal to the root number.
-3. **Uncap the frame.** Turn vsync off and run with `--max-fps 0` for timing runs. Write these into
-   a scratch settings file for each run, because saved user settings can force vsync back on.
+3. **Uncap the frame.** Run with `--disable-vsync` and `--max-fps 0` for timing runs. The flag
+   forces V-Sync off even when the project enables it. Only driver-level enforcement can defeat it.
+   Also write these into a scratch settings file for each run, for reproducibility.
    Check: frame time is not stuck at the display period (for example 8.33 ms at 120 Hz).
-4. **Use a driver with GPU timers.** Some drivers return 0 for every GPU timer (for example Metal on
-   macOS). Switch the driver (for example `--rendering-driver vulkan` through MoltenVK). On a
-   renderer with no GPU timer, compare wall time and render CPU time. Check: the GPU column is not
+4. **Check the GPU timers.** On any driver, a GPU timer can read 0 or be unavailable. Detect this
+   at run time and report it. Record it as unavailable, not as 0. On a renderer with no GPU timer,
+   compare wall time and render CPU time. Check: the GPU column is not
    all zeros, or you state why it is.
 5. **Run in a real window, in the foreground.** Headless has no draw, uses a dummy renderer, and
    shows false memory and object growth. Some desktops throttle a background window. Check: the
@@ -109,8 +112,8 @@ The 7 most frequent rows. The full table of 56 rows is in [references/pitfalls.m
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
-| Frame time sits at 8.33 ms (or 16.67 ms) with vsync "off". | Saved user settings force vsync on, or the fps cap is on. | Vsync off and `--max-fps 0` in a scratch settings file for each run. |
-| Every GPU timer reads 0. | The driver gives no GPU timestamps (for example Metal). | Use another driver, or compare wall time and render CPU time. |
+| Frame time sits at 8.33 ms (or 16.67 ms) with vsync "off". | The driver enforces V-Sync, or the fps cap is on. | `--disable-vsync` and `--max-fps 0`; check driver V-Sync settings. |
+| Every GPU timer reads 0. | The driver gives no GPU timestamps on this device. | Detect it at run time, report it, and compare wall time and render CPU time. |
 | Render time is tiny next to the frame (for example 0.15 ms against 1.65 ms). | The measure reads only the root viewport. | Sum every SubViewport. |
 | Numbers jump when you switch apps. | The OS throttles a background window. | Run in the foreground. |
 | Frame times fall by half between two runs of the same code. | Machine load changed. | Interleaved pairs, load per take, invalid flag above a limit. |
@@ -119,7 +122,9 @@ The 7 most frequent rows. The full table of 56 rows is in [references/pitfalls.m
 
 ## Artifacts to build
 
-- **Frame sampler:** a script that logs per-frame process, physics, render CPU and GPU (summed over
+- **Frame sampler:** a script that logs callback-to-callback `Time.get_ticks_usec()` wall time per
+  frame, and `Performance.TIME_PROCESS` and `TIME_PHYSICS_PROCESS` as 1-second peak values, not
+  per-frame samples. It also logs render CPU and GPU (summed over
   every viewport), draw calls, primitives, node count and static memory to CSV.
 - **A/B pair runner:** a shell script that takes the lock, runs the warm-up, runs A and B
   interleaved for N pairs, and writes one CSV with variant, pair, load and process count per row.
@@ -144,19 +149,7 @@ The 7 most frequent rows. The full table of 56 rows is in [references/pitfalls.m
 
 ## Related skills
 
-- `godot-bot-balance-loop`: plays the game with bots for balance numbers; this skill reuses its drives
-  for perf scenarios only.
-- `godot-safe-refactor`: proves that a change keeps behaviour; this skill adds the speed proof.
-- `godot-visual-verification`: owns the visual proof. It gives fixed-state window captures, 1x
-  comparison, before-and-after pairs and the pixel-diff noise floor that prove "same pixels". This
-  skill gives only the paired timing evidence.
-- `godot-headless-runs`: tool-script hygiene, flags and process cleanup for the headless probes
-  here.
-- `godot-test-loop`: the test loop, proof that a test can fail, and the exit leak hunt at suite end.
-- `godot-feature-seams-and-saves`: data seams and flags that let a probe switch a variant in one binary.
-- `godot-upgrade-tree-design`: design research for questions that are about fun, not frame time.
-- `godot-fleet-game-dev`: the mkdir perf and window locks, the owner check, and wave plans from the
-  ranked perf ideas.
+The 9 related skills and what each one owns are in [references/related-skills.md](references/related-skills.md); read it to route work outside this skill.
 
 ## References
 

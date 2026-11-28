@@ -35,7 +35,7 @@ impl World {
         let text = std::fs::read_to_string(luna)
             .unwrap()
             .replace("name: codex-luna", "name: fixture-codex")
-            .replace("model: gpt-5.6-luna", "model: fixture-model")
+            .replace("model: luna", "model: fixture-model")
             .replace("effort: low", "effort: high");
         std::fs::write(root.join("teammates/fixture-codex.md"), text).unwrap();
         World { _tmp: tmp, root }

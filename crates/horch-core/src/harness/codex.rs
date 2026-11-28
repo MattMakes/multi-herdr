@@ -1,6 +1,9 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
+#[cfg(test)]
+use std::sync::Mutex;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{bail, Context, Result};
@@ -32,6 +35,46 @@ pub fn codex_home(home: &Path, codex_home_var: Option<&Path>) -> PathBuf {
 }
 
 pub(crate) fn write_v1_catalog(codex_bin: &Path, state_root: &Path) -> Result<PathBuf> {
+    let mut catalog = model_catalog(codex_bin)?;
+    let models = match &mut catalog {
+        serde_json::Value::Object(root) => root
+            .get_mut("models")
+            .and_then(serde_json::Value::as_array_mut)
+            .context("model catalog object has no models array")?,
+        serde_json::Value::Array(models) => models,
+        _ => bail!("model catalog is neither an object nor an array"),
+    };
+    pin_multi_agent_v1(models);
+
+    write_catalog(&catalog, state_root)
+}
+
+pub(crate) fn model_catalog(codex_bin: &Path) -> Result<serde_json::Value> {
+    #[cfg(not(test))]
+    {
+        static CATALOG: OnceLock<Result<serde_json::Value, String>> = OnceLock::new();
+        return CATALOG
+            .get_or_init(|| read_model_catalog(codex_bin).map_err(|e| format!("{e:#}")))
+            .clone()
+            .map_err(anyhow::Error::msg);
+    }
+    #[cfg(test)]
+    {
+        static CATALOGS: OnceLock<
+            Mutex<std::collections::BTreeMap<PathBuf, Result<serde_json::Value, String>>>,
+        > = OnceLock::new();
+        let catalogs = CATALOGS.get_or_init(|| Mutex::new(std::collections::BTreeMap::new()));
+        let mut catalogs = catalogs
+            .lock()
+            .map_err(|_| anyhow::anyhow!("codex model catalog cache is poisoned"))?;
+        let result = catalogs
+            .entry(codex_bin.to_path_buf())
+            .or_insert_with(|| read_model_catalog(codex_bin).map_err(|e| format!("{e:#}")));
+        result.clone().map_err(anyhow::Error::msg)
+    }
+}
+
+fn read_model_catalog(codex_bin: &Path) -> Result<serde_json::Value> {
     let mut cmd = Command::new(codex_bin);
     cmd.args(["debug", "models"]);
     let output = run_with_deadline(cmd, Duration::from_secs(5))?;
@@ -45,19 +88,8 @@ pub(crate) fn write_v1_catalog(codex_bin: &Path, state_root: &Path) -> Result<Pa
         );
     }
 
-    let mut catalog: serde_json::Value = serde_json::from_slice(&output.stdout)
-        .with_context(|| format!("parsing {} debug models output", codex_bin.display()))?;
-    let models = match &mut catalog {
-        serde_json::Value::Object(root) => root
-            .get_mut("models")
-            .and_then(serde_json::Value::as_array_mut)
-            .context("model catalog object has no models array")?,
-        serde_json::Value::Array(models) => models,
-        _ => bail!("model catalog is neither an object nor an array"),
-    };
-    pin_multi_agent_v1(models);
-
-    write_catalog(&catalog, state_root)
+    serde_json::from_slice(&output.stdout)
+        .with_context(|| format!("parsing {} debug models output", codex_bin.display()))
 }
 
 fn pin_multi_agent_v1(models: &mut [serde_json::Value]) {
@@ -545,6 +577,30 @@ fn shell_env_args(shell_env: &[(String, String)], prepared: &mut Prepared) -> Re
     Ok(())
 }
 
+fn cargo_home_args(
+    ctx: &RuntimeContext,
+    req: &PrepareRequest<'_>,
+    sandbox: Option<&str>,
+    prepared: &mut Prepared,
+) -> Result<()> {
+    let sandboxed_writes = !matches!(sandbox, Some(READ_ONLY | DANGER_FULL_ACCESS));
+    let own = req.shell_env.iter().any(|(key, _)| key == "CARGO_HOME");
+    let state_root = &ctx.paths.state_root;
+    let default = ctx.paths.home.join(".cargo");
+    let writable = default.starts_with(req.workdir) || default.starts_with(state_root);
+    if !sandboxed_writes || own || writable || !launch_has_network(req.teammate) {
+        return Ok(());
+    }
+    let dir = state_root.join("cargo");
+    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    let value = serde_json::to_string(&dir.to_string_lossy()).context("encoding CARGO_HOME")?;
+    prepared.extra_args.push("-c".into());
+    prepared
+        .extra_args
+        .push(format!("shell_environment_policy.set.CARGO_HOME={value}"));
+    Ok(())
+}
+
 fn read_config(path: &Path) -> Option<String> {
     crate::fsx::read_regular_bounded(path).ok().flatten()
 }
@@ -589,6 +645,7 @@ impl Harness for Codex {
         });
         let mut prepared = Prepared::default();
         launch_sandbox_args(ctx, req, sandbox.as_deref(), &mut prepared)?;
+        cargo_home_args(ctx, req, sandbox.as_deref(), &mut prepared)?;
         shell_env_args(req.shell_env, &mut prepared)?;
         if let Rules::Private { dir } = &rules {
             prepared
@@ -789,6 +846,8 @@ fn toml_scalar(raw: &str) -> String {
 const WORKSPACE_WRITE: &str = "workspace-write";
 
 const READ_ONLY: &str = "read-only";
+
+const DANGER_FULL_ACCESS: &str = "danger-full-access";
 
 const WRITABLE_ROOTS_KEY: &str = "sandbox_workspace_write.writable_roots";
 
@@ -1057,7 +1116,15 @@ pub(super) fn codex_command(
     model_override: Option<&str>,
 ) -> Result<Command> {
     let bin = env.bins.codex.clone();
-    let model = format!("model=\"{}\"", model_for(teammate, model_override)?);
+    let configured = model_for(teammate, model_override)?;
+    let resolved = crate::roster::models::resolve_codex_model_from_bin(configured, &bin);
+    if resolved.used_fallback {
+        eprintln!(
+            "horch: NOTE: codex model family {configured} uses fallback {}",
+            resolved.slug
+        );
+    }
+    let model = format!("model=\"{}\"", resolved.slug);
     let mut cmd = Command::new(&bin);
     if env.backend == crate::runtime::Backend::Hc {
         cmd.arg("--no-daemon");
@@ -1474,7 +1541,7 @@ mod tests {
     #[test]
     fn an_empty_prompt_is_left_off_the_command_line() {
         let teammate = Teammate {
-            model: Some("gpt-5.6-sol".into()),
+            model: Some("gpt-6.2-sol".into()),
             ..Default::default()
         };
         let args = command_args(
@@ -1500,7 +1567,7 @@ mod tests {
         env.horch_exe = "/opt/horch test".into();
         env.workdir = Some("/work tree".into());
         let teammate = Teammate {
-            model: Some("gpt-5.6-sol".into()),
+            model: Some("gpt-6.2-sol".into()),
             worker_channel: true,
             ..Default::default()
         };
@@ -1568,7 +1635,7 @@ mod tests {
     #[test]
     fn arc_30_codex_without_worker_channel_adds_nothing() {
         let teammate = Teammate {
-            model: Some("gpt-5.6-sol".into()),
+            model: Some("gpt-6.2-sol".into()),
             ..Default::default()
         };
         let args = command_args(
@@ -1746,7 +1813,7 @@ mod tests {
         let codex = home.path().join(".codex");
         std::fs::create_dir_all(codex.join("sessions")).unwrap();
         std::fs::create_dir_all(codex.join("rules")).unwrap();
-        std::fs::write(codex.join("config.toml"), "model = \"gpt-5.6-sol\"\n").unwrap();
+        std::fs::write(codex.join("config.toml"), "model = \"gpt-6.2-sol\"\n").unwrap();
         std::fs::write(codex.join("auth.json"), "{}").unwrap();
         std::fs::write(codex.join("rules/default.rules"), "# the user's own\n").unwrap();
         home
@@ -1784,7 +1851,7 @@ mod tests {
         );
         assert_eq!(
             std::fs::read_to_string(dir.join("config.toml")).unwrap(),
-            "model = \"gpt-5.6-sol\"\n"
+            "model = \"gpt-6.2-sol\"\n"
         );
     }
 
@@ -2133,7 +2200,7 @@ mod tests {
                     skills: None,
                     compact_window: None,
                     teammate,
-                    model: "gpt-5.6-sol",
+                    model: "gpt-6.2-sol",
                     workdir: tmp,
                     shell_env: &[],
                 },
@@ -2170,7 +2237,7 @@ mod tests {
                     skills: None,
                     compact_window: None,
                     teammate: &Teammate::default(),
-                    model: "gpt-5.6-sol",
+                    model: "gpt-6.2-sol",
                     workdir: tmp.path(),
                     shell_env: &shell_env,
                 },
@@ -2213,7 +2280,7 @@ mod tests {
     fn a_teammates_own_add_dir_still_applies() {
         let tmp = tempfile::tempdir().unwrap();
         let mut teammate = Teammate {
-            model: Some("gpt-5.6-sol".into()),
+            model: Some("gpt-6.2-sol".into()),
             args: vec!["--add-dir".into(), "/teammate/own".into()],
             ..Default::default()
         };
@@ -2420,7 +2487,7 @@ mod tests {
         use crate::roster::PermissionMode::Plan;
         let argv = |args: Vec<&str>| -> Vec<String> {
             let teammate = Teammate {
-                model: Some("gpt-5.6-sol".into()),
+                model: Some("gpt-6.2-sol".into()),
                 permission_mode: Some(Plan),
                 args: args.into_iter().map(String::from).collect(),
                 ..Default::default()
@@ -2987,7 +3054,7 @@ mod tests {
         env.horch_exe = PathBuf::from("horch");
         env.workdir = Some(PathBuf::from("/work"));
         let mut teammate = Teammate {
-            model: Some("gpt-5.6-sol".into()),
+            model: Some("gpt-6.2-sol".into()),
             ..Default::default()
         };
         teammate.worker_channel = true;
@@ -3017,7 +3084,7 @@ mod tests {
     #[test]
     fn hcb_11_codex_on_hc_runs_without_its_daemon() {
         let mut teammate = Teammate {
-            model: Some("gpt-5.6-sol".into()),
+            model: Some("gpt-6.2-sol".into()),
             ..Default::default()
         };
         teammate.worker_channel = false;

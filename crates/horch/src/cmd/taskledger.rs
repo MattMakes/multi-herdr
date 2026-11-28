@@ -151,6 +151,13 @@ pub enum LedgerCommand {
         #[arg(long, hide = true)]
         run_steps: bool,
     },
+    /// (worker) Print every complexity-sweep finding of your change, before
+    /// finish. Exit 0: none. Exit 1: findings. Exit 2: no analysable file.
+    /// Without a claimed task, it judges this git worktree against main.
+    Complexity {
+        #[arg(long)]
+        json: bool,
+    },
     /// The finish steps of a task (default: this worker's) with evidence.
     Steps {
         task: Option<String>,
@@ -595,6 +602,7 @@ fn group_of(command: &LedgerCommand) -> Group {
         C::Claim { .. }
             | C::Worktree { .. }
             | C::Finish { .. }
+            | C::Complexity { .. }
             | C::Steps { .. }
             | C::Done { .. }
             | C::Handoff { .. }
@@ -745,6 +753,9 @@ fn worker_side_cmd(
             run_steps,
         };
         return super::taskledger_finish::finish_cmd(ctx, &mut store, how);
+    }
+    if let LedgerCommand::Complexity { json: as_json } = command {
+        return super::taskledger_complexity::complexity_cmd(ctx, &store, as_json);
     }
     if let LedgerCommand::Steps {
         task,
@@ -1772,8 +1783,11 @@ fn gate_cmd(
         Some(c) => c.to_string(),
         None => finish::default_check(store.conn(), &r.run_id)?.with_context(|| {
             format!(
-                "run {} has no check. Pass --check \"<cmd>\", or create the run with horch ledger run new <slug> --check \"<cmd>\"",
-                r.slug
+                "run {} has no check. Pass --check \"<cmd>\", or create the run with horch ledger run new <slug> --check \"<cmd>\".{}",
+                r.slug,
+                stack_check_hint(Path::new(&r.project_root))
+                    .map(|h| format!(" {h}"))
+                    .unwrap_or_default()
             )
         })?,
     };
@@ -1862,6 +1876,11 @@ fn new_run_cmd(
     let check = a.check.as_deref().filter(|c| !c.trim().is_empty());
     let r = insert_run(ctx, store, root, &new, check)?;
     report_created(&r);
+    if check.is_none() {
+        if let Some(hint) = stack_check_hint(root) {
+            output::println(&format!("NOTE: run {} has no check. {hint}", r.slug));
+        }
+    }
     Ok(ExitCode::SUCCESS)
 }
 
@@ -1903,6 +1922,11 @@ fn default_branches(
     let remote = (a.remote.clone())
         .or_else(|| (is_repo && git.has_remote(root, "origin")).then(|| "origin".to_string()));
     (run_branch, base, remote)
+}
+
+fn stack_check_hint(root: &Path) -> Option<String> {
+    horch_core::roster::suggested_check(&horch::project::project_facts(root))
+        .map(|c| format!("The stack check for this project is: --check \"{c}\""))
 }
 
 fn report_created(r: &Run) {
@@ -2394,13 +2418,15 @@ pub fn tools(ctx: &RuntimeContext) -> finish::Tools {
         ctx.paths.data_root.clone(),
     ];
     roots.extend(local_marketplaces(&ctx.paths.data_root));
+    let evidence_root = evidence_root(ctx);
     finish::Tools {
         git: Git::new(&ctx.bins.harness.git),
         gh: tool_bin("HORCH_GH_BIN", "gh"),
         node: tool_bin("HORCH_NODE_BIN", "node"),
         complexity_cli: complexity_cli(&roots),
+        gdcomplexity_cli: gdcomplexity_cli(&evidence_root),
         code_sweep_dir: code_sweep_dir(&roots),
-        evidence_root: evidence_root(ctx),
+        evidence_root,
         shell: PathBuf::from(if cfg!(unix) { "/bin/sh" } else { "sh" }),
         reviewers_down: Vec::new(),
         codex: finish::CodexSandbox {
@@ -2443,6 +2469,11 @@ fn complexity_cli(roots: &[PathBuf]) -> Option<PathBuf> {
         })
         .map(|d| d.join("code/cli/dist/index.js"))
     })
+}
+
+fn gdcomplexity_cli(evidence_root: &Path) -> Option<PathBuf> {
+    env_path("HORCH_GDCOMPLEXITY_CLI")
+        .or_else(|| finish::complexity::write_gdcomplexity(evidence_root).ok())
 }
 
 fn evidence_root(ctx: &RuntimeContext) -> PathBuf {
@@ -2971,7 +3002,7 @@ mod tests {
             .insert(LedgerRecordV1 {
                 record_id: "orch-1".into(),
                 agent: "codex".into(),
-                model: "gpt-5.6-sol".into(),
+                model: "gpt-6.2-sol".into(),
                 role: "orchestrator".into(),
                 kind: KIND_ORCHESTRATOR.into(),
                 ..LedgerRecordV1::default()
@@ -2996,7 +3027,7 @@ mod tests {
                 .unwrap();
             (w.harness, w.model)
         };
-        let own = (Some("codex".to_string()), Some("gpt-5.6-sol".to_string()));
+        let own = (Some("codex".to_string()), Some("gpt-6.2-sol".to_string()));
         assert_eq!(run(&mut store, &ctx, "a"), own);
         assert_eq!(run(&mut store, &env(None), "b"), own);
     }
@@ -3039,7 +3070,8 @@ mod tests {
         branch: Option<&str>,
         shape: impl FnOnce(&mut NewTask),
     ) -> (RuntimeContext, Store, Claimed) {
-        let ctx = RuntimeContext::from_env(&MapEnv::new(dir)).unwrap();
+        let ctx = RuntimeContext::from_env(&MapEnv::new(dir).with("HOME", &dir.to_string_lossy()))
+            .unwrap();
         let mut store = Store::open(&dir.join("ledger.sqlite3")).unwrap();
         let new_run = NewRun {
             slug: "r1".into(),
@@ -3200,7 +3232,10 @@ mod tests {
         }
         let dir = tempfile::tempdir().unwrap();
         let root = project(dir.path(), false);
-        let ctx = RuntimeContext::from_env(&MapEnv::new(dir.path())).unwrap();
+        let ctx = RuntimeContext::from_env(
+            &MapEnv::new(dir.path()).with("HOME", &dir.path().to_string_lossy()),
+        )
+        .unwrap();
         let mut store = Store::open(&dir.path().join("ledger.sqlite3")).unwrap();
         for (slug, check, want) in [
             ("r1", Some("cargo test"), Some("cargo test")),
@@ -3222,6 +3257,18 @@ mod tests {
                 horch_core::taskledger::finish::default_check(store.conn(), &run.run_id).unwrap();
             assert_eq!(got.as_deref(), want, "{slug}");
         }
+    }
+
+    #[test]
+    fn grs_14_stack_check_hint_names_the_rust_check_in_a_cargo_project() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(super::stack_check_hint(dir.path()), None);
+        std::fs::write(dir.path().join("Cargo.toml"), "").unwrap();
+        let hint = super::stack_check_hint(dir.path()).unwrap();
+        assert!(
+            hint.contains("--check \"cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings\""),
+            "{hint}"
+        );
     }
 
     fn takes_check(cmd: &clap::Command) -> bool {
@@ -3315,7 +3362,8 @@ mod tests {
             std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
         let _ = std::process::Command::new(&gh).output();
-        let ctx = RuntimeContext::from_env(&MapEnv::new(dir)).unwrap();
+        let ctx = RuntimeContext::from_env(&MapEnv::new(dir).with("HOME", &dir.to_string_lossy()))
+            .unwrap();
         let mut t = tools(&ctx);
         t.git = Git::new("git");
         t.gh = gh;
@@ -3569,7 +3617,9 @@ mod tests {
     }
 
     fn task_world(dir: &Path, root: &Path, workspace: Option<&str>) -> (RuntimeContext, Store) {
-        let mut env = MapEnv::new(root).with("HORCH_PROJECT_DIR", root.to_str().unwrap());
+        let mut env = MapEnv::new(root)
+            .with("HOME", &dir.to_string_lossy())
+            .with("HORCH_PROJECT_DIR", root.to_str().unwrap());
         if let Some(ws) = workspace {
             env = env.with("HORCH_WORKSPACE_ID", ws);
         }

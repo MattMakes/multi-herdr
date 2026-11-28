@@ -10,7 +10,7 @@ Reference for `skills/godot-optimization/SKILL.md` — GDScript performance patt
 
 ### Avoid Allocations in _process
 
-Allocating new objects (Arrays, Dictionaries, Vector2/3 via constructor, Strings) inside `_process` or `_physics_process` triggers the garbage collector more frequently and creates per-frame heap pressure.
+Creating new `Array`, `Dictionary` or `String` values inside `_process` or `_physics_process` allocates heap memory every frame. GDScript has no .NET garbage collector: these values are reference-counted and freed when the last reference goes. `Vector2`, `Vector3` and other small vectors are not allocations: they are stored inline in `Variant`. `Array`, `Dictionary`, `String` and managed C# objects allocate in different ways, so measure each one on its own terms.
 
 ```gdscript
 # WRONG — allocates a new Array every frame
@@ -80,43 +80,36 @@ public override void _Process(double delta)
 ```
 
 ```gdscript
-# WRONG — constructing temporary vectors in a tight loop
-func _process(_delta: float) -> void:
-    for i in range(100):
-        var offset := Vector2(i * 10.0, 0.0)  # 100 allocations per frame
-        _draw_marker(position + offset)
+# Temporary vectors are inline values, not heap allocations and not a GC pause.
+# Keep them local: a shared member vector adds mutable state for no measured gain.
+extends Node2D
 
-# RIGHT — reuse a variable declared outside the loop
-var _offset := Vector2.ZERO
+var _markers := PackedVector2Array()
 
 func _process(_delta: float) -> void:
+    _markers.resize(100)
     for i in range(100):
-        _offset.x = i * 10.0
-        _offset.y = 0.0
-        _draw_marker(position + _offset)
+        var offset := Vector2(i * 10.0, 0.0)
+        _markers[i] = position + offset
 ```
 
 **C#:**
 
 ```csharp
-// In C#, Vector2 is a struct (value type) — no heap allocation in either case.
-// However, avoiding repeated constructor calls is still marginally faster.
-private Vector2 _offset;
-
+// In C#, Vector2 is a struct (value type) — no heap allocation. Keep it local too.
 public override void _Process(double delta)
 {
     for (int i = 0; i < 100; i++)
     {
-        _offset.X = i * 10.0f;
-        _offset.Y = 0.0f;
-        DrawMarker(Position + _offset);
+        var offset = new Vector2(i * 10.0f, 0.0f);
+        DrawMarker(Position + offset);
     }
 }
 ```
 
 ### Use StringName for Comparisons
 
-`StringName` uses interned hashing; comparing two `StringName` values is an O(1) integer comparison. Comparing `String` values is O(n) and allocates temporaries.
+`StringName` uses interned hashing; comparing two `StringName` values is an O(1) integer comparison. Comparing `String` values is O(n): the comparison scans both strings without building a new string. `StringName == StringName` is still cheaper because it compares interned pointers.
 
 ```gdscript
 # WRONG — String comparison in a hot path
@@ -175,14 +168,14 @@ public override void _Process(double delta)
 
 ### Typed Arrays
 
-Typed arrays (`Array[Node]`, `Array[int]`) skip per-element type checks and allow the VM to use more efficient access paths.
+Typed arrays (`Array[Node]`, `Array[int]`) do not skip type checks: every typed `Array` write calls the type validator. Typing gives safety and lets the compiler specialize nearby expressions that read the elements. Packed arrays give contiguous value storage, which is the layout advantage for value types.
 
 ```gdscript
-# Untyped — element type checked at every access
-var bullets = []
+# Untyped — no element type; reads stay dynamic
+var untyped_bullets = []
 
-# Typed — no per-element type check; also self-documents intent
-var bullets: Array[Bullet] = []
+# Typed — each write is validated; reads are typed for the compiler
+var bullets: Array[Node] = []
 
 # PackedArrays are the most efficient for value types — stored as contiguous memory
 var positions: PackedVector2Array = PackedVector2Array()

@@ -236,7 +236,7 @@ mod tests {
             teammate(&base, "a-claude", HarnessKind::Claude, "opus", "high"),
             teammate(&base, "b-claude", HarnessKind::Claude, "opus", "low"),
             teammate(&base, "c-claude", HarnessKind::Claude, "sonnet", "medium"),
-            teammate(&base, "d-codex", HarnessKind::Codex, "gpt-5.6-sol", "xhigh"),
+            teammate(&base, "d-codex", HarnessKind::Codex, "gpt-6.2-sol", "xhigh"),
         ];
         let refs: Vec<&Teammate> = team.iter().collect();
         let mut facts = BTreeMap::new();

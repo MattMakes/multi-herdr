@@ -129,8 +129,18 @@ work. These commands are on your PATH:
   "F<n>: <reason>" in the answers file it names. The finding id F<n> stays
   the same in every round. Your ticket's **Review:** sets the rounds:
   none is 0, light is 1, full is at most 3.
-- When complexity-sweep names functions, use the complexity-sweep skill to
-  reduce their complexity. Commit, then run finish again.
+- horch ledger complexity - print every complexity-sweep finding of your
+  change. Before the first horch ledger finish, run it and fix every finding.
+- After complexity-sweep fails, read the full evidence file it names, or run
+  horch ledger complexity. Do not fix only the findings that finish displays.
+- Before you refactor a finding, confirm that its line is a function
+  definition in your diff. If it is not, report a parser defect to the
+  orchestrator. Do not rewrite the code.
+- Never clear a finding with a suppression, a threshold raise, a skipped or
+  deleted test, an inline lambda that hides branches, or a helper with no
+  distinct job.
+- Use the complexity-sweep skill to reduce complexity. Commit, then run
+  finish again.
 - horch ledger done "<summary>" - run it when finish prints that every step
   passed. It reports to the orchestrator and closes your pane. horch done
   does the same for a ledger task.

@@ -60,7 +60,7 @@ private void ConfigureBullet()
 
 ### Simplified Collision Shapes
 
-Mesh colliders (`ConcavePolygonShape3D`) are extremely expensive. Replace with primitives wherever possible.
+`ConcavePolygonShape3D` is the slowest individual shape, but a convex decomposition into many hulls can be slower than 1 static concave shape. Primitives suit dynamic bodies. Large static geometry uses a simplified concave mesh or `HeightMapShape3D`.
 
 | Shape | Cost | Use for |
 |---|---|---|
@@ -78,7 +78,7 @@ Mesh colliders (`ConcavePolygonShape3D`) are extremely expensive. Replace with p
 
 ### Physics Tick Rate Tuning
 
-The default physics tick is 60 Hz (`Engine.physics_ticks_per_second`). Lowering it reduces CPU load at the cost of simulation fidelity.
+The default physics tick is 60 Hz (`Engine.physics_ticks_per_second`). Lowering it reduces CPU load at the cost of simulation fidelity. At 240 rendered fps and 60 TPS, most frames have no physics tick. Raising physics to 240 TPS makes physics and `_physics_process` work about 4 times as frequent. Physics interpolation exists to avoid that cost: keep a fixed tested TPS and interpolate the visuals.
 
 ```gdscript
 # Lower the physics tick rate at runtime (e.g. for a top-down game that
@@ -86,8 +86,9 @@ The default physics tick is 60 Hz (`Engine.physics_ticks_per_second`). Lowering 
 func _ready() -> void:
     Engine.physics_ticks_per_second = 30
 
-# Use max_physics_steps_per_frame to prevent the spiral-of-death
-# (physics trying to catch up when the frame takes too long)
+# max_physics_steps_per_frame trades catch-up for slow motion. At 60 TPS and
+# the default cap of 8, game time slows below 7.5 rendered fps. A higher TPS
+# without a higher cap raises that threshold.
 Engine.max_physics_steps_per_frame = 4
 ```
 
@@ -105,10 +106,10 @@ Change project-wide defaults in **Project Settings > Physics > Common > Physics 
 
 ### Area2D for Detection vs Raycasts
 
-For detecting whether something enters a region, `Area2D`/`Area3D` is cheaper than running a raycast or shape query every frame because the engine maintains the overlap state incrementally.
+An `Area2D`/`Area3D` maintains overlap state and pairs all the time, so it fits continuous enter/exit tracking. A bounded direct query is often cheaper for sparse or on-demand checks. Measure both at the real entity count.
 
 ```gdscript
-# PREFER Area2D for "is the player in range?" checks
+# Area2D for continuous "is the player in range?" enter/exit tracking
 extends Area2D
 
 func _ready() -> void:
@@ -127,7 +128,7 @@ func _on_body_exited(body: Node2D) -> void:
 **C#:**
 
 ```csharp
-// PREFER Area2D for "is the player in range?" checks
+// Area2D for continuous "is the player in range?" enter/exit tracking
 public partial class AggroZone : Area2D
 {
     public override void _Ready()

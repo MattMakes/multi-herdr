@@ -104,11 +104,11 @@ The operator sets `CLAUDE_CODE_AUTO_COMPACT_WINDOW=500000` in
 | Claude orchestrator, every flavor | 500,000 | operator `~/.claude/settings.json` | 467,000 | 300,000 | 167,000 |
 | Claude `opus` (48) | 500,000 | operator | 467,000 | 300,000 | 167,000 |
 | Claude `sonnet` (13) | 500,000 | operator | 467,000 | 300,000 | 167,000 |
-| Codex `gpt-5.6-sol` (5) | 200,000 | fleet, key `codex/gpt-5.6-sol` | 200,000 | 160,000 | 40,000 |
-| Codex `gpt-5.6-terra` (1) | 150,000 | fleet, key `codex/gpt-5.6-terra` | 150,000 | 120,000 | 30,000 |
-| Codex `gpt-5.6-luna` (1) | - | harness | 244,800 with window 258,400 (unknown before the first `token_count`) | 195,840 (300,000 while unknown) | 48,960 |
+| Codex `gpt-6.2-sol` (5) | 200,000 | fleet, key `codex/gpt-6.2-sol` | 200,000 | 160,000 | 40,000 |
+| Codex `gpt-6.1-terra` (1) | 150,000 | fleet, key `codex/gpt-6.1-terra` | 150,000 | 120,000 | 30,000 |
+| Codex `gpt-6-luna` (1) | - | harness | 244,800 with window 258,400 (unknown before the first `token_count`) | 195,840 (300,000 while unknown) | 48,960 |
 | `orchestrator-codex` on `gpt-6-astra` | - | harness | as luna | as luna | as luna |
-| `orchestrator-codex` on `gpt-5.6-sol` (`horch fleet sol`) | 200,000 | fleet, key `codex/gpt-5.6-sol`: Codex has no orchestrator key, so the Codex orchestrator takes its model's window | 200,000 | 160,000 | 40,000 |
+| `orchestrator-codex` on `gpt-6.2-sol` (`horch fleet sol`) | 200,000 | fleet, key `codex/gpt-6.2-sol`: Codex has no orchestrator key, so the Codex orchestrator takes its model's window | 200,000 | 160,000 | 40,000 |
 | `opencode-ultra` (slice 2) | - | harness | 968,000 | 300,000 | 668,000 |
 | `opencode-lightning` (slice 2) | - | harness | 230,144 | 184,115 | 46,029 |
 | `opencode-pickle` (slice 2) | - | harness | 140,000 | 112,000 | 28,000 |
@@ -131,8 +131,8 @@ teammate's own `compact_window` wins over the file.
 | `claude/opus` | 200,000 | 167,000 | 133,600 | 33,400 |
 | `claude/sonnet` | 150,000 | 117,000 | 93,600 | 23,400 |
 | Claude with no value anywhere | - | 967,000 | 300,000 | 667,000 |
-| `codex/gpt-5.6-sol` | 200,000 | 200,000 | 160,000 | 40,000 |
-| `codex/gpt-5.6-terra` | 150,000 | 150,000 | 120,000 | 30,000 |
+| `codex/gpt-6.2-sol` | 200,000 | 200,000 | 160,000 | 40,000 |
+| `codex/gpt-6.1-terra` | 150,000 | 150,000 | 120,000 | 30,000 |
 | `prime` (`compact_window: 200000`, slice 2) | 200,000 | 183,616 | 146,892 | 36,724 |
 
 Example of the floor: a Claude window of 100,000 gives native 67,000,
@@ -388,7 +388,7 @@ row is `threshold(policy::watch_base(<the teammate's compact_at>), native)`.
 ```
 ROLE          HARNESS  MODEL             CONTEXT     WINDOW   NATIVE  SOURCE          THRESHOLD  LAST COMPACT              COMPACTIONS  STATE
 orchestrator  claude   claude-opus-5-5   33,352   1,000,000  467,000  operator (now)    300,000  2026-09-20T10:05:00.000Z  0n/1h        ok
-codex-sol-1   codex    gpt-5.6-sol      227,306     258,400  200,000  fleet             160,000  -                         0n/0h        over
+codex-sol-1   codex    gpt-6.2-sol      227,306     258,400  200,000  fleet             160,000  -                         0n/0h        over
 opus-1        claude   claude-opus-5-5   10,486*  1,000,000  467,000  operator (now)    300,000  2026-09-20T10:05:00.000Z  1n/0h        pending
 sonnet-1      claude   claude-opus-5-5  311,225   1,000,000  467,000  operator (now)    300,000  -                         0n/0h        over
 sonnet-2      claude   sonnet                 -   1,000,000  467,000  operator (now)    300,000  -                         -            no-transcript
@@ -673,7 +673,7 @@ not import `compaction`). Optional: absent before W1, and a resume rewrite
 sets it to none until the relaunch writes it again.
 
 ```json
-"compact_window": {"tokens": 200000, "source": "fleet", "detail": "context-policy windows codex/gpt-5.6-sol", "applied": true}
+"compact_window": {"tokens": 200000, "source": "fleet", "detail": "context-policy windows codex/gpt-6.2-sol", "applied": true}
 ```
 
 `source` is `operator`, `fleet` or `harness`; an unknown string (a newer
