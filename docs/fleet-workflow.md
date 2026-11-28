@@ -58,6 +58,7 @@ orchestrator only queues work, and workers claim it:
 | spawn exactly the workers needed | orchestrator | `horch ledger plan-workers`, then `horch spawn <persona>` |
 | take a task | worker | `horch ledger claim` (prints the ticket snapshot, then the path) |
 | record milestones | worker | `horch ledger progress "<text>"` |
+| list every complexity finding before finish (exit 0 none, 1 findings, 2 no analysable file) | worker | `horch ledger complexity [--json]` |
 | finish: the run's steps (all 8 under `--verify full`: check, comment-sweep, code-sweep, complexity-sweep, recheck, land, pr, cleanup) | worker | `horch ledger finish` (again after each fix) |
 | close the task | worker | `horch ledger done "<summary>"` |
 | hand the task to a fresh worker | worker | `horch ledger handoff <path>` |

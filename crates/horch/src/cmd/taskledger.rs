@@ -151,6 +151,13 @@ pub enum LedgerCommand {
         #[arg(long, hide = true)]
         run_steps: bool,
     },
+    /// (worker) Print every complexity-sweep finding of your change, before
+    /// finish. Exit 0: none. Exit 1: findings. Exit 2: no analysable file.
+    /// Without a claimed task, it judges this git worktree against main.
+    Complexity {
+        #[arg(long)]
+        json: bool,
+    },
     /// The finish steps of a task (default: this worker's) with evidence.
     Steps {
         task: Option<String>,
@@ -595,6 +602,7 @@ fn group_of(command: &LedgerCommand) -> Group {
         C::Claim { .. }
             | C::Worktree { .. }
             | C::Finish { .. }
+            | C::Complexity { .. }
             | C::Steps { .. }
             | C::Done { .. }
             | C::Handoff { .. }
@@ -745,6 +753,9 @@ fn worker_side_cmd(
             run_steps,
         };
         return super::taskledger_finish::finish_cmd(ctx, &mut store, how);
+    }
+    if let LedgerCommand::Complexity { json: as_json } = command {
+        return super::taskledger_complexity::complexity_cmd(ctx, &store, as_json);
     }
     if let LedgerCommand::Steps {
         task,

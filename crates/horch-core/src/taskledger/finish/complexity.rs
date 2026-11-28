@@ -5,7 +5,10 @@ use std::process::Command;
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
-use super::{Ctx, Outcome};
+use rusqlite::Connection;
+
+use super::{held_task, require_worktree, work_dir, worktree_of, Ctx, Outcome, Tools};
+use crate::taskledger::runs;
 
 mod config;
 
@@ -33,7 +36,7 @@ struct Function {
     line: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, serde::Serialize)]
 pub struct Violation {
     #[serde(rename = "functionName")]
     pub function_name: String,
@@ -419,22 +422,13 @@ impl Analyser<'_> {
 }
 
 fn violations(found: &[Violation], evidence: &[PathBuf]) -> Outcome {
-    let list: Vec<String> = found
-        .iter()
-        .take(10)
-        .map(|v| {
-            format!(
-                "{}:{} {} {}={} (max {})",
-                v.file_path, v.line, v.function_name, v.metric, v.value, v.threshold
-            )
-        })
-        .collect();
+    let list: Vec<String> = found.iter().take(10).map(finding_line).collect();
     let paths: Vec<String> = evidence.iter().map(|p| p.display().to_string()).collect();
     Outcome::fail(
         &format!("{} violations", found.len()),
         evidence.first().cloned(),
         &format!(
-            "reduce the complexity of the functions you changed, commit, then run finish again: {}. Full analysis: {}",
+            "reduce the complexity of every function you changed, commit, then run finish again: {}. Run horch ledger complexity for the full list. Full analysis: {}",
             list.join("; "),
             paths.join(", ")
         ),
@@ -675,11 +669,29 @@ pub const NOT_APPLICABLE: &str = "no changed file is in a language that the anal
 
 type Reports = std::result::Result<Vec<(PathBuf, String)>, Outcome>;
 
-fn analyser_reports(cx: &Ctx<'_>, files: &[String]) -> Result<Reports> {
+pub struct Scope<'a> {
+    pub tools: &'a Tools,
+    pub dir: &'a Path,
+    pub base: &'a str,
+    pub evidence_dir: &'a Path,
+    pub seq: i64,
+}
+
+pub enum Judged {
+    NotApplicable(&'static str),
+    Failed(Outcome),
+    Found {
+        found: Vec<Violation>,
+        evidence: Vec<PathBuf>,
+        files: usize,
+    },
+}
+
+fn analyser_reports(s: &Scope<'_>, files: &[String]) -> Result<Reports> {
     if files.is_empty() {
         return Ok(Ok(Vec::new()));
     }
-    let Some(cli) = &cx.tools.complexity_cli else {
+    let Some(cli) = &s.tools.complexity_cli else {
         return Ok(Err(Outcome::fail(
             "no analyser",
             None,
@@ -687,19 +699,19 @@ fn analyser_reports(cx: &Ctx<'_>, files: &[String]) -> Result<Reports> {
         )));
     };
     let analyser = Analyser {
-        node: &cx.tools.node,
+        node: &s.tools.node,
         cli,
-        dir: &cx.dir,
+        dir: s.dir,
     };
-    analyser.run_groups(files, &cx.evidence_dir, cx.seq)
+    analyser.run_groups(files, s.evidence_dir, s.seq)
 }
 
-fn gd_reports(cx: &Ctx<'_>, gd: &[String]) -> Result<Reports> {
+fn gd_reports(s: &Scope<'_>, gd: &[String]) -> Result<Reports> {
     if gd.is_empty() {
         return Ok(Ok(Vec::new()));
     }
     let (Some(cli), Some(runner)) = (
-        &cx.tools.gdcomplexity_cli,
+        &s.tools.gdcomplexity_cli,
         gdscript_runner(Path::new("uv"), Path::new("python3")),
     ) else {
         return Ok(Err(no_gdscript_analyser()));
@@ -707,67 +719,119 @@ fn gd_reports(cx: &Ctx<'_>, gd: &[String]) -> Result<Reports> {
     let route = GdRoute {
         runner: &runner,
         cli,
-        dir: &cx.dir,
+        dir: s.dir,
     };
-    route.reports(gd, &cx.evidence_dir, cx.seq)
+    route.reports(gd, s.evidence_dir, s.seq)
 }
 
-pub fn step(cx: &Ctx<'_>) -> Result<Outcome> {
-    let git = &cx.tools.git;
-    let base = cx.diff_base()?;
-    let names = git.run(
-        &cx.dir,
-        &[
-            "diff",
-            "--name-only",
-            "--diff-filter=AMR",
-            &format!("{base}...HEAD"),
-        ],
-    )?;
+pub fn judge(s: &Scope<'_>) -> Result<Judged> {
+    let git = &s.tools.git;
+    let range = format!("{}...HEAD", s.base);
+    let names = git.run(s.dir, &["diff", "--name-only", "--diff-filter=AMR", &range])?;
     let files = sources(&names);
-    let rust = rust_crates(&names, &cx.dir);
+    let rust = rust_crates(&names, s.dir);
     let gd = gd_sources(&names);
-    let tree = git.tree(&cx.dir).ok();
     if files.is_empty() && rust.is_empty() && gd.is_empty() {
-        return Ok(Outcome::not_applicable(NOT_APPLICABLE).judged(tree));
+        return Ok(Judged::NotApplicable(NOT_APPLICABLE));
     }
-    let mut reports = match analyser_reports(cx, &files)? {
+    let mut reports = match analyser_reports(s, &files)? {
         Ok(r) => r,
-        Err(failed) => return Ok(failed),
+        Err(failed) => return Ok(Judged::Failed(failed)),
     };
     if !files.is_empty() && reports.is_empty() && rust.is_empty() && gd.is_empty() {
-        return Ok(Outcome::not_applicable("no analysable source files").judged(tree));
+        return Ok(Judged::NotApplicable(NO_ANALYSABLE));
     }
-    match gd_reports(cx, &gd)? {
+    match gd_reports(s, &gd)? {
         Ok(r) => reports.extend(r),
-        Err(failed) => return Ok(failed),
+        Err(failed) => return Ok(Judged::Failed(failed)),
     }
-    let diff = git.run(&cx.dir, &["diff", "-U0", &format!("{base}...HEAD"), "--"])?;
+    let diff = git.run(s.dir, &["diff", "-U0", &range, "--"])?;
     let changed = changed_lines(&diff);
     let mut found = Vec::new();
     let mut evidence = Vec::new();
     for (path, json) in reports {
-        found.extend(in_changed_functions(&json, &changed, &cx.dir)?);
+        found.extend(in_changed_functions(&json, &changed, s.dir)?);
         evidence.push(path);
     }
-    match rust_violations(&cx.dir, &rust, &changed, &cx.evidence_dir, cx.seq)? {
+    match rust_violations(s.dir, &rust, &changed, s.evidence_dir, s.seq)? {
         Ok((v, paths)) => {
             found.extend(v);
             evidence.extend(paths);
         }
-        Err(failed) => return Ok(failed),
+        Err(failed) => return Ok(Judged::Failed(failed)),
     }
     let rust_files: usize = rust.values().map(Vec::len).sum();
-    let outcome = if found.is_empty() {
-        Outcome::pass(
+    Ok(Judged::Found {
+        found,
+        evidence,
+        files: files.len() + rust_files + gd.len(),
+    })
+}
+
+pub const NO_ANALYSABLE: &str = "no analysable source files";
+
+pub fn finding_line(v: &Violation) -> String {
+    format!(
+        "{}:{} {} {}={} (max {})",
+        v.file_path, v.line, v.function_name, v.metric, v.value, v.threshold
+    )
+}
+
+pub fn step(cx: &Ctx<'_>) -> Result<Outcome> {
+    let base = cx.diff_base()?;
+    let scope = Scope {
+        tools: cx.tools,
+        dir: &cx.dir,
+        base: &base,
+        evidence_dir: &cx.evidence_dir,
+        seq: cx.seq,
+    };
+    let judged = judge(&scope)?;
+    let tree = cx.tools.git.tree(&cx.dir).ok();
+    let outcome = match judged {
+        Judged::NotApplicable(note) => Outcome::not_applicable(note),
+        Judged::Failed(failed) => return Ok(failed),
+        Judged::Found {
+            found,
+            evidence,
+            files,
+        } if found.is_empty() => Outcome::pass(
             "0 violations",
             evidence.first().cloned(),
-            &format!("{} files analysed", files.len() + rust_files + gd.len()),
-        )
-    } else {
-        violations(&found, &evidence)
+            &format!("{files} files analysed"),
+        ),
+        Judged::Found {
+            found, evidence, ..
+        } => violations(&found, &evidence),
     };
     Ok(outcome.judged(tree))
+}
+
+pub fn claimed_scope(
+    conn: &Connection,
+    tools: &Tools,
+    worker_id: &str,
+) -> Result<(PathBuf, String)> {
+    let (w, task) = held_task(conn, worker_id)?;
+    let run = runs::get(conn, &task.run_id)?;
+    let root = PathBuf::from(&run.project_root);
+    let wt = worktree_of(conn, &task.task_id)?;
+    require_worktree(&task, wt.as_ref())?;
+    let dir = work_dir(wt.as_ref(), &root);
+    let cx = Ctx {
+        tools,
+        run: &run,
+        task: &task,
+        worker: &w,
+        worktree: wt,
+        dir: dir.clone(),
+        root,
+        evidence_dir: PathBuf::new(),
+        seq: 0,
+        default_check: None,
+    };
+    let base = cx.diff_base()?;
+    Ok((dir, base))
 }
 
 #[cfg(test)]

@@ -2763,6 +2763,62 @@ fn finish_finds_the_complexity_analyser_in_a_local_marketplace_of_the_store() {
     assert!(called.exists(), "the marketplace analyser ran");
 }
 
+fn ledger_complexity(h: &Harness, worker: &str) -> (Option<i32>, String) {
+    let mut cmd = h.horch(&["ledger", "complexity"]);
+    cmd.env("HORCH_WORKER_ID", worker);
+    let o = cmd.output().unwrap();
+    (o.status.code(), text(&o))
+}
+
+#[test]
+fn ledger_complexity_prints_every_finding_past_10_and_exits_1() {
+    let mut h = finish_world("tl-complexity-cmd-many");
+    let violations: Vec<String> = (0..12)
+        .map(|i| format!("{{\"functionName\":\"f{i}\",\"filePath\":\"a.ts\",\"line\":1,\"metric\":\"cyclomaticComplexity\",\"value\":{},\"threshold\":10}}", 20 + i))
+        .collect();
+    let report = format!(
+        "{{\"files\":[{{\"filePath\":\"a.ts\",\"functions\":[{{\"line\":1}}]}}],\"violations\":[{}]}}",
+        violations.join(",")
+    );
+    let cli = h.write_warmed(
+        "many-complexity",
+        format!("#!/bin/sh\necho '{report}'\n").as_bytes(),
+    );
+    h.set("HORCH_COMPLEXITY_CLI", cli.to_string_lossy());
+    let (w, _) = claimed_with_commit(&h, "complexity-sweep", None, "a.ts");
+    let (code, out) = ledger_complexity(&h, &w);
+    assert_eq!(code, Some(1), "{out}");
+    for i in 0..12 {
+        let line = format!("a.ts:1 f{i} cyclomaticComplexity={} (max 10)", 20 + i);
+        assert!(out.contains(&line), "missing {line}: {out}");
+    }
+    let r = ok_as(&h, &w, &["ledger", "steps", "--json"]);
+    assert!(
+        !r.contains("violations"),
+        "ledger complexity writes no step state: {r}"
+    );
+}
+
+#[test]
+fn ledger_complexity_exits_0_on_a_clean_change() {
+    let h = finish_world("tl-complexity-cmd-clean");
+    let (w, _) = claimed_with_commit(&h, "complexity-sweep", None, "a.ts");
+    let (code, out) = ledger_complexity(&h, &w);
+    assert_eq!(code, Some(0), "{out}");
+}
+
+#[test]
+fn ledger_complexity_exits_2_when_no_changed_file_is_analysable() {
+    let h = finish_world("tl-complexity-cmd-md");
+    let (w, _) = claimed_with_commit(&h, "complexity-sweep", None, "notes.md");
+    let (code, out) = ledger_complexity(&h, &w);
+    assert_eq!(code, Some(2), "{out}");
+    assert!(
+        out.contains(horch_core::taskledger::finish::complexity::NOT_APPLICABLE),
+        "{out}"
+    );
+}
+
 #[test]
 fn a_complexity_report_past_64_kib_is_read_whole() {
     let mut h = finish_world("tl-complexity-big");

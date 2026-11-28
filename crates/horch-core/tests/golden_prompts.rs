@@ -1417,6 +1417,25 @@ horch context shows your row state with an id. Do this for each id:
 "###,
         ),
         (
+            "body",
+            r###"- When complexity-sweep names functions, use the complexity-sweep skill to
+  reduce their complexity. Commit, then run finish again.
+"###,
+            r###"- horch ledger complexity - print every complexity-sweep finding of your
+  change. Before the first horch ledger finish, run it and fix every finding.
+- After complexity-sweep fails, read the full evidence file it names, or run
+  horch ledger complexity. Do not fix only the findings that finish displays.
+- Before you refactor a finding, confirm that its line is a function
+  definition in your diff. If it is not, report a parser defect to the
+  orchestrator. Do not rewrite the code.
+- Never clear a finding with a suppression, a threshold raise, a skipped or
+  deleted test, an inline lambda that hides branches, or a helper with no
+  distinct job.
+- Use the complexity-sweep skill to reduce complexity. Commit, then run
+  finish again.
+"###,
+        ),
+        (
             "idle",
             r###"You have no task yet. Send: horch tell orchestrator "[r-1] ready"
 Then end your turn. Your first assignment arrives as your next message."###,
